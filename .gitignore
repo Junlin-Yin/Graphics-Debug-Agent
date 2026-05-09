@@ -1,4 +1,6 @@
-.codely-cli
+.codely-cli/
+.codex/
+test.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
