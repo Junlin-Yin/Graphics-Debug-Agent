@@ -199,3 +199,17 @@ class ToolResult:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:
         return cls(**data)
+
+
+@dataclass(frozen=True)
+class ToolDefinition:
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Self:
+        return cls(**data)
