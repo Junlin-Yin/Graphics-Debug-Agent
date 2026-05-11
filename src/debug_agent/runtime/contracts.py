@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from typing import Any, Self
+from typing import Any, Protocol, Self
 
 
 CONTRACT_VERSION = 1
@@ -213,3 +213,40 @@ class ToolDefinition:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:
         return cls(**data)
+
+
+@dataclass(frozen=True)
+class AgentRunRequest:
+    session_id: str
+    run_id: str
+    user_input: str
+    system_prompt: str
+    conversation: list[dict[str, Any]]
+    tools: list[dict[str, Any]]
+    model_config: dict[str, Any]
+    timeout_seconds: int | None
+
+
+@dataclass(frozen=True)
+class RunContext:
+    workspace_root: str
+    artifact_root: str
+    approval_mode: str
+    cancellation_token: object | None
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AgentRunResult:
+    status: str
+    assistant_output: str | None
+    tool_results: list[dict[str, Any]]
+    usage: dict[str, Any]
+    error: dict[str, Any] | None
+    metadata: dict[str, Any]
+
+
+class AgentLoopAdapter(Protocol):
+    def run(self, request: AgentRunRequest, context: RunContext) -> AgentRunResult: ...
+
+    def cancel(self, run_id: str) -> None: ...
