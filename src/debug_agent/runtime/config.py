@@ -36,7 +36,7 @@ class ConfigLoadResult:
 
 
 def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
-    path = config_path or Path.home() / ".debug-agent" / "config.toml"
+    path = config_path or _default_config_path()
     defaults = dict(NON_PROVIDER_DEFAULTS)
     raw_config: dict[str, Any] = {}
 
@@ -109,6 +109,13 @@ def _resolve_runtime_settings(
         ),
         "system_prompt": builtins["system_prompt"],
     }
+
+
+def _default_config_path() -> Path:
+    home = os.environ.get("DEBUG_AGENT_HOME") or os.environ.get("HOME")
+    if home:
+        return Path(home) / ".debug-agent" / "config.toml"
+    return Path.home() / ".debug-agent" / "config.toml"
 
 
 def _config_error(message: str) -> ConfigError:

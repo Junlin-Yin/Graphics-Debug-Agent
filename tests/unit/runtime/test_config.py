@@ -24,6 +24,28 @@ def test_absent_config_applies_non_provider_defaults_without_guessing_provider(
     assert result.defaults["system_prompt"].startswith("You are debug-agent")
 
 
+def test_default_config_path_honors_home_environment_on_all_platforms(
+    tmp_path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    config_dir = home / ".debug-agent"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.toml").write_text(
+        """
+[defaults]
+provider = "openai"
+model = "gpt-test"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    result = load_config_snapshot()
+
+    assert result.error is not None
+    assert "Unsupported provider" in result.error.message
+
+
 def test_config_snapshot_resolves_anthropic_without_persisting_secret(
     tmp_path, monkeypatch
 ) -> None:
