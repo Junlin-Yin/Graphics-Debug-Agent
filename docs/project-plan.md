@@ -1,4 +1,6 @@
-# debug-agent 技术方案与路线图（spec.md）
+# debug-agent 技术方案与路线图（project-plan.md）
+
+> 本文档是跨阶段总计划，由原根目录 `spec.md` 移动并重命名而来。Phase 0 编码以 `docs/project-contract.md` 和 `docs/phase-0/*` 为更高优先级契约；这些 Phase 文档可以细化或收窄本文档中的 v1 总体字段与后续阶段能力。
 
 ## Summary
 
