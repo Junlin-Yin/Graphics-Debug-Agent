@@ -498,10 +498,10 @@ v1 明确不做：
 
 这些边界不是能力缺失，而是为了让 v1 聚焦在能稳定运行长流程 debug workflow 的最小架构上。
 
-## 6. 与 spec.md 的关系
+## 6. 与 docs/project-plan.md 的关系
 
-`spec.md` 是实现规格和验收来源，定义接口、模块、phase、测试计划。
+`docs/project-plan.md` 是跨阶段总计划和历史规划上下文。
 
-`roadmap.md` 是设计 rationale，解释为什么这样设计、替代方案是什么、为什么不选替代方案。
+`docs/adr/overview.md` 是设计 rationale，解释为什么这样设计、替代方案是什么、为什么不选替代方案。
 
-当两者冲突时，以 `spec.md` 作为实现真值。
+当它们与当前 implementation contract 冲突时，以 `docs/project-contract.md` 和当前 phase 文档作为实现真值。

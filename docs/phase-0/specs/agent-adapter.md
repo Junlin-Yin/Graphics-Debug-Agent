@@ -30,6 +30,8 @@ class AgentRunRequest:
 
 `tools` uses a runtime-owned schema, not a LangChain-specific object. The adapter converts this schema to the framework-specific representation.
 
+LangChain tool callables created by the adapter must delegate tool execution to `ToolBroker.invoke(...)`. They must not call native tools directly and must not write tool audit events directly.
+
 ```python
 class ToolDefinition:
     name: str
@@ -85,7 +87,7 @@ Allowed result statuses:
 
 Phase 0 does not implement full provider abstraction. It must isolate provider-specific setup inside ModelFactory so later adapters or provider paths do not change runtime contracts.
 
-Phase 0 has built-in defaults for non-provider runtime settings such as timeout, temperature, token limits, and the default system prompt. It does not guess a provider or model. If provider/model cannot be resolved from `~/.debug-agent/config.toml` or environment-backed configuration, ModelFactory returns `config_error`.
+Phase 0 has built-in defaults for non-provider runtime settings such as timeout, temperature, token limits, and the default system prompt. It does not guess a provider or model. If provider/model cannot be resolved from `~/.debug-agent/config.toml` or environment-backed configuration, ModelFactory returns `config_error`. See `docs/phase-0/specs/config.md` for the Phase 0 config schema.
 
 ## Prompt Composition
 

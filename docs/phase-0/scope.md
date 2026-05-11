@@ -2,7 +2,7 @@
 
 ## Goal
 
-Phase 0 交付最小可运行 runtime slice：CLI agent 能完成 REPL 和 one-shot 模型问答，并把 session、run、event、checkpoint、artifact、日志和 trace 写入本地 `.sessions/`。
+Phase 0 交付最小可运行 runtime slice：CLI agent 能完成 REPL 和 one-shot 模型问答，并把 session、run、event、checkpoint、artifact store、日志和 trace 写入本地 `.sessions/`。
 
 Phase 0 的重点是 runtime 真值模型和可恢复记录，不是 agent 能力扩展。
 
@@ -75,7 +75,8 @@ Phase 0 is complete when all of these pass:
 
 - one-shot can complete one model answer and exits with code `0`.
 - REPL can complete at least two user turns and exit with `/exit`.
-- `.sessions/runtime.db` contains session, run, run event, checkpoint, and artifact records for the execution.
+- `.sessions/runtime.db` contains session, run, run event, and checkpoint records for baseline executions.
+- Artifact records are written only when an execution produces artifacts, such as large tool output.
 - only one active session can exist for a workspace root.
 - read-only native tools can only be invoked through ToolBroker.
 - `status` shows session id, status, active/latest run, approval mode, latest checkpoint, and updated time.

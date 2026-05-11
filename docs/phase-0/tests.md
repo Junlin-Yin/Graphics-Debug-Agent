@@ -34,6 +34,7 @@
 - `debug-agent trace <session_id>` refreshes `trace.md` if missing or stale, then prints the trace path plus a short summary.
 - active workspace ownership conflict returns exit code `3`.
 - read-only native tool invocation is visible in run events and trace.
+- read-only native tool output larger than 16 KiB is stored as a `text` artifact and referenced from `ToolResult`.
 - model failure marks run/session failed and records `model_error`.
 - config failure exits with code `4`.
 - config failure records `config_error` when a session exists.
@@ -77,21 +78,22 @@ Fake tool or fixture workspace must cover:
 
 ## SQLite Verification
 
-Acceptance tests must assert rows exist in:
+Baseline one-shot and REPL acceptance tests must assert rows exist in:
 
 - `sessions`
 - `runs`
 - `run_events`
 - `checkpoints`
-- `artifacts`
 
 They must also assert `run_events` order is chronological by timestamp or insertion order.
+
+Artifact rows are required only for executions that produce artifacts. `ArtifactStore` unit tests and the large read-only tool output integration test must assert rows exist in `artifacts`.
 
 ## Smoke Commands
 
 ```bash
-pytest tests/unit -v
-pytest tests/integration -v
+uv run pytest tests/unit -v
+uv run pytest tests/integration -v
 debug-agent -p "hello"
 debug-agent status <session_id>
 debug-agent trace <session_id>

@@ -147,10 +147,9 @@ class Artifact:
 
 Phase 0 artifact types:
 
+- `image`
+- `rdc`
 - `text`
-- `log`
-- `trace`
-- `tool_output`
 
 ## ToolResult
 

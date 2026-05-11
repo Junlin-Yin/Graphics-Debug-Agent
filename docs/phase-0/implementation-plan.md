@@ -42,7 +42,7 @@
 - [ ] Return `config_error` if provider/model cannot be resolved from config or environment; Phase 0 does not guess a default provider/model.
 - [ ] Create SQLite migration for `sessions`, `runs`, `run_events`, `checkpoints`, `artifacts`.
 - [ ] Add unit tests for schema creation, contract serialization, workspace resolution, and config loading/defaults.
-- [ ] Verify with `pytest tests/unit/persistence -v`.
+- [ ] Verify with `uv run pytest tests/unit/persistence -v`.
 
 Runnable state: database can be initialized and empty stores can be constructed.
 
