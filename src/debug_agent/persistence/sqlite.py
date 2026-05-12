@@ -82,6 +82,10 @@ WHERE status = 'running';
 """
 
 
+class RuntimeBootstrapError(RuntimeError):
+    pass
+
+
 @dataclass
 class RuntimeDatabase:
     path: Path
@@ -90,12 +94,17 @@ class RuntimeDatabase:
     @classmethod
     def bootstrap(cls, workspace_root: str | Path) -> Self:
         sessions_root = Path(workspace_root).resolve() / ".sessions"
-        sessions_root.mkdir(parents=True, exist_ok=True)
-        db_path = sessions_root / "runtime.db"
-        connection = sqlite3.connect(db_path)
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.executescript(SCHEMA)
-        connection.commit()
+        try:
+            sessions_root.mkdir(parents=True, exist_ok=True)
+            db_path = sessions_root / "runtime.db"
+            connection = sqlite3.connect(db_path)
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.executescript(SCHEMA)
+            connection.commit()
+        except (OSError, sqlite3.DatabaseError) as exc:
+            raise RuntimeBootstrapError(
+                f"Runtime database bootstrap failed: {exc}"
+            ) from exc
         return cls(path=db_path, connection=connection)
 
     def close(self) -> None:

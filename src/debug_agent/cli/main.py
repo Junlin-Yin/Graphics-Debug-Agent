@@ -4,6 +4,7 @@ import sys
 from collections.abc import Sequence
 
 from debug_agent.cli.repl import run_repl
+from debug_agent.persistence.sqlite import RuntimeBootstrapError
 from debug_agent.runtime.config import load_config_snapshot
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
 
@@ -13,6 +14,14 @@ USAGE = 'Usage: debug-agent [-p "prompt"] | debug-agent status <session_id> | de
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    try:
+        return _main(args)
+    except RuntimeBootstrapError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
+def _main(args: list[str]) -> int:
     if args and args[0] in {"status", "trace"}:
         if len(args) != 2 or not args[1]:
             print(USAGE, file=sys.stderr)

@@ -52,12 +52,19 @@ class TraceWriter:
         )
 
     def _load(self, session_id: str) -> dict[str, Any]:
+        artifact_store = ArtifactStore(self.connection)
+        artifacts = artifact_store.list_for_session(session_id)
+        sessions_root = _sessions_root(self.connection)
         return {
             "session": SessionStore(self.connection).get(session_id),
             "runs": RunStore(self.connection).list_for_session(session_id),
             "events": EventWriter(self.connection).list_for_session(session_id),
             "checkpoints": CheckpointStore(self.connection).list_for_session(session_id),
-            "artifacts": ArtifactStore(self.connection).list_for_session(session_id),
+            "artifacts": artifacts,
+            "artifact_exists": {
+                artifact.artifact_id: (sessions_root / artifact.relative_path).exists()
+                for artifact in artifacts
+            },
         }
 
 
@@ -102,9 +109,12 @@ def _render_trace(data: dict[str, Any], metadata: dict[str, Any]) -> str:
         )
     lines.extend(["", "## Artifacts"])
     for artifact in data["artifacts"]:
+        exists = data["artifact_exists"].get(artifact.artifact_id, False)
+        status = "present" if exists else "missing"
         lines.append(
             f"- {artifact.artifact_id}: type={artifact.artifact_type} "
-            f"path={artifact.relative_path} run={artifact.run_id or ''}"
+            f"path={artifact.relative_path} exists={str(exists).lower()} "
+            f"status={status} run={artifact.run_id or ''}"
         )
     lines.extend(["", "## Errors"])
     error_events = [event for event in data["events"] if event.kind.endswith("_failed")]

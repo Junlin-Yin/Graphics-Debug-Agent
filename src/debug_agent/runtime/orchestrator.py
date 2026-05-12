@@ -201,16 +201,6 @@ class RuntimeOrchestrator:
         checkpoints = CheckpointStore(db.connection)
         artifacts = ArtifactStore(db.connection)
         try:
-            model_result = ModelFactory().create(config_snapshot)
-            if model_result.error is not None:
-                return OneShotResult(
-                    exit_code=4,
-                    assistant_output=None,
-                    error=model_result.error,
-                    message=model_result.error["message"],
-                    session_id=None,
-                    run_id=None,
-                )
             try:
                 session = sessions.create(
                     workspace_root=self.workspace_root,
@@ -247,6 +237,33 @@ class RuntimeOrchestrator:
             session = sessions.set_active_run(session.session_id, run.run_id)
             _append_event(events, session.session_id, run.run_id, "session_started", {})
             _append_event(events, session.session_id, run.run_id, "run_started", {})
+
+            model_result = ModelFactory().create(config_snapshot)
+            if model_result.error is not None:
+                failed = self._mark_failed(
+                    sessions=sessions,
+                    runs=runs,
+                    events=events,
+                    checkpoints=checkpoints,
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    agent_result=AgentRunResult(
+                        status="failed",
+                        assistant_output=None,
+                        tool_results=[],
+                        usage={},
+                        error=model_result.error,
+                        metadata={"prompt_turn_counter": 0},
+                    ),
+                )
+                return OneShotResult(
+                    exit_code=4,
+                    assistant_output=None,
+                    error=failed.error,
+                    message=failed.message,
+                    session_id=failed.session_id,
+                    run_id=failed.run_id,
+                )
 
             broker = ToolBroker(event_writer=events, artifact_store=artifacts)
             adapter = LangChainAgentLoopAdapter(
@@ -366,18 +383,6 @@ class RuntimeOrchestrator:
         checkpoints = CheckpointStore(db.connection)
         artifacts = ArtifactStore(db.connection)
 
-        model_result = ModelFactory().create(config_snapshot)
-        if model_result.error is not None:
-            db.close()
-            return ReplStartResult(
-                runtime=None,
-                error=ReplStartError(
-                    exit_code=4,
-                    message=model_result.error["message"],
-                    error=model_result.error,
-                ),
-            )
-
         try:
             session = sessions.create(
                 workspace_root=self.workspace_root,
@@ -416,6 +421,34 @@ class RuntimeOrchestrator:
         session = sessions.set_active_run(session.session_id, run.run_id)
         _append_event(events, session.session_id, run.run_id, "session_started", {})
         _append_event(events, session.session_id, run.run_id, "run_started", {})
+
+        model_result = ModelFactory().create(config_snapshot)
+        if model_result.error is not None:
+            self._mark_failed(
+                sessions=sessions,
+                runs=runs,
+                events=events,
+                checkpoints=checkpoints,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                agent_result=AgentRunResult(
+                    status="failed",
+                    assistant_output=None,
+                    tool_results=[],
+                    usage={},
+                    error=model_result.error,
+                    metadata={"prompt_turn_counter": 0},
+                ),
+            )
+            db.close()
+            return ReplStartResult(
+                runtime=None,
+                error=ReplStartError(
+                    exit_code=4,
+                    message=model_result.error["message"],
+                    error=model_result.error,
+                ),
+            )
 
         broker = ToolBroker(event_writer=events, artifact_store=artifacts)
         adapter = LangChainAgentLoopAdapter(

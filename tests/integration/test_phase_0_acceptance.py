@@ -246,3 +246,128 @@ def test_phase_0_reserved_commands_are_not_exposed(tmp_path) -> None:
         )
         assert result.returncode == 2
         assert "Usage:" in result.stderr
+
+
+def test_phase_0_invalid_config_exits_4_without_session(tmp_path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    config_dir = home / ".debug-agent"
+    home.mkdir()
+    workspace.mkdir()
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.toml").write_text(
+        """
+[defaults
+provider = "fake"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [_console_script(), "-p", "hello"],
+        cwd=workspace,
+        env=_subprocess_env(home),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 4
+    assert "Invalid config.toml" in result.stderr
+    assert not (workspace / ".sessions" / "runtime.db").exists()
+
+
+def test_phase_0_model_config_failure_after_session_records_config_error(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    config = {
+        "provider": "anthropic",
+        "model": "kimi-k2.5",
+        "temperature": 0.2,
+        "max_tokens": 8192,
+        "timeout_seconds": 120,
+        "auth": {"api_key_env": "ANTHROPIC_API_KEY", "api_key_present": False},
+        "provider_settings": {
+            "base_url_env": "ANTHROPIC_BASE_URL",
+            "base_url_present": False,
+        },
+    }
+    from debug_agent.runtime.orchestrator import RuntimeOrchestrator
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot("hello", config)
+
+    assert result.exit_code == 4
+    assert result.session_id is not None
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "failed"
+        assert conn.execute("SELECT status FROM runs").fetchone()[0] == "failed"
+        assert conn.execute("SELECT kind FROM checkpoints").fetchone()[0] == "error"
+        payloads = [
+            json.loads(row[0])
+            for row in conn.execute(
+                "SELECT payload_json FROM run_events WHERE kind IN ('run_failed', 'session_failed')"
+            )
+        ]
+    assert payloads
+    assert {payload["error_class"] for payload in payloads} == {"config_error"}
+
+
+def test_phase_0_trace_surfaces_missing_artifact_path(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    db = RuntimeDatabase.bootstrap(workspace)
+    try:
+        sessions = SessionStore(db.connection)
+        runs = RunStore(db.connection)
+        artifacts = ArtifactStore(db.connection)
+        session = sessions.create(
+            workspace_root=workspace,
+            approval_mode="yolo",
+            config_snapshot={},
+            session_id="sess_missing_artifact",
+        )
+        run = runs.create_prompt_run(session.session_id, run_id="run_missing_artifact")
+        artifact = artifacts.write_text(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            filename="gone.txt",
+            content="artifact text",
+            metadata={"source": "test"},
+            artifact_id="art_missing_path",
+        )
+        artifacts.resolve_path(artifact.artifact_id).unlink()
+        from debug_agent.observability.trace_writer import TraceWriter
+
+        trace = TraceWriter(db.connection).refresh_if_stale(session.session_id)
+
+        trace_text = trace.trace_path.read_text(encoding="utf-8")
+        assert "art_missing_path" in trace_text
+        assert "exists=false" in trace_text
+        assert "missing" in trace_text
+    finally:
+        db.close()
+
+
+def test_phase_0_sqlite_bootstrap_failure_is_surfaced(tmp_path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home.mkdir()
+    workspace.mkdir()
+    _write_fake_config(home)
+    (workspace / ".sessions").write_text("not a directory", encoding="utf-8")
+
+    result = subprocess.run(
+        [_console_script(), "-p", "hello"],
+        cwd=workspace,
+        env=_subprocess_env(home),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Runtime database bootstrap failed" in result.stderr
+    assert "Traceback" not in result.stderr
