@@ -17,3 +17,17 @@ def test_resolve_workspace_root_falls_back_to_current_directory(tmp_path) -> Non
     workspace.mkdir()
 
     assert resolve_workspace_root(workspace) == workspace.resolve()
+
+
+def test_resolve_workspace_root_falls_back_when_git_is_unavailable(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def git_missing(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr("debug_agent.runtime.workspace.subprocess.run", git_missing)
+
+    assert resolve_workspace_root(workspace) == workspace.resolve()

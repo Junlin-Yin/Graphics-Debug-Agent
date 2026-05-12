@@ -7,13 +7,16 @@ from pathlib import Path
 def resolve_workspace_root(start: str | Path | None = None) -> Path:
     candidate = Path.cwd() if start is None else Path(start)
     candidate = candidate.resolve()
-    result = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        cwd=candidate,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=candidate,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return candidate
     if result.returncode == 0:
         root = result.stdout.strip()
         if root:
