@@ -3,16 +3,17 @@ from __future__ import annotations
 import sys
 from collections.abc import Sequence
 
+from debug_agent.cli.repl import run_repl
 from debug_agent.runtime.config import load_config_snapshot
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
 
 
-USAGE = 'Usage: debug-agent -p "prompt"'
+USAGE = 'Usage: debug-agent [-p "prompt"]'
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) != 2 or args[0] != "-p" or not args[1]:
+    if args and (len(args) != 2 or args[0] != "-p" or not args[1]):
         print(USAGE, file=sys.stderr)
         return 2
 
@@ -21,6 +22,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         message = config.error.message if config.error else "Invalid configuration."
         print(message, file=sys.stderr)
         return 4
+
+    if not args:
+        return run_repl(config.snapshot)
 
     result = RuntimeOrchestrator().run_one_shot(args[1], config.snapshot)
     if result.exit_code == 0:

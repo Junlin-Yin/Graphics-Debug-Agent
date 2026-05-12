@@ -36,6 +36,7 @@ class PromptAgentExecutor:
         user_input: str,
         workspace_root: str,
         conversation: list[dict[str, Any]] | None = None,
+        prompt_turn_counter: int = 1,
     ) -> AgentRunResult:
         self._append_event(
             session_id=session.session_id,
@@ -90,7 +91,7 @@ class PromptAgentExecutor:
                 state={
                     "session_status": session.status,
                     "run_status": run.status,
-                    "prompt_turn_counter": 1,
+                    "prompt_turn_counter": prompt_turn_counter,
                     "latest_model_response_metadata": result.metadata,
                     "latest_artifact_ids": _artifact_ids(result),
                     "latest_error_summary": None,
@@ -112,7 +113,7 @@ class PromptAgentExecutor:
                 state={
                     "session_status": session.status,
                     "run_status": run.status,
-                    "prompt_turn_counter": 0,
+                    "prompt_turn_counter": prompt_turn_counter - 1,
                     "latest_model_response_metadata": result.metadata,
                     "latest_artifact_ids": _artifact_ids(result),
                     "latest_error_summary": error.get("message"),

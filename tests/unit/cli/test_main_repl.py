@@ -1,0 +1,144 @@
+from __future__ import annotations
+
+import io
+import sqlite3
+
+from debug_agent.cli.main import main
+
+
+def _write_fake_config(
+    home, response: str = "repl answer", *, error: str | None = None
+) -> None:
+    config_dir = home / ".debug-agent"
+    config_dir.mkdir(parents=True)
+    fake_error = f'\nfake_error = "{error}"' if error else ""
+    (config_dir / "config.toml").write_text(
+        f"""
+[defaults]
+provider = "fake"
+model = "fake-model"
+fake_response = "{response}"{fake_error}
+""".strip(),
+        encoding="utf-8",
+    )
+
+
+def test_main_repl_accepts_two_turns_status_and_exit(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home.mkdir()
+    workspace.mkdir()
+    _write_fake_config(home, "turn answer")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO("hello\n/status\ntell me one more thing\n/exit\n"),
+    )
+
+    exit_code = main([])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out.count("turn answer\n") == 2
+    assert "session_id:" in captured.out
+    assert "approval_mode: normal" in captured.out
+
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        session_status, approval_mode, active_run_id = conn.execute(
+            "SELECT status, approval_mode, active_run_id FROM sessions"
+        ).fetchone()
+        run_status = conn.execute("SELECT status FROM runs").fetchone()[0]
+        user_messages = conn.execute(
+            "SELECT COUNT(*) FROM run_events WHERE kind = 'user_message'"
+        ).fetchone()[0]
+        checkpoint_kinds = [
+            row[0] for row in conn.execute("SELECT kind FROM checkpoints ORDER BY rowid")
+        ]
+
+    assert (session_status, approval_mode, active_run_id) == (
+        "completed",
+        "normal",
+        None,
+    )
+    assert run_status == "completed"
+    assert user_messages == 2
+    assert checkpoint_kinds == ["turn", "turn", "terminal"]
+
+
+def test_repl_status_and_exit_do_not_call_model(tmp_path, monkeypatch, capsys) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home.mkdir()
+    workspace.mkdir()
+    _write_fake_config(home, error="model should not be invoked")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr("sys.stdin", io.StringIO("/status\n/exit\n"))
+
+    exit_code = main([])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "session_id:" in captured.out
+    assert "model should not be invoked" not in captured.err
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        model_events = conn.execute(
+            "SELECT COUNT(*) FROM run_events WHERE kind LIKE 'model_call_%'"
+        ).fetchone()[0]
+    assert model_events == 0
+
+
+def test_repl_model_failure_returns_runtime_error(tmp_path, monkeypatch, capsys) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home.mkdir()
+    workspace.mkdir()
+    _write_fake_config(home, error="provider failed")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr("sys.stdin", io.StringIO("hello\n"))
+
+    exit_code = main([])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "provider failed" in captured.out
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "failed"
+
+
+def test_repl_rejects_ordinary_input_while_execution_is_active(
+    tmp_path, monkeypatch
+) -> None:
+    from debug_agent.cli.repl import ReplController
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    controller = ReplController.start(
+        config_snapshot={
+            "provider": "fake",
+            "model": "fake-model",
+            "fake_response": "unused",
+            "temperature": 0.2,
+            "max_tokens": 8192,
+            "timeout_seconds": 120,
+            "system_prompt": (
+                "You are debug-agent, a local debugging assistant. Answer concisely "
+                "and use only tools exposed by the runtime."
+            ),
+        },
+        workspace_root=workspace,
+    )
+    controller.is_executing = True
+    output = io.StringIO()
+
+    try:
+        should_continue = controller.handle_line("hello", output)
+    finally:
+        controller.close()
+
+    assert should_continue is True
+    assert "Prompt run is already executing." in output.getvalue()

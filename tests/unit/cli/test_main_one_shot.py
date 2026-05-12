@@ -36,7 +36,6 @@ def test_main_one_shot_prints_fake_answer_and_returns_zero(
 
 
 def test_main_returns_usage_error_for_missing_or_unsupported_args(capsys) -> None:
-    assert main([]) == 2
     assert main(["status", "sess_1"]) == 2
     assert "Usage:" in capsys.readouterr().err
 

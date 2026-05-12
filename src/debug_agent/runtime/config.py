@@ -69,6 +69,8 @@ def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
             **runtime_settings,
             "fake_response": config_defaults.get("fake_response", "fake response"),
         }
+        if "fake_error" in config_defaults:
+            snapshot["fake_error"] = config_defaults["fake_error"]
         return ConfigLoadResult(snapshot=snapshot, error=None, defaults=defaults)
 
     if provider != "anthropic":
