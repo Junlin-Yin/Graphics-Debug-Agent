@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
@@ -70,13 +71,19 @@ class PromptAgentExecutor:
             cancellation_token=None,
             metadata={},
         )
+        model_start = monotonic()
         result = self.adapter.run(request, context)
+        duration = monotonic() - model_start
         if result.status == "completed":
             self._append_event(
                 session_id=session.session_id,
                 run_id=run.run_id,
                 kind="model_call_completed",
-                payload={"usage": result.usage, "metadata": result.metadata},
+                payload={
+                    "usage": result.usage,
+                    "metadata": result.metadata,
+                    "duration": duration,
+                },
             )
             self._append_event(
                 session_id=session.session_id,
@@ -104,7 +111,7 @@ class PromptAgentExecutor:
                 session_id=session.session_id,
                 run_id=run.run_id,
                 kind="model_call_failed",
-                payload={"error": error},
+                payload={**_error_payload(error), "error": error, "duration": duration},
             )
             checkpoint = self._save_checkpoint(
                 session=session,
@@ -170,3 +177,12 @@ def _artifact_ids(result: AgentRunResult) -> list[str]:
     for tool_result in result.tool_results:
         artifact_ids.extend(tool_result.get("artifacts", []))
     return artifact_ids
+
+
+def _error_payload(error: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "error_class": error.get("error_class", "internal_error"),
+        "message": error.get("message", "Prompt execution failed."),
+        "source": error.get("source", "prompt_executor"),
+        "recoverable": error.get("recoverable", False),
+    }

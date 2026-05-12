@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from debug_agent.observability.trace_writer import TraceWriter
+from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.checkpoints import CheckpointStore
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
@@ -30,6 +31,35 @@ def _persist_session_with_events(tmp_path):
         ("run_started", {}),
         ("user_message", {"content": "hello"}),
         ("model_call_started", {"provider": "fake", "model": "fake-model"}),
+        ("model_call_completed", {"usage": {}, "metadata": {}, "duration": 0.025}),
+        (
+            "tool_call_completed",
+            {
+                "tool_name": "read_file",
+                "status": "ok",
+                "duration": 0.013,
+                "artifact_ids": ["art_trace"],
+            },
+        ),
+        (
+            "artifact_registered",
+            {
+                "artifact_id": "art_trace",
+                "artifact_type": "text",
+                "relative_path": "sess_trace/artifacts/read_file_output.txt",
+                "metadata": {"tool_name": "read_file", "bytes": 17000},
+            },
+        ),
+        (
+            "model_call_failed",
+            {
+                "error_class": "model_error",
+                "message": "provider failed",
+                "source": "model",
+                "recoverable": True,
+                "duration": 0.005,
+            },
+        ),
         ("assistant_message", {"content": "answer"}),
     ]:
         events.append(
@@ -43,6 +73,14 @@ def _persist_session_with_events(tmp_path):
                 payload=payload,
             )
         )
+    ArtifactStore(db.connection).write_text(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        artifact_id="art_trace",
+        filename="read_file_output.txt",
+        content="artifact text",
+        metadata={"tool_name": "read_file", "bytes": 17000},
+    )
     checkpoint = checkpoints.save(
         Checkpoint(
             checkpoint_id="chk_trace",
@@ -77,7 +115,7 @@ def test_trace_writer_renders_required_sections_and_metadata(tmp_path) -> None:
 
     content = result.trace_path.read_text(encoding="utf-8")
     assert result.refreshed is True
-    assert "<!-- event_count: 6 -->" in content
+    assert "<!-- event_count: 10 -->" in content
     assert "<!-- latest_event_id: evt_checkpoint -->" in content
     assert "## Session Summary" in content
     assert "## Runs" in content
@@ -86,6 +124,14 @@ def test_trace_writer_renders_required_sections_and_metadata(tmp_path) -> None:
     assert "## Artifacts" in content
     assert "## Errors" in content
     assert "model_call_started" in content
+    assert "model_call_completed" in content
+    assert "'duration': 0.025" in content
+    assert "tool_call_completed" in content
+    assert "'duration': 0.013" in content
+    assert "artifact_registered" in content
+    assert "art_trace" in content
+    assert "model_call_failed" in content
+    assert "provider failed" in content
     assert "checkpoint_written" in content
 
 

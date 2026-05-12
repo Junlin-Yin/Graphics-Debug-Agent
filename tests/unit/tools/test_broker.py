@@ -129,6 +129,22 @@ def test_large_output_is_written_to_text_artifact(tmp_path) -> None:
     assert len(result.artifacts) == 1
     artifact_path = ArtifactStore(db.connection).resolve_path(result.artifacts[0])
     assert artifact_path.read_text(encoding="utf-8") == "x" * (16 * 1024 + 1)
+    artifact = ArtifactStore(db.connection).get(result.artifacts[0])
+    events = EventWriter(db.connection).list_for_run(run.run_id)
+    assert artifact.metadata == {"bytes": 16 * 1024 + 1, "tool_name": "read_file"}
+    assert [event.kind for event in events] == [
+        "tool_call_started",
+        "artifact_registered",
+        "tool_call_completed",
+    ]
+    assert events[1].payload == {
+        "artifact_id": result.artifacts[0],
+        "artifact_type": "text",
+        "relative_path": artifact.relative_path,
+        "metadata": artifact.metadata,
+    }
+    assert events[2].payload["artifact_ids"] == result.artifacts
+    assert events[2].payload["duration"] >= 0
     db.close()
 
 
@@ -162,4 +178,7 @@ def test_timeout_returns_timeout_result_and_failed_audit_event(tmp_path) -> None
         "tool_call_failed",
     ]
     assert events[-1].payload["error_class"] == "timeout"
+    assert events[-1].payload["message"].startswith("Tool timed out after")
+    assert events[-1].payload["source"] == "toolbroker"
+    assert events[-1].payload["recoverable"] is True
     db.close()

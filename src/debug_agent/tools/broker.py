@@ -203,6 +203,17 @@ class ToolBroker:
                         "bytes": output_size,
                     },
                 )
+                self._write_event(
+                    session_id=session_id,
+                    run_id=run_id,
+                    kind="artifact_registered",
+                    payload={
+                        "artifact_id": artifact.artifact_id,
+                        "artifact_type": artifact.artifact_type,
+                        "relative_path": artifact.relative_path,
+                        "metadata": artifact.metadata,
+                    },
+                )
                 return ToolResult(
                     status="ok",
                     output=None,
@@ -268,4 +279,7 @@ def _audit_payload(
     }
     if result.error is not None:
         payload["error_class"] = result.error["error_class"]
+        payload["message"] = result.error["message"]
+        payload["source"] = result.error["source"]
+        payload["recoverable"] = result.error["recoverable"]
     return payload

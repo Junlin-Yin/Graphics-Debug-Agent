@@ -510,14 +510,14 @@ class RuntimeOrchestrator:
             session.session_id,
             run.run_id,
             "run_failed",
-            {"error": error},
+            {**_error_payload(error), "error": error},
         )
         _append_event(
             events,
             session.session_id,
             run.run_id,
             "session_failed",
-            {"error": error},
+            {**_error_payload(error), "error": error},
         )
         TraceWriter(events.connection).refresh_if_stale(session.session_id)
         return OneShotResult(
@@ -556,3 +556,12 @@ def _active_conflict_message(session_id: str) -> str:
         f"Session: {session_id}\n"
         "Use that session, wait for it to finish, or start in a separate git worktree."
     )
+
+
+def _error_payload(error: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "error_class": error.get("error_class", "internal_error"),
+        "message": error.get("message", "Prompt execution failed."),
+        "source": error.get("source", "orchestrator"),
+        "recoverable": error.get("recoverable", False),
+    }

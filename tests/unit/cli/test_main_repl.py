@@ -195,7 +195,7 @@ def test_repl_ctrl_c_after_session_creation_marks_failed_and_releases_ownership(
         ).fetchone()
         failed_error_class = conn.execute(
             """
-            SELECT json_extract(payload_json, '$.error.error_class')
+            SELECT json_extract(payload_json, '$.error_class')
             FROM run_events
             WHERE kind = 'session_failed'
             ORDER BY rowid DESC

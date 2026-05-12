@@ -207,8 +207,13 @@ def test_phase_0_toolbroker_artifact_and_trace_acceptance(tmp_path) -> None:
         assert len(result.artifacts) == 1
         assert artifacts.get(result.artifacts[0]).artifact_type == "text"
         event_kinds = [event.kind for event in events.list_for_run(run.run_id)]
-        assert event_kinds == ["tool_call_started", "tool_call_completed"]
+        assert event_kinds == [
+            "tool_call_started",
+            "artifact_registered",
+            "tool_call_completed",
+        ]
         trace_text = trace.trace_path.read_text(encoding="utf-8")
+        assert "artifact_registered" in trace_text
         assert "tool_call_completed" in trace_text
         assert result.artifacts[0] in trace_text
     finally:

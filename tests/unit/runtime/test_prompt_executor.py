@@ -68,6 +68,7 @@ def test_prompt_executor_writes_model_events_assistant_event_and_turn_checkpoint
         "assistant_message",
         "checkpoint_written",
     ]
+    assert persisted_events[2].payload["duration"] >= 0
     assert latest_checkpoint.kind == "turn"
     assert latest_checkpoint.state["session_status"] == "running"
     assert latest_checkpoint.state["run_status"] == "running"
@@ -156,6 +157,12 @@ def test_prompt_executor_writes_failed_model_event_and_error_checkpoint(tmp_path
         "model_call_failed",
         "checkpoint_written",
     ]
+    failed_event = events.list_for_run(run.run_id)[2]
+    assert failed_event.payload["error_class"] == "model_error"
+    assert failed_event.payload["message"] == "provider failed"
+    assert failed_event.payload["source"] == "model"
+    assert failed_event.payload["recoverable"] is True
+    assert failed_event.payload["duration"] >= 0
     assert latest_checkpoint.kind == "error"
     assert latest_checkpoint.state["latest_error_summary"] == "provider failed"
     assert sessions.get(session.session_id).status == "running"
