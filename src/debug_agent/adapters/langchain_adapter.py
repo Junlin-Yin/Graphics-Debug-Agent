@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
+
+from langchain_core.tools import StructuredTool
 
 from debug_agent.runtime.contracts import AgentRunRequest, AgentRunResult, RunContext
 
@@ -20,8 +23,13 @@ class LangChainAgentLoopAdapter:
         if request.run_id in self._cancelled_runs:
             return _error_result("cancelled", "cancelled", "Run was cancelled.")
         messages = _compose_messages(request)
+        model = self.model
+        if request.tools and hasattr(model, "bind_tools"):
+            model = model.bind_tools(
+                _langchain_tools(request, context, tool_broker=self.tool_broker)
+            )
         try:
-            response = self.model.invoke(messages)
+            response = model.invoke(messages)
         except TimeoutError as exc:
             return _error_result("timeout", "timeout", str(exc), source="model")
         except KeyboardInterrupt as exc:
@@ -51,14 +59,7 @@ class LangChainAgentLoopAdapter:
             return []
         if self.tool_broker is None:
             raise RuntimeError("Tool calls require ToolBroker")
-        context_dict = {
-            "workspace_root": context.workspace_root,
-            "artifact_root": context.artifact_root,
-            "approval_mode": context.approval_mode,
-            "cancellation_token": context.cancellation_token,
-            "timeout_seconds": request.timeout_seconds,
-            "metadata": context.metadata,
-        }
+        context_dict = _tool_context(request, context)
         results = []
         for call in tool_calls:
             result = self.tool_broker.invoke(
@@ -70,6 +71,58 @@ class LangChainAgentLoopAdapter:
             )
             results.append(result.to_dict())
         return results
+
+
+def _langchain_tools(
+    request: AgentRunRequest, context: RunContext, *, tool_broker: object | None
+) -> list[StructuredTool]:
+    return [
+        StructuredTool(
+            name=tool["name"],
+            description=tool["description"],
+            args_schema=tool["input_schema"],
+            func=_tool_callable(
+                request=request,
+                context=context,
+                tool_name=tool["name"],
+                tool_broker=tool_broker,
+            ),
+        )
+        for tool in request.tools
+    ]
+
+
+def _tool_callable(
+    *,
+    request: AgentRunRequest,
+    context: RunContext,
+    tool_name: str,
+    tool_broker: object | None,
+) -> Callable[..., dict[str, Any]]:
+    def invoke_tool(**arguments: Any) -> dict[str, Any]:
+        if tool_broker is None:
+            raise RuntimeError("Tool calls require ToolBroker")
+        result = tool_broker.invoke(
+            request.session_id,
+            request.run_id,
+            tool_name,
+            dict(arguments),
+            _tool_context(request, context),
+        )
+        return result.to_dict()
+
+    return invoke_tool
+
+
+def _tool_context(request: AgentRunRequest, context: RunContext) -> dict[str, Any]:
+    return {
+        "workspace_root": context.workspace_root,
+        "artifact_root": context.artifact_root,
+        "approval_mode": context.approval_mode,
+        "cancellation_token": context.cancellation_token,
+        "timeout_seconds": request.timeout_seconds,
+        "metadata": context.metadata,
+    }
 
 
 def _compose_messages(request: AgentRunRequest) -> list[dict[str, str]]:
