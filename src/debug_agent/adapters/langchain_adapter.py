@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import json
 from typing import Any
 
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
 from debug_agent.runtime.contracts import AgentRunRequest, AgentRunResult, RunContext
@@ -11,6 +13,7 @@ from debug_agent.runtime.contracts import AgentRunRequest, AgentRunResult, RunCo
 RUNTIME_SAFETY_PREFIX = (
     "runtime safety: use only runtime-provided tools and do not bypass ToolBroker."
 )
+MAX_TOOL_CALL_ITERATIONS = 8
 
 
 class LangChainAgentLoopAdapter:
@@ -27,9 +30,29 @@ class LangChainAgentLoopAdapter:
         if request.tools and hasattr(model, "bind_tools"):
             model = model.bind_tools(
                 _langchain_tools(request, context, tool_broker=self.tool_broker)
-            )
+        )
+        tool_results: list[dict[str, Any]] = []
         try:
-            response = model.invoke(messages)
+            for _ in range(MAX_TOOL_CALL_ITERATIONS):
+                response = model.invoke(messages)
+                tool_calls = _tool_calls(response)
+                if not tool_calls:
+                    return AgentRunResult(
+                        status="completed",
+                        assistant_output=_response_content(response),
+                        tool_results=tool_results,
+                        usage=getattr(response, "usage", {}) or {},
+                        error=None,
+                        metadata={},
+                    )
+                invoked_results = self._invoke_tool_calls(request, context, tool_calls)
+                tool_results.extend(result.to_dict() for _, result in invoked_results)
+                messages.extend(_tool_loop_messages(response, invoked_results))
+            return _error_result(
+                "failed",
+                "internal_error",
+                "Tool call loop exceeded Phase 0 iteration limit.",
+            )
         except TimeoutError as exc:
             return _error_result("timeout", "timeout", str(exc), source="model")
         except KeyboardInterrupt as exc:
@@ -37,24 +60,15 @@ class LangChainAgentLoopAdapter:
         except Exception as exc:
             return _error_result("failed", "model_error", str(exc), source="model")
 
-        assistant_output = _response_content(response)
-        tool_results = self._invoke_tool_calls(request, context, response)
-        return AgentRunResult(
-            status="completed",
-            assistant_output=assistant_output,
-            tool_results=tool_results,
-            usage=getattr(response, "usage", {}) or {},
-            error=None,
-            metadata={},
-        )
-
     def cancel(self, run_id: str) -> None:
         self._cancelled_runs.add(run_id)
 
     def _invoke_tool_calls(
-        self, request: AgentRunRequest, context: RunContext, response: object
-    ) -> list[dict[str, Any]]:
-        tool_calls = getattr(response, "tool_calls", []) or []
+        self,
+        request: AgentRunRequest,
+        context: RunContext,
+        tool_calls: list[dict[str, Any]],
+    ) -> list[tuple[dict[str, Any], Any]]:
         if not tool_calls:
             return []
         if self.tool_broker is None:
@@ -69,7 +83,7 @@ class LangChainAgentLoopAdapter:
                 call.get("args", {}),
                 context_dict,
             )
-            results.append(result.to_dict())
+            results.append((call, result))
         return results
 
 
@@ -134,6 +148,55 @@ def _compose_messages(request: AgentRunRequest) -> list[dict[str, str]]:
         *request.conversation,
         {"role": "user", "content": request.user_input},
     ]
+
+
+def _tool_calls(response: object) -> list[dict[str, Any]]:
+    return list(getattr(response, "tool_calls", []) or [])
+
+
+def _normalized_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized = []
+    for index, call in enumerate(tool_calls):
+        normalized.append(
+            {
+                "name": call["name"],
+                "args": call.get("args", {}),
+                "id": str(call.get("id") or f"{call['name']}_{index}"),
+            }
+        )
+    return normalized
+
+
+def _tool_loop_messages(
+    response: object, invoked_results: list[tuple[dict[str, Any], Any]]
+) -> list[object]:
+    messages: list[object] = [_assistant_tool_message(response)]
+    for index, (call, result) in enumerate(invoked_results):
+        messages.append(
+            ToolMessage(
+                content=_tool_message_content(result.to_dict()),
+                tool_call_id=str(call.get("id") or f"{call['name']}_{index}"),
+            )
+        )
+    return messages
+
+
+def _assistant_tool_message(response: object) -> object:
+    if isinstance(response, AIMessage):
+        return response
+    return AIMessage(
+        content=_response_content(response),
+        tool_calls=_normalized_tool_calls(_tool_calls(response)),
+    )
+
+
+def _tool_message_content(result: dict[str, Any]) -> str:
+    output = result.get("redacted_output") or result.get("output")
+    if isinstance(output, str):
+        return output
+    if output is not None:
+        return json.dumps(output, sort_keys=True)
+    return json.dumps(result, sort_keys=True)
 
 
 def _response_content(response: object) -> str:

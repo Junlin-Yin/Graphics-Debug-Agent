@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from debug_agent.adapters.langchain_adapter import (
     LangChainAgentLoopAdapter,
+    MAX_TOOL_CALL_ITERATIONS,
     _langchain_tools,
 )
 from debug_agent.adapters.model_factory import FakeChatModel
@@ -86,11 +87,32 @@ def test_langchain_adapter_delegates_tool_calls_to_toolbroker() -> None:
                 redacted_output=None,
             )
 
+    class ToolLoopModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {"name": "read_file", "args": {"path": "a.txt"}}
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "used tool", "tool_calls": [], "usage": {}},
+            )()
+
     adapter = LangChainAgentLoopAdapter(
-        model=FakeChatModel(
-            response="used tool",
-            tool_calls=[{"name": "read_file", "args": {"path": "a.txt"}}],
-        ),
+        model=ToolLoopModel(),
         tool_broker=RecordingBroker(),
     )
 
@@ -123,6 +145,126 @@ def test_langchain_adapter_delegates_tool_calls_to_toolbroker() -> None:
             },
         )
     ]
+
+
+def test_langchain_adapter_feeds_tool_results_back_to_model() -> None:
+    calls = []
+
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            calls.append((session_id, run_id, tool_name, arguments, context))
+            return ToolResult(
+                status="ok",
+                output="file text",
+                error=None,
+                artifacts=[],
+                metadata={},
+                redacted_output=None,
+            )
+
+    class ToolLoopModel:
+        def __init__(self) -> None:
+            self.messages_by_call = []
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            self.messages_by_call.append(messages)
+            if len(self.messages_by_call) == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "read_file_0",
+                                "name": "read_file",
+                                "args": {"path": "a.txt"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "a.txt contains file text", "tool_calls": [], "usage": {}},
+            )()
+
+    model = ToolLoopModel()
+    adapter = LangChainAgentLoopAdapter(model=model, tool_broker=RecordingBroker())
+
+    result = adapter.run(_request(), _context())
+
+    assert result.status == "completed"
+    assert result.assistant_output == "a.txt contains file text"
+    assert len(model.messages_by_call) == 2
+    second_call_messages = model.messages_by_call[1]
+    assert second_call_messages[-1].content == "file text"
+    assert second_call_messages[-1].tool_call_id == "read_file_0"
+    assert calls == [
+        (
+            "sess_1",
+            "run_1",
+            "read_file",
+            {"path": "a.txt"},
+            {
+                "workspace_root": "/repo",
+                "artifact_root": "/repo/.sessions/sess_1/artifacts",
+                "approval_mode": "yolo",
+                "cancellation_token": None,
+                "timeout_seconds": 30,
+                "metadata": {},
+            },
+        )
+    ]
+
+
+def test_langchain_adapter_stops_after_phase_0_tool_call_iteration_limit() -> None:
+    class RepeatingToolModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            return type(
+                "Response",
+                (),
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": f"read_file_{self.calls}",
+                            "name": "read_file",
+                            "args": {"path": "a.txt"},
+                        }
+                    ],
+                    "usage": {},
+                },
+            )()
+
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="ok",
+                output="file text",
+                error=None,
+                artifacts=[],
+                metadata={},
+                redacted_output=None,
+            )
+
+    model = RepeatingToolModel()
+    adapter = LangChainAgentLoopAdapter(model=model, tool_broker=RecordingBroker())
+
+    result = adapter.run(_request(), _context())
+
+    assert model.calls == MAX_TOOL_CALL_ITERATIONS
+    assert result.status == "failed"
+    assert result.error["error_class"] == "internal_error"
+    assert "iteration limit" in result.error["message"]
 
 
 def test_langchain_adapter_converts_runtime_tool_schemas_to_structured_tools() -> None:

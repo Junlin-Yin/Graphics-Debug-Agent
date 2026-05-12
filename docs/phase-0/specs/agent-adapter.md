@@ -32,6 +32,19 @@ class AgentRunRequest:
 
 LangChain tool callables created by the adapter must delegate tool execution to `ToolBroker.invoke(...)`. They must not call native tools directly and must not write tool audit events directly.
 
+When a model returns tool calls, the adapter runs a bounded tool-calling loop
+inside the single `AgentLoopAdapter.run(...)` call:
+
+1. invoke the model with the composed prompt and runtime tool definitions
+2. delegate each returned tool call to `ToolBroker.invoke(...)`
+3. append the assistant tool-call message and corresponding tool result messages
+4. invoke the model again until it returns a final assistant response
+
+The adapter returns the final assistant response as `assistant_output` and returns
+the standardized `ToolResult` payloads in `tool_results`. The bounded loop is an
+internal Phase 0 safety guard against infinite tool-calling and is not a
+configuration setting.
+
 ```python
 class ToolDefinition:
     name: str
