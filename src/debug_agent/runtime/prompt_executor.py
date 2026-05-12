@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from time import monotonic
 from typing import Any
 from uuid import uuid4
 
@@ -45,15 +44,6 @@ class PromptAgentExecutor:
             kind="user_message",
             payload={"content": user_input},
         )
-        self._append_event(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            kind="model_call_started",
-            payload={
-                "provider": session.config_snapshot.get("provider"),
-                "model": session.config_snapshot.get("model"),
-            },
-        )
         request = AgentRunRequest(
             session_id=session.session_id,
             run_id=run.run_id,
@@ -70,21 +60,15 @@ class PromptAgentExecutor:
             approval_mode=session.approval_mode,
             cancellation_token=None,
             metadata={},
-        )
-        model_start = monotonic()
-        result = self.adapter.run(request, context)
-        duration = monotonic() - model_start
-        if result.status == "completed":
-            self._append_event(
+            model_event_recorder=lambda kind, payload: self._append_event(
                 session_id=session.session_id,
                 run_id=run.run_id,
-                kind="model_call_completed",
-                payload={
-                    "usage": result.usage,
-                    "metadata": result.metadata,
-                    "duration": duration,
-                },
-            )
+                kind=kind,
+                payload=payload,
+            ),
+        )
+        result = self.adapter.run(request, context)
+        if result.status == "completed":
             self._append_event(
                 session_id=session.session_id,
                 run_id=run.run_id,
@@ -107,12 +91,6 @@ class PromptAgentExecutor:
             )
         else:
             error = result.error or {}
-            self._append_event(
-                session_id=session.session_id,
-                run_id=run.run_id,
-                kind="model_call_failed",
-                payload={**_error_payload(error), "error": error, "duration": duration},
-            )
             checkpoint = self._save_checkpoint(
                 session=session,
                 run=run,
@@ -178,11 +156,3 @@ def _artifact_ids(result: AgentRunResult) -> list[str]:
         artifact_ids.extend(tool_result.get("artifacts", []))
     return artifact_ids
 
-
-def _error_payload(error: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "error_class": error.get("error_class", "internal_error"),
-        "message": error.get("message", "Prompt execution failed."),
-        "source": error.get("source", "prompt_executor"),
-        "recoverable": error.get("recoverable", False),
-    }

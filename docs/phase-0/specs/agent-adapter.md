@@ -36,14 +36,29 @@ When a model returns tool calls, the adapter runs a bounded tool-calling loop
 inside the single `AgentLoopAdapter.run(...)` call:
 
 1. invoke the model with the composed prompt and runtime tool definitions
-2. delegate each returned tool call to `ToolBroker.invoke(...)`
-3. append the assistant tool-call message and corresponding tool result messages
-4. invoke the model again until it returns a final assistant response
+2. record `model_call_completed` for that model invocation
+3. delegate each returned tool call to `ToolBroker.invoke(...)`
+4. append the assistant tool-call message and corresponding tool result messages
+5. invoke the model again until it returns a final assistant response
 
 The adapter returns the final assistant response as `assistant_output` and returns
 the standardized `ToolResult` payloads in `tool_results`. The bounded loop is an
 internal Phase 0 safety guard against infinite tool-calling and is not a
 configuration setting.
+
+For a tool-using turn, the expected event order is:
+
+```text
+model_call_started
+model_call_completed
+tool_call_started
+tool_call_completed
+model_call_started
+model_call_completed
+```
+
+Additional tool calls repeat the same completed-model-call then tool-call event
+pattern before the next model invocation.
 
 ```python
 class ToolDefinition:
@@ -69,7 +84,12 @@ class RunContext:
     approval_mode: str
     cancellation_token: object | None
     metadata: dict
+    model_event_recorder: callable | None
 ```
+
+`model_event_recorder` is provided by Runtime Core. The adapter uses it to write
+`model_call_started`, `model_call_completed`, and `model_call_failed` at the
+boundary of each actual model invocation.
 
 ```python
 class AgentRunResult:

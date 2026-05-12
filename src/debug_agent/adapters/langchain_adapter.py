@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import json
+from time import monotonic
 from typing import Any
 
 from langchain_core.messages import AIMessage, ToolMessage
@@ -34,7 +35,7 @@ class LangChainAgentLoopAdapter:
         tool_results: list[dict[str, Any]] = []
         try:
             for _ in range(MAX_TOOL_CALL_ITERATIONS):
-                response = model.invoke(messages)
+                response = _invoke_model(model, messages, request, context)
                 tool_calls = _tool_calls(response)
                 if not tool_calls:
                     return AgentRunResult(
@@ -148,6 +149,65 @@ def _compose_messages(request: AgentRunRequest) -> list[dict[str, str]]:
         *request.conversation,
         {"role": "user", "content": request.user_input},
     ]
+
+
+def _invoke_model(
+    model: object,
+    messages: list[object],
+    request: AgentRunRequest,
+    context: RunContext,
+) -> object:
+    recorder = context.model_event_recorder
+    if recorder is not None:
+        recorder(
+            "model_call_started",
+            {
+                "provider": request.model_config.get("provider"),
+                "model": request.model_config.get("model"),
+            },
+        )
+    start = monotonic()
+    try:
+        response = model.invoke(messages)
+    except TimeoutError as exc:
+        _record_model_failure(recorder, "timeout", str(exc), start)
+        raise
+    except KeyboardInterrupt as exc:
+        _record_model_failure(recorder, "cancelled", str(exc), start)
+        raise
+    except Exception as exc:
+        _record_model_failure(recorder, "model_error", str(exc), start)
+        raise
+    if recorder is not None:
+        recorder(
+            "model_call_completed",
+            {
+                "usage": getattr(response, "usage", {}) or {},
+                "metadata": {},
+                "duration": monotonic() - start,
+            },
+        )
+    return response
+
+
+def _record_model_failure(
+    recorder: Callable[[str, dict[str, Any]], None] | None,
+    error_class: str,
+    message: str,
+    start: float,
+) -> None:
+    if recorder is None:
+        return
+    error = {
+        "error_class": error_class,
+        "message": message,
+        "source": "model",
+        "recoverable": True,
+    }
+    recorder(
+        "model_call_failed",
+        {**error, "error": error, "duration": monotonic() - start},
+    )
 
 
 def _tool_calls(response: object) -> list[dict[str, Any]]:

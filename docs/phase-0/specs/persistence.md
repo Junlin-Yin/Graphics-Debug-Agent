@@ -132,8 +132,10 @@ CREATE TABLE artifacts (
 - Session row is written before model execution begins.
 - Run row is written before the first prompt turn.
 - `run_started` event is written before calling the adapter.
-- `model_call_started` is written before model call.
-- `model_call_completed` or `model_call_failed` is written after model call.
+- `model_call_started` is written before each model call.
+- `model_call_completed` or `model_call_failed` is written after each model call.
+- For tool-using turns, the model call that requested tools is completed before
+  any `tool_call_*` events for those requested tools are written.
 - `assistant_message` is written before final checkpoint.
 - A `turn` checkpoint is written after each completed one-shot and after each successful REPL turn.
 - A `terminal` checkpoint is written when the run/session exits successfully.

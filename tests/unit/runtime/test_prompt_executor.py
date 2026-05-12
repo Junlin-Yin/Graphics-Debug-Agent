@@ -27,7 +27,7 @@ def _runtime(tmp_path, model):
     session = sessions.create(
         workspace_root=workspace,
         approval_mode="yolo",
-        config_snapshot={"provider": "fake"},
+        config_snapshot={"provider": "fake", "timeout_seconds": 30},
         session_id="sess_1",
     )
     run = runs.create_prompt_run(session.session_id, run_id="run_1")
@@ -78,6 +78,64 @@ def test_prompt_executor_writes_model_events_assistant_event_and_turn_checkpoint
     assert runs.get(run.run_id).status == "running"
     assert sessions.get(session.session_id).latest_checkpoint_id == latest_checkpoint.checkpoint_id
     assert runs.get(run.run_id).latest_checkpoint_id == latest_checkpoint.checkpoint_id
+    db.close()
+
+
+def test_prompt_executor_records_model_completion_before_react_tool_events(
+    tmp_path,
+) -> None:
+    class ToolLoopModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "read_file_0",
+                                "name": "read_file",
+                                "args": {"path": "notes.txt"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "notes say hello", "tool_calls": [], "usage": {}},
+            )()
+
+    workspace, db, sessions, runs, events, checkpoints, session, run, executor = _runtime(
+        tmp_path, ToolLoopModel()
+    )
+    (workspace / "notes.txt").write_text("hello", encoding="utf-8")
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="read notes",
+        workspace_root=str(workspace),
+    )
+
+    assert result.assistant_output == "notes say hello"
+    assert [event.kind for event in events.list_for_run(run.run_id)] == [
+        "user_message",
+        "model_call_started",
+        "model_call_completed",
+        "tool_call_started",
+        "tool_call_completed",
+        "model_call_started",
+        "model_call_completed",
+        "assistant_message",
+        "checkpoint_written",
+    ]
     db.close()
 
 

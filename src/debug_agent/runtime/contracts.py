@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, Self
 
 
 CONTRACT_VERSION = 1
+ModelEventRecorder = Callable[[str, dict[str, Any]], None]
 
 SESSION_STATUSES = frozenset({"running", "completed", "failed"})
 APPROVAL_MODES = frozenset({"normal", "yolo"})
@@ -234,6 +236,7 @@ class RunContext:
     approval_mode: str
     cancellation_token: object | None
     metadata: dict[str, Any]
+    model_event_recorder: ModelEventRecorder | None = None
 
 
 @dataclass(frozen=True)
