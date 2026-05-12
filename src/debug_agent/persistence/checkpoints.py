@@ -91,6 +91,19 @@ class CheckpointStore:
         ).fetchone()
         return None if row is None else _checkpoint_from_row(row)
 
+    def list_for_session(self, session_id: str) -> list[Checkpoint]:
+        rows = self.connection.execute(
+            """
+            SELECT checkpoint_id, session_id, run_id, kind, state_json, summary,
+                   created_at, version
+            FROM checkpoints
+            WHERE session_id = ?
+            ORDER BY created_at ASC, rowid ASC
+            """,
+            (session_id,),
+        ).fetchall()
+        return [_checkpoint_from_row(row) for row in rows]
+
 
 def _checkpoint_from_row(row: tuple) -> Checkpoint:
     return Checkpoint(

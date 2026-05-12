@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from debug_agent.adapters.langchain_adapter import LangChainAgentLoopAdapter
 from debug_agent.adapters.model_factory import ModelFactory
+from debug_agent.observability.logging import write_runtime_log
+from debug_agent.observability.trace_writer import TraceWriter
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.checkpoints import CheckpointStore
 from debug_agent.persistence.errors import StoreError
@@ -30,6 +32,21 @@ class OneShotResult:
     message: str
     session_id: str | None
     run_id: str | None
+
+
+@dataclass(frozen=True)
+class StatusResult:
+    exit_code: int
+    fields: dict[str, Any]
+    message: str
+
+
+@dataclass(frozen=True)
+class TraceResult:
+    exit_code: int
+    trace_path: Path
+    summary: dict[str, Any]
+    message: str
 
 
 @dataclass(frozen=True)
@@ -88,18 +105,20 @@ class ReplRuntime:
     def status_lines(self) -> list[str]:
         session = self.sessions.get(self.session_id)
         latest_run = self.runs.latest_for_session(self.session_id)
-        return [
-            f"session_id: {session.session_id}",
-            f"workspace_root: {session.workspace_root}",
-            f"status: {session.status}",
-            f"approval_mode: {session.approval_mode}",
-            f"active_run_id: {session.active_run_id or ''}",
-            f"latest_run_id: {latest_run.run_id if latest_run else ''}",
-            f"latest_checkpoint_id: {session.latest_checkpoint_id or ''}",
-            f"created_at: {session.created_at}",
-            f"updated_at: {session.updated_at}",
-            f"error_summary: {session.error_summary or ''}",
-        ]
+        fields = {
+            "session_id": session.session_id,
+            "workspace_root": session.workspace_root,
+            "session_status": session.status,
+            "approval_mode": session.approval_mode,
+            "active_run_id": session.active_run_id,
+            "latest_run_id": latest_run.run_id if latest_run else None,
+            "latest_run_status": latest_run.status if latest_run else None,
+            "latest_checkpoint_id": session.latest_checkpoint_id,
+            "created_at": session.created_at,
+            "updated_at": session.updated_at,
+            "error_summary": session.error_summary,
+        }
+        return [f"{key}: {value or ''}" for key, value in fields.items()]
 
     def complete(self) -> None:
         if self.closed:
@@ -141,6 +160,7 @@ class ReplRuntime:
         _append_event(
             self.events, session.session_id, run.run_id, "session_completed", {}
         )
+        TraceWriter(self.db.connection).refresh_if_stale(session.session_id)
         self.close()
 
     def fail(self, result: AgentRunResult) -> None:
@@ -199,6 +219,16 @@ class RuntimeOrchestrator:
             except StoreError as exc:
                 active = sessions.find_active_for_workspace(self.workspace_root)
                 message = _active_conflict_message(active.session_id if active else "unknown")
+                if active is not None:
+                    write_runtime_log(
+                        db.connection,
+                        session_id=active.session_id,
+                        run_id=active.active_run_id,
+                        level="ERROR",
+                        event="ownership_conflict",
+                        message=message,
+                        metadata={"workspace_root": str(self.workspace_root)},
+                    )
                 return OneShotResult(
                     exit_code=3,
                     assistant_output=None,
@@ -247,6 +277,7 @@ class RuntimeOrchestrator:
                 )
                 _append_event(events, session.session_id, run.run_id, "run_completed", {})
                 _append_event(events, session.session_id, run.run_id, "session_completed", {})
+                TraceWriter(db.connection).refresh_if_stale(session.session_id)
                 return OneShotResult(
                     exit_code=0,
                     assistant_output=agent_result.assistant_output,
@@ -262,6 +293,65 @@ class RuntimeOrchestrator:
                 session_id=session.session_id,
                 run_id=run.run_id,
                 agent_result=agent_result,
+            )
+        finally:
+            db.close()
+
+    def status(self, session_id: str) -> StatusResult:
+        db = RuntimeDatabase.bootstrap(self.workspace_root)
+        try:
+            sessions = SessionStore(db.connection)
+            runs = RunStore(db.connection)
+            try:
+                session = sessions.get(session_id)
+            except StoreError as exc:
+                return StatusResult(exit_code=1, fields={}, message=exc.message)
+            latest_run = runs.latest_for_session(session.session_id)
+            fields = {
+                "session_id": session.session_id,
+                "workspace_root": session.workspace_root,
+                "session_status": session.status,
+                "approval_mode": session.approval_mode,
+                "active_run_id": session.active_run_id,
+                "latest_run_id": latest_run.run_id if latest_run else None,
+                "latest_run_status": latest_run.status if latest_run else None,
+                "latest_checkpoint_id": session.latest_checkpoint_id,
+                "created_at": session.created_at,
+                "updated_at": session.updated_at,
+                "error_summary": session.error_summary,
+            }
+            return StatusResult(exit_code=0, fields=fields, message="")
+        finally:
+            db.close()
+
+    def trace(self, session_id: str) -> TraceResult:
+        db = RuntimeDatabase.bootstrap(self.workspace_root)
+        try:
+            try:
+                result = TraceWriter(db.connection).refresh_if_stale(session_id)
+            except StoreError as exc:
+                return TraceResult(
+                    exit_code=1,
+                    trace_path=Path(),
+                    summary={},
+                    message=exc.message,
+                )
+            summary = {
+                "trace_path": str(result.trace_path),
+                "refreshed": result.refreshed,
+                "session_id": result.session_id,
+                "workspace_root": result.workspace_root,
+                "run_count": result.run_count,
+                "event_count": result.event_count,
+                "artifact_count": result.artifact_count,
+                "terminal_status": result.terminal_status,
+                "error_summary": result.error_summary,
+            }
+            return TraceResult(
+                exit_code=0,
+                trace_path=result.trace_path,
+                summary=summary,
+                message="",
             )
         finally:
             db.close()
@@ -294,8 +384,18 @@ class RuntimeOrchestrator:
             )
         except StoreError as exc:
             active = sessions.find_active_for_workspace(self.workspace_root)
-            db.close()
             message = _active_conflict_message(active.session_id if active else "unknown")
+            if active is not None:
+                write_runtime_log(
+                    db.connection,
+                    session_id=active.session_id,
+                    run_id=active.active_run_id,
+                    level="ERROR",
+                    event="ownership_conflict",
+                    message=message,
+                    metadata={"workspace_root": str(self.workspace_root)},
+                )
+            db.close()
             return ReplStartResult(
                 runtime=None,
                 error=ReplStartError(
@@ -384,6 +484,7 @@ class RuntimeOrchestrator:
             "session_failed",
             {"error": error},
         )
+        TraceWriter(events.connection).refresh_if_stale(session.session_id)
         return OneShotResult(
             exit_code=1,
             assistant_output=None,

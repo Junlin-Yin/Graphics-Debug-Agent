@@ -96,6 +96,20 @@ class RunStore:
         ).fetchone()
         return None if row is None else _run_from_row(row)
 
+    def list_for_session(self, session_id: str) -> list[Run]:
+        rows = self.connection.execute(
+            """
+            SELECT run_id, session_id, parent_run_id, run_type, status,
+                   active_skills_json, latest_checkpoint_id, context_snapshot_id,
+                   created_at, updated_at, error_summary, version
+            FROM runs
+            WHERE session_id = ?
+            ORDER BY created_at ASC, rowid ASC
+            """,
+            (session_id,),
+        ).fetchall()
+        return [_run_from_row(row) for row in rows]
+
     def mark_completed(
         self, run_id: str, latest_checkpoint_id: str | None = None
     ) -> Run:

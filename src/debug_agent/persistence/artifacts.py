@@ -91,6 +91,19 @@ class ArtifactStore:
         artifact = self.get(artifact_id)
         return self._sessions_root() / artifact.relative_path
 
+    def list_for_session(self, session_id: str) -> list[Artifact]:
+        rows = self.connection.execute(
+            """
+            SELECT artifact_id, session_id, run_id, relative_path, artifact_type,
+                   metadata_json, created_at, version
+            FROM artifacts
+            WHERE session_id = ?
+            ORDER BY created_at ASC, rowid ASC
+            """,
+            (session_id,),
+        ).fetchall()
+        return [_artifact_from_row(row) for row in rows]
+
     def _insert(
         self,
         *,

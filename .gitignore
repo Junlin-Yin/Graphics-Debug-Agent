@@ -1,5 +1,7 @@
 .codely-cli/
 .codex/
+.claude/
+.sessions/
 test.md
 
 # Byte-compiled / optimized / DLL files

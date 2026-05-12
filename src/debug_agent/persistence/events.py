@@ -4,6 +4,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 
+from debug_agent.observability.logging import write_event_log
 from debug_agent.runtime.contracts import RunEvent
 
 
@@ -32,7 +33,21 @@ class EventWriter:
             ),
         )
         self.connection.commit()
+        write_event_log(self.connection, event)
         return event
+
+    def list_for_session(self, session_id: str) -> list[RunEvent]:
+        rows = self.connection.execute(
+            """
+            SELECT event_id, timestamp, session_id, run_id, step_id, kind,
+                   payload_json, version
+            FROM run_events
+            WHERE session_id = ?
+            ORDER BY timestamp ASC, rowid ASC
+            """,
+            (session_id,),
+        ).fetchall()
+        return [_event_from_row(row) for row in rows]
 
     def list_for_run(self, run_id: str) -> list[RunEvent]:
         rows = self.connection.execute(
