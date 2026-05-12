@@ -4,8 +4,6 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from langchain_anthropic import ChatAnthropic
-
 
 @dataclass(frozen=True)
 class ModelFactoryResult:
@@ -97,7 +95,14 @@ class ModelFactory:
         }
         if base_url:
             kwargs["base_url"] = base_url
+        ChatAnthropic = _load_chat_anthropic()
         return ModelFactoryResult(model=ChatAnthropic(**kwargs), error=None)
+
+
+def _load_chat_anthropic():
+    from langchain_anthropic import ChatAnthropic
+
+    return ChatAnthropic
 
 
 def _config_error(message: str) -> dict[str, Any]:

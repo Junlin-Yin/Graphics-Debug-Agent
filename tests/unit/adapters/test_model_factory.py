@@ -1,6 +1,41 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+
 from debug_agent.adapters.model_factory import FakeChatModel, ModelFactory
+
+
+def test_model_factory_fake_provider_does_not_import_anthropic_dependency() -> None:
+    script = """
+import importlib.abc
+import sys
+
+class BlockAnthropic(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "langchain_anthropic" or fullname.startswith("langchain_anthropic."):
+            raise RuntimeError("langchain_anthropic must not be imported")
+        return None
+
+sys.meta_path.insert(0, BlockAnthropic())
+from debug_agent.adapters.model_factory import ModelFactory
+
+result = ModelFactory().create({
+    "provider": "fake",
+    "model": "fake-model",
+    "fake_response": "hello",
+})
+assert result.error is None
+assert result.model.invoke([]).content == "hello"
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_model_factory_creates_fake_model_for_tests() -> None:
@@ -62,8 +97,8 @@ def test_model_factory_constructs_anthropic_model_without_exposing_secret(
             captured.update(kwargs)
 
     monkeypatch.setattr(
-        "debug_agent.adapters.model_factory.ChatAnthropic",
-        DummyChatAnthropic,
+        "debug_agent.adapters.model_factory._load_chat_anthropic",
+        lambda: DummyChatAnthropic,
     )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "secret-token")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.example.test")
