@@ -117,3 +117,74 @@ Runnable state: a completed one-shot or REPL session is inspectable after proces
 - [ ] Verify no skill/subagent/workflow/MCP/plugin command is required or exposed for Phase 0.
 
 Runnable state: Phase 0 meets `docs/phase-0/scope.md` completion definition.
+
+## Milestone 9: Cancellation, Timeout, And Terminal Failure Closure
+
+- [ ] Add tests proving REPL Ctrl+C after session creation records session and run as `failed`.
+- [ ] Ensure Ctrl+C failure uses error class `cancelled`.
+- [ ] Ensure Ctrl+C writes an `error` checkpoint when session/run state exists.
+- [ ] Ensure Ctrl+C releases workspace active ownership.
+- [ ] Add tests proving mid-call model cancellation records terminal `failed/cancelled` state and releases ownership.
+- [ ] Add tests proving model timeout records terminal `failed/timeout` state and releases ownership.
+- [ ] Implement the minimal runtime cancellation/failure handling required by those tests.
+- [ ] Verify with `uv run pytest tests/unit/cli tests/unit/runtime tests/integration -v`.
+
+Runnable state: observed cancellation or timeout never leaves a Phase 0 session or run stuck in `running`.
+
+## Milestone 10: ToolBroker Timeout And Runtime Config Closure
+
+- [ ] Add a regression test proving ToolBroker returns a timeout result without waiting for the full tool handler duration.
+- [ ] Fix ToolBroker timeout execution so `ToolResult(status="timeout")` returns promptly and writes `tool_call_failed`.
+- [ ] Add tests proving runtime config `timeout_seconds` is passed into ToolBroker invocation context.
+- [ ] Ensure one-shot and REPL tool calls both honor the frozen session config timeout.
+- [ ] Verify with `uv run pytest tests/unit/tools tests/unit/adapters tests/unit/runtime -v`.
+
+Runnable state: ToolBroker timeout behavior matches `docs/phase-0/specs/toolbroker.md`, including runtime config override.
+
+## Milestone 11: LangChain Tool Binding Closure
+
+- [ ] Add adapter tests proving runtime `ToolDefinition` schemas are converted into LangChain-compatible tool callables.
+- [ ] Ensure generated LangChain tool callables delegate execution only to `ToolBroker.invoke(...)`.
+- [ ] Ensure generated tool callables do not call native tools directly and do not write audit events directly.
+- [ ] Keep fake-model tests network-free and deterministic.
+- [ ] Verify with `uv run pytest tests/unit/adapters tests/unit/tools -v`.
+
+Runnable state: real LangChain-compatible model paths can receive Phase 0 read-only tool definitions through the adapter boundary.
+
+## Milestone 12: Observability And Error Payload Closure
+
+- [ ] Add tests proving artifact creation writes an `artifact_registered` run event.
+- [ ] Ensure large ToolBroker output produces artifact metadata, a ToolResult artifact reference, a tool audit event, and an `artifact_registered` event.
+- [ ] Add tests proving model call completed events include duration metadata required by trace rendering.
+- [ ] Add tests proving every error event payload exposes `error_class`, `message`, `source`, and `recoverable` at the event payload level.
+- [ ] Update trace tests to cover `artifact_registered`, model duration, tool audit duration, terminal failure, and error summary rendering.
+- [ ] Verify with `uv run pytest tests/unit/observability tests/unit/runtime tests/unit/tools tests/integration -v`.
+
+Runnable state: `engine.log` and `trace.md` expose the Phase 0 observability facts required by `docs/phase-0/specs/observability.md`.
+
+## Milestone 13: Failure Scenario Acceptance Closure
+
+- [ ] Add integration coverage for all remaining `docs/phase-0/tests.md` failure scenarios not covered by Milestones 9-12.
+- [ ] Cover invalid config and config failure behavior, including exit code `4`.
+- [ ] Cover artifact path missing during trace rendering.
+- [ ] Cover SQLite migration/bootstrap failure as an explicit surfaced failure, without silent success.
+- [ ] Re-run reserved command checks to confirm no Phase 1+ command is exposed or required.
+- [ ] Verify with `uv run pytest tests/integration -v`.
+
+Runnable state: every Phase 0 documented failure scenario has either a passing test or an explicitly documented reason it is not executable in Phase 0.
+
+## Milestone 14: Strict Phase 0 Acceptance Pass
+
+- [ ] Run `uv run pytest tests/unit -v`.
+- [ ] Run `uv run pytest tests/integration -v`.
+- [ ] Run `uv run pytest -v`.
+- [ ] Run one-shot smoke with fake model config: `debug-agent -p "hello"`.
+- [ ] Run status smoke against the created session: `debug-agent status <session_id>`.
+- [ ] Run trace smoke against the created session: `debug-agent trace <session_id>`.
+- [ ] Run REPL smoke with fake model config: `hello`, `/status`, `tell me one more thing`, `/exit`.
+- [ ] Confirm `.sessions/runtime.db` contains session, run, event, checkpoint rows for baseline executions.
+- [ ] Confirm artifact rows exist only for executions that produce artifacts.
+- [ ] Confirm no session remains `running` after successful exit, failed execution, timeout, or cancellation.
+- [ ] Confirm no Phase 1+ feature is required for Phase 0 acceptance.
+
+Runnable state: Phase 0 satisfies `docs/phase-0/scope.md`, all Phase 0 specs, and `docs/phase-0/tests.md`.
