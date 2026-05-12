@@ -61,6 +61,16 @@ def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
             defaults=defaults,
         )
 
+    if provider == "fake":
+        runtime_settings = _resolve_runtime_settings(config_defaults, defaults)
+        snapshot = {
+            "provider": provider,
+            "model": model,
+            **runtime_settings,
+            "fake_response": config_defaults.get("fake_response", "fake response"),
+        }
+        return ConfigLoadResult(snapshot=snapshot, error=None, defaults=defaults)
+
     if provider != "anthropic":
         return ConfigLoadResult(
             snapshot=None,

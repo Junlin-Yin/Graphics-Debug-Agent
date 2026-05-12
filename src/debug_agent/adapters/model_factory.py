@@ -58,8 +58,12 @@ class ModelFactory:
     def create(self, config_snapshot: dict[str, Any]) -> ModelFactoryResult:
         provider = config_snapshot.get("provider")
         if provider == "fake":
+            fake_error = config_snapshot.get("fake_error")
             return ModelFactoryResult(
-                model=FakeChatModel(response=config_snapshot.get("fake_response", "fake response")),
+                model=FakeChatModel(
+                    response=config_snapshot.get("fake_response", "fake response"),
+                    error=RuntimeError(fake_error) if fake_error else None,
+                ),
                 error=None,
             )
         if provider != "anthropic":

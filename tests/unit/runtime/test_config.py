@@ -98,6 +98,38 @@ base_url_env = "ANTHROPIC_BASE_URL"
     assert "secret-value" not in str(result.snapshot)
 
 
+def test_config_snapshot_allows_fake_provider_for_tests(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    config_dir = home / ".debug-agent"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.toml").write_text(
+        """
+[defaults]
+provider = "fake"
+model = "fake-model"
+fake_response = "hello"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    result = load_config_snapshot()
+
+    assert result.error is None
+    assert result.snapshot == {
+        "provider": "fake",
+        "model": "fake-model",
+        "temperature": 0.2,
+        "max_tokens": 8192,
+        "timeout_seconds": 120,
+        "system_prompt": (
+            "You are debug-agent, a local debugging assistant. Answer "
+            "concisely and use only tools exposed by the runtime."
+        ),
+        "fake_response": "hello",
+    }
+
+
 def test_unsupported_provider_returns_config_error(tmp_path, monkeypatch) -> None:
     home = tmp_path / "home"
     config_dir = home / ".debug-agent"
