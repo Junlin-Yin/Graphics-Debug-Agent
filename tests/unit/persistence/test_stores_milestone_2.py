@@ -1,3 +1,4 @@
+import re
 import sqlite3
 
 from debug_agent.persistence.artifacts import ArtifactStore
@@ -69,6 +70,27 @@ def test_session_store_creates_and_rejects_active_workspace_conflict(tmp_path) -
         raise AssertionError("second running session must be rejected")
     finally:
         db.close()
+
+
+def test_session_store_default_session_id_uses_creation_timestamp_and_short_hash(
+    tmp_path,
+) -> None:
+    workspace, db, sessions, *_ = _stores(tmp_path)
+
+    session = sessions.create(
+        workspace_root=workspace,
+        approval_mode="yolo",
+        config_snapshot={"provider": "anthropic"},
+    )
+
+    assert re.fullmatch(
+        r"sess_\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-[0-9a-f]{4}",
+        session.session_id,
+    )
+    assert session.artifact_root == str(
+        workspace.resolve() / ".sessions" / session.session_id / "artifacts"
+    )
+    db.close()
 
 
 def test_session_store_releases_ownership_after_terminal_status(tmp_path) -> None:

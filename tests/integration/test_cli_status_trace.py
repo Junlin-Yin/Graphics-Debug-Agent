@@ -42,7 +42,10 @@ def _run_one_shot(tmp_path):
         check=False,
     )
     assert result.returncode == 0
-    session_id = re.search(r"sess_[0-9a-f]+", result.stderr + result.stdout)
+    session_id = re.search(
+        r"sess_\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-[0-9a-f]{4}",
+        result.stderr + result.stdout,
+    )
     if session_id is None:
         db_path = workspace / ".sessions" / "runtime.db"
         import sqlite3

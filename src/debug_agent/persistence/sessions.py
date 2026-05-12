@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -22,7 +23,7 @@ class SessionStore:
         config_snapshot: dict,
         session_id: str | None = None,
     ) -> Session:
-        session_id = session_id or f"sess_{uuid4().hex}"
+        session_id = session_id or _default_session_id()
         workspace = Path(workspace_root).resolve()
         artifact_root = workspace / ".sessions" / session_id / "artifacts"
         now = utc_now_iso()
@@ -183,3 +184,8 @@ def _session_from_row(row: tuple) -> Session:
         error_summary=row[10],
         version=row[11],
     )
+
+
+def _default_session_id() -> str:
+    created_at = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    return f"sess_{created_at}-{uuid4().hex[:4]}"

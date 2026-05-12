@@ -17,6 +17,17 @@ The storage root is `<workspace_root>/.sessions/`.
 
 SQLite is the metadata and audit truth. Filesystem is the artifact truth.
 
+Default generated session ids use the local creation timestamp plus a short random
+suffix:
+
+```text
+sess_YYYY-mm-dd-HH-MM-ss-hash
+```
+
+`hash` is the first four lowercase hexadecimal characters from the generated
+session randomness. Explicitly supplied `session_id` values are stored as
+provided.
+
 ## SQLite Tables
 
 ### `sessions`
