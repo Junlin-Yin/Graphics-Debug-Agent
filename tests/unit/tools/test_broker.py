@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from time import monotonic
 
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.events import EventWriter
@@ -135,11 +136,12 @@ def test_timeout_returns_timeout_result_and_failed_audit_event(tmp_path) -> None
     workspace, db, broker, session, run = _runtime(tmp_path)
 
     def slow_handler(_workspace: Path, _arguments: dict):
-        time.sleep(0.2)
+        time.sleep(0.3)
         return "late"
 
     broker._tool_handlers["read_file"] = slow_handler
 
+    start = monotonic()
     result = _invoke(
         broker,
         session,
@@ -149,12 +151,15 @@ def test_timeout_returns_timeout_result_and_failed_audit_event(tmp_path) -> None
         workspace,
         timeout_seconds=0.01,
     )
+    elapsed = monotonic() - start
 
     events = EventWriter(db.connection).list_for_run(run.run_id)
     assert result.status == "timeout"
     assert result.error["error_class"] == "timeout"
+    assert elapsed < 0.1
     assert [event.kind for event in events] == [
         "tool_call_started",
         "tool_call_failed",
     ]
+    assert events[-1].payload["error_class"] == "timeout"
     db.close()

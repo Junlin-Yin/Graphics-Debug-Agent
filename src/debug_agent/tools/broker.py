@@ -69,11 +69,15 @@ class ToolBroker:
             },
         )
         handler = self._tool_handlers[tool_name]
+        executor: ThreadPoolExecutor | None = None
         try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(handler, workspace_root, normalized_arguments)
-                output = future.result(timeout=timeout_seconds)
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(handler, workspace_root, normalized_arguments)
+            output = future.result(timeout=timeout_seconds)
         except TimeoutError:
+            future.cancel()
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
             result = ToolResult(
                 status="timeout",
                 output=None,
@@ -100,6 +104,8 @@ class ToolBroker:
             )
             return result
         except Exception as exc:
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
             result = ToolResult(
                 status="error",
                 output=None,
@@ -125,6 +131,9 @@ class ToolBroker:
                 ),
             )
             return result
+        else:
+            if executor is not None:
+                executor.shutdown(wait=True)
 
         result = self._ok_result(
             session_id=session_id,

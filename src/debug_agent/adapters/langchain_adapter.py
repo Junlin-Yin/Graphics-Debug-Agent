@@ -56,6 +56,7 @@ class LangChainAgentLoopAdapter:
             "artifact_root": context.artifact_root,
             "approval_mode": context.approval_mode,
             "cancellation_token": context.cancellation_token,
+            "timeout_seconds": request.timeout_seconds,
             "metadata": context.metadata,
         }
         results = []

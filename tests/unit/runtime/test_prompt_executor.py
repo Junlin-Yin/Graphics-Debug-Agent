@@ -9,6 +9,7 @@ from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
 from debug_agent.runtime.config import PHASE_0_SYSTEM_PROMPT
+from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.prompt_executor import PromptAgentExecutor
 from debug_agent.tools.broker import ToolBroker
 from debug_agent.tools.native_readonly import tool_definitions
@@ -76,6 +77,61 @@ def test_prompt_executor_writes_model_events_assistant_event_and_turn_checkpoint
     assert runs.get(run.run_id).status == "running"
     assert sessions.get(session.session_id).latest_checkpoint_id == latest_checkpoint.checkpoint_id
     assert runs.get(run.run_id).latest_checkpoint_id == latest_checkpoint.checkpoint_id
+    db.close()
+
+
+def test_prompt_executor_passes_session_timeout_to_adapter_request(tmp_path) -> None:
+    class RecordingAdapter:
+        def __init__(self) -> None:
+            self.timeout_seconds = None
+
+        def run(self, request, context):
+            self.timeout_seconds = request.timeout_seconds
+            return AgentRunResult(
+                status="completed",
+                assistant_output="answer",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+        def cancel(self, run_id: str) -> None:
+            raise AssertionError("cancel should not be called")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    db = RuntimeDatabase.bootstrap(workspace)
+    sessions = SessionStore(db.connection)
+    runs = RunStore(db.connection)
+    events = EventWriter(db.connection)
+    checkpoints = CheckpointStore(db.connection)
+    session = sessions.create(
+        workspace_root=workspace,
+        approval_mode="yolo",
+        config_snapshot={"provider": "fake", "timeout_seconds": 7},
+        session_id="sess_1",
+    )
+    run = runs.create_prompt_run(session.session_id, run_id="run_1")
+    sessions.set_active_run(session.session_id, run.run_id)
+    adapter = RecordingAdapter()
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        adapter=adapter,
+        tool_definitions=tool_definitions(),
+        system_prompt=PHASE_0_SYSTEM_PROMPT,
+    )
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="hello",
+        workspace_root=str(workspace),
+    )
+
+    assert result.status == "completed"
+    assert adapter.timeout_seconds == 7
     db.close()
 
 

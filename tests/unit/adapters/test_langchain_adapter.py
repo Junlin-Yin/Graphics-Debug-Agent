@@ -115,6 +115,7 @@ def test_langchain_adapter_delegates_tool_calls_to_toolbroker() -> None:
                 "artifact_root": "/repo/.sessions/sess_1/artifacts",
                 "approval_mode": "yolo",
                 "cancellation_token": None,
+                "timeout_seconds": 30,
                 "metadata": {},
             },
         )
