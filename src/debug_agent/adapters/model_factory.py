@@ -61,6 +61,8 @@ class ModelFactory:
                 model=FakeChatModel(
                     response=config_snapshot.get("fake_response", "fake response"),
                     error=RuntimeError(fake_error) if fake_error else None,
+                    timeout=bool(config_snapshot.get("fake_timeout", False)),
+                    cancelled=bool(config_snapshot.get("fake_cancelled", False)),
                 ),
                 error=None,
             )

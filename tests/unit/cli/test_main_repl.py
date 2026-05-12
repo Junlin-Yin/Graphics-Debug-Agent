@@ -3,7 +3,9 @@ from __future__ import annotations
 import io
 import sqlite3
 
+import pytest
 from debug_agent.cli.main import main
+from debug_agent.cli.repl import run_repl
 
 
 def _write_fake_config(
@@ -142,3 +144,77 @@ def test_repl_rejects_ordinary_input_while_execution_is_active(
 
     assert should_continue is True
     assert "Prompt run is already executing." in output.getvalue()
+
+
+def test_repl_ctrl_c_after_session_creation_marks_failed_and_releases_ownership(
+    tmp_path,
+) -> None:
+    class InterruptingInput:
+        def __iter__(self):
+            return self
+
+        def __next__(self) -> str:
+            raise KeyboardInterrupt
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_snapshot = {
+        "provider": "fake",
+        "model": "fake-model",
+        "fake_response": "unused",
+        "temperature": 0.2,
+        "max_tokens": 8192,
+        "timeout_seconds": 120,
+        "system_prompt": (
+            "You are debug-agent, a local debugging assistant. Answer concisely "
+            "and use only tools exposed by the runtime."
+        ),
+    }
+
+    try:
+        exit_code = run_repl(
+            config_snapshot,
+            input_stream=InterruptingInput(),
+            output_stream=io.StringIO(),
+            error_stream=io.StringIO(),
+            workspace_root=workspace,
+        )
+    except KeyboardInterrupt:
+        pytest.fail("REPL Ctrl+C must be recorded as terminal failed state")
+
+    assert exit_code == 1
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        session_status, active_run_id, session_error = conn.execute(
+            "SELECT status, active_run_id, error_summary FROM sessions"
+        ).fetchone()
+        run_status, run_error = conn.execute(
+            "SELECT status, error_summary FROM runs"
+        ).fetchone()
+        checkpoint_kind, checkpoint_state = conn.execute(
+            "SELECT kind, state_json FROM checkpoints ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        failed_error_class = conn.execute(
+            """
+            SELECT json_extract(payload_json, '$.error.error_class')
+            FROM run_events
+            WHERE kind = 'session_failed'
+            ORDER BY rowid DESC
+            LIMIT 1
+            """
+        ).fetchone()[0]
+
+    assert (session_status, active_run_id, run_status) == ("failed", None, "failed")
+    assert session_error == "REPL interrupted by Ctrl+C."
+    assert run_error == "REPL interrupted by Ctrl+C."
+    assert checkpoint_kind == "error"
+    assert '"latest_error_summary": "REPL interrupted by Ctrl+C."' in checkpoint_state
+    assert failed_error_class == "cancelled"
+
+    second_exit = run_repl(
+        config_snapshot,
+        input_stream=io.StringIO("/exit\n"),
+        output_stream=io.StringIO(),
+        error_stream=io.StringIO(),
+        workspace_root=workspace,
+    )
+    assert second_exit == 0

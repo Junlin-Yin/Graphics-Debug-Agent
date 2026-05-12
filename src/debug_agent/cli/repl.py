@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
+from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.orchestrator import ReplRuntime, RuntimeOrchestrator
 
 
@@ -101,5 +102,22 @@ def run_repl(
                 return controller.exit_code
         controller.runtime.complete()
         return 0
+    except KeyboardInterrupt:
+        controller.runtime.fail(
+            AgentRunResult(
+                status="cancelled",
+                assistant_output=None,
+                tool_results=[],
+                usage={},
+                error={
+                    "error_class": "cancelled",
+                    "message": "REPL interrupted by Ctrl+C.",
+                    "source": "cli",
+                    "recoverable": False,
+                },
+                metadata={"prompt_turn_counter": controller.runtime.turn_counter},
+            )
+        )
+        return 1
     finally:
         controller.close()

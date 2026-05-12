@@ -78,6 +78,96 @@ def test_one_shot_model_failure_marks_run_and_session_failed(tmp_path) -> None:
     assert "session_failed" in event_kinds
 
 
+def test_one_shot_model_cancellation_marks_failed_and_releases_ownership(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = _config()
+    config["fake_cancelled"] = True
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot("hello", config)
+
+    assert result.exit_code == 1
+    assert result.assistant_output is None
+    assert result.error["error_class"] == "cancelled"
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        session_status, active_run_id, session_error = conn.execute(
+            "SELECT status, active_run_id, error_summary FROM sessions"
+        ).fetchone()
+        run_status, run_error = conn.execute(
+            "SELECT status, error_summary FROM runs"
+        ).fetchone()
+        checkpoint_kind, checkpoint_state = conn.execute(
+            "SELECT kind, state_json FROM checkpoints ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        failed_error_class = conn.execute(
+            """
+            SELECT json_extract(payload_json, '$.error.error_class')
+            FROM run_events
+            WHERE kind = 'session_failed'
+            ORDER BY rowid DESC
+            LIMIT 1
+            """
+        ).fetchone()[0]
+
+    assert (session_status, active_run_id, run_status) == ("failed", None, "failed")
+    assert session_error == "fake model cancelled"
+    assert run_error == "fake model cancelled"
+    assert checkpoint_kind == "error"
+    assert '"latest_error_summary": "fake model cancelled"' in checkpoint_state
+    assert failed_error_class == "cancelled"
+
+    second = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
+        "hello", _config()
+    )
+    assert second.exit_code == 0
+
+
+def test_one_shot_model_timeout_marks_failed_and_releases_ownership(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = _config()
+    config["fake_timeout"] = True
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot("hello", config)
+
+    assert result.exit_code == 1
+    assert result.assistant_output is None
+    assert result.error["error_class"] == "timeout"
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        session_status, active_run_id, session_error = conn.execute(
+            "SELECT status, active_run_id, error_summary FROM sessions"
+        ).fetchone()
+        run_status, run_error = conn.execute(
+            "SELECT status, error_summary FROM runs"
+        ).fetchone()
+        checkpoint_kind, checkpoint_state = conn.execute(
+            "SELECT kind, state_json FROM checkpoints ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        failed_error_class = conn.execute(
+            """
+            SELECT json_extract(payload_json, '$.error.error_class')
+            FROM run_events
+            WHERE kind = 'session_failed'
+            ORDER BY rowid DESC
+            LIMIT 1
+            """
+        ).fetchone()[0]
+
+    assert (session_status, active_run_id, run_status) == ("failed", None, "failed")
+    assert session_error == "fake model timeout"
+    assert run_error == "fake model timeout"
+    assert checkpoint_kind == "error"
+    assert '"latest_error_summary": "fake model timeout"' in checkpoint_state
+    assert failed_error_class == "timeout"
+
+    second = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
+        "hello", _config()
+    )
+    assert second.exit_code == 0
+
+
 def test_one_shot_active_workspace_conflict_returns_policy_exit(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

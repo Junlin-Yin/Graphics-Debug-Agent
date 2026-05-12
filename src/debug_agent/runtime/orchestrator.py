@@ -170,6 +170,7 @@ class ReplRuntime:
             sessions=self.sessions,
             runs=self.runs,
             events=self.events,
+            checkpoints=self.checkpoints,
             session_id=self.session_id,
             run_id=self.run_id,
             agent_result=result,
@@ -290,6 +291,7 @@ class RuntimeOrchestrator:
                 sessions=sessions,
                 runs=runs,
                 events=events,
+                checkpoints=checkpoints,
                 session_id=session.session_id,
                 run_id=run.run_id,
                 agent_result=agent_result,
@@ -448,6 +450,7 @@ class RuntimeOrchestrator:
         sessions: SessionStore,
         runs: RunStore,
         events: EventWriter,
+        checkpoints: CheckpointStore | None = None,
         session_id: str,
         run_id: str,
         agent_result: AgentRunResult,
@@ -460,15 +463,47 @@ class RuntimeOrchestrator:
         }
         latest_run = runs.get(run_id)
         latest_session = sessions.get(session_id)
+        latest_checkpoint_id = latest_run.latest_checkpoint_id
+        if checkpoints is not None:
+            latest_checkpoint = checkpoints.latest_for_run(run_id)
+            if latest_checkpoint is None or latest_checkpoint.kind != "error":
+                checkpoint = checkpoints.save(
+                    Checkpoint(
+                        checkpoint_id=f"chk_{uuid4().hex}",
+                        session_id=session_id,
+                        run_id=run_id,
+                        kind="error",
+                        state={
+                            "session_status": latest_session.status,
+                            "run_status": latest_run.status,
+                            "prompt_turn_counter": agent_result.metadata.get(
+                                "prompt_turn_counter", 0
+                            ),
+                            "latest_model_response_metadata": agent_result.metadata,
+                            "latest_artifact_ids": [],
+                            "latest_error_summary": error["message"],
+                        },
+                        summary=error["message"],
+                        created_at=utc_now_iso(),
+                    )
+                )
+                _append_event(
+                    events,
+                    session_id,
+                    run_id,
+                    "checkpoint_written",
+                    {"checkpoint_id": checkpoint.checkpoint_id, "kind": checkpoint.kind},
+                )
+                latest_checkpoint_id = checkpoint.checkpoint_id
         run = runs.mark_failed(
             run_id,
             error["message"],
-            latest_checkpoint_id=latest_run.latest_checkpoint_id,
+            latest_checkpoint_id=latest_checkpoint_id,
         )
         session = sessions.mark_failed(
             session_id,
             error["message"],
-            latest_checkpoint_id=latest_session.latest_checkpoint_id,
+            latest_checkpoint_id=latest_checkpoint_id,
         )
         _append_event(
             events,
@@ -504,7 +539,7 @@ def _append_event(
 ) -> None:
     event_writer.append(
         RunEvent(
-            event_id=f"evt_{utc_now_iso().replace(':', '').replace('-', '')}_{kind}",
+            event_id=f"evt_{uuid4().hex}",
             timestamp=utc_now_iso(),
             session_id=session_id,
             run_id=run_id,

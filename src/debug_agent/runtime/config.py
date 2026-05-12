@@ -71,6 +71,10 @@ def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
         }
         if "fake_error" in config_defaults:
             snapshot["fake_error"] = config_defaults["fake_error"]
+        if "fake_timeout" in config_defaults:
+            snapshot["fake_timeout"] = config_defaults["fake_timeout"]
+        if "fake_cancelled" in config_defaults:
+            snapshot["fake_cancelled"] = config_defaults["fake_cancelled"]
         return ConfigLoadResult(snapshot=snapshot, error=None, defaults=defaults)
 
     if provider != "anthropic":
