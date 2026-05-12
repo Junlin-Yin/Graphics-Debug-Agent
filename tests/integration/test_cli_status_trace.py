@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+
+
+def _subprocess_env(home: Path) -> dict[str, str]:
+    return {**os.environ, "HOME": str(home)}
 
 
 def _write_fake_config(home: Path, response: str = "integration answer") -> None:
@@ -31,7 +36,7 @@ def _run_one_shot(tmp_path):
     result = subprocess.run(
         [executable, "-p", "hello"],
         cwd=workspace,
-        env={"HOME": str(home)},
+        env=_subprocess_env(home),
         capture_output=True,
         text=True,
         check=False,
@@ -56,7 +61,7 @@ def test_status_and_trace_commands_inspect_completed_one_shot(tmp_path) -> None:
     status = subprocess.run(
         [executable, "status", session_id],
         cwd=workspace,
-        env={"HOME": str(home)},
+        env=_subprocess_env(home),
         capture_output=True,
         text=True,
         check=False,
@@ -64,7 +69,7 @@ def test_status_and_trace_commands_inspect_completed_one_shot(tmp_path) -> None:
     trace = subprocess.run(
         [executable, "trace", session_id],
         cwd=workspace,
-        env={"HOME": str(home)},
+        env=_subprocess_env(home),
         capture_output=True,
         text=True,
         check=False,
@@ -116,7 +121,7 @@ def test_status_and_trace_missing_session_errors(tmp_path) -> None:
     status = subprocess.run(
         [executable, "status", "sess_missing"],
         cwd=workspace,
-        env={"HOME": str(home)},
+        env=_subprocess_env(home),
         capture_output=True,
         text=True,
         check=False,
@@ -124,7 +129,7 @@ def test_status_and_trace_missing_session_errors(tmp_path) -> None:
     trace = subprocess.run(
         [executable, "trace", "sess_missing"],
         cwd=workspace,
-        env={"HOME": str(home)},
+        env=_subprocess_env(home),
         capture_output=True,
         text=True,
         check=False,

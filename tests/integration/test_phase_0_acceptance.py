@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -13,6 +14,10 @@ from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
 from debug_agent.tools.broker import ToolBroker
+
+
+def _subprocess_env(home: Path) -> dict[str, str]:
+    return {**os.environ, "HOME": str(home)}
 
 
 def _write_fake_config(home: Path, response: str = "acceptance answer") -> None:
@@ -49,7 +54,7 @@ def test_phase_0_one_shot_status_trace_and_persistence_acceptance(tmp_path) -> N
     one_shot = subprocess.run(
         [executable, "-p", "hello"],
         cwd=workspace,
-        env={"HOME": str(home)},
+        env=_subprocess_env(home),
         capture_output=True,
         text=True,
         check=False,
@@ -58,7 +63,7 @@ def test_phase_0_one_shot_status_trace_and_persistence_acceptance(tmp_path) -> N
     status = subprocess.run(
         [executable, "status", session_id],
         cwd=workspace,
-        env={"HOME": str(home)},
+        env=_subprocess_env(home),
         capture_output=True,
         text=True,
         check=False,
@@ -66,7 +71,7 @@ def test_phase_0_one_shot_status_trace_and_persistence_acceptance(tmp_path) -> N
     trace = subprocess.run(
         [executable, "trace", session_id],
         cwd=workspace,
-        env={"HOME": str(home)},
+        env=_subprocess_env(home),
         capture_output=True,
         text=True,
         check=False,
@@ -121,7 +126,7 @@ def test_phase_0_repl_two_turn_acceptance(tmp_path) -> None:
     repl = subprocess.run(
         [_console_script()],
         cwd=workspace,
-        env={"HOME": str(home)},
+        env=_subprocess_env(home),
         input="hello\n/status\ntell me one more thing\n/exit\n",
         capture_output=True,
         text=True,
@@ -229,7 +234,7 @@ def test_phase_0_reserved_commands_are_not_exposed(tmp_path) -> None:
         result = subprocess.run(
             [executable, *args],
             cwd=workspace,
-            env={"HOME": str(home)},
+            env=_subprocess_env(home),
             capture_output=True,
             text=True,
             check=False,

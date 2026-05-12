@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+
+
+def _subprocess_env(home: Path) -> dict[str, str]:
+    return {**os.environ, "HOME": str(home)}
 
 
 def test_debug_agent_one_shot_completes_with_fake_model(tmp_path) -> None:
@@ -26,7 +31,7 @@ fake_response = "integration answer"
     result = subprocess.run(
         [executable, "-p", "hello"],
         cwd=workspace,
-        env={"HOME": str(home)},
+        env=_subprocess_env(home),
         capture_output=True,
         text=True,
         check=False,

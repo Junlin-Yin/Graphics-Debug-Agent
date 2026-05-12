@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+
+
+def _subprocess_env(home: Path) -> dict[str, str]:
+    return {**os.environ, "HOME": str(home)}
 
 
 def test_debug_agent_repl_accepts_two_turns_status_and_exit(tmp_path) -> None:
@@ -26,7 +31,7 @@ fake_response = "integration repl answer"
     result = subprocess.run(
         [executable],
         cwd=workspace,
-        env={"HOME": str(home)},
+        env=_subprocess_env(home),
         input="hello\n/status\ntell me one more thing\n/exit\n",
         capture_output=True,
         text=True,
