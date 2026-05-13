@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
 from time import monotonic
@@ -187,41 +188,41 @@ class ToolBroker:
         session_id: str,
         run_id: str,
         tool_name: str,
-            output: str | dict[str, Any],
+        output: str | dict[str, Any],
     ) -> ToolResult:
-        if isinstance(output, str):
-            output_size = len(output.encode("utf-8"))
-            if output_size > LARGE_OUTPUT_THRESHOLD_BYTES:
-                artifact = self.artifact_store.write_text(
-                    session_id=session_id,
-                    run_id=run_id,
-                    artifact_id=f"art_{uuid4().hex}",
-                    filename=f"{tool_name}_output.txt",
-                    content=output,
-                    metadata={
-                        "tool_name": tool_name,
-                        "bytes": output_size,
-                    },
-                )
-                self._write_event(
-                    session_id=session_id,
-                    run_id=run_id,
-                    kind="artifact_registered",
-                    payload={
-                        "artifact_id": artifact.artifact_id,
-                        "artifact_type": artifact.artifact_type,
-                        "relative_path": artifact.relative_path,
-                        "metadata": artifact.metadata,
-                    },
-                )
-                return ToolResult(
-                    status="ok",
-                    output=None,
-                    error=None,
-                    artifacts=[artifact.artifact_id],
-                    metadata={"bytes": output_size},
-                    redacted_output=f"[output stored as artifact: {artifact.artifact_id}]",
-                )
+        artifact_text = _artifact_text(output)
+        output_size = len(artifact_text.encode("utf-8"))
+        if output_size > LARGE_OUTPUT_THRESHOLD_BYTES:
+            artifact = self.artifact_store.write_text(
+                session_id=session_id,
+                run_id=run_id,
+                artifact_id=f"art_{uuid4().hex}",
+                filename=f"{tool_name}_output.txt",
+                content=artifact_text,
+                metadata={
+                    "tool_name": tool_name,
+                    "bytes": output_size,
+                },
+            )
+            self._write_event(
+                session_id=session_id,
+                run_id=run_id,
+                kind="artifact_registered",
+                payload={
+                    "artifact_id": artifact.artifact_id,
+                    "artifact_type": artifact.artifact_type,
+                    "relative_path": artifact.relative_path,
+                    "metadata": artifact.metadata,
+                },
+            )
+            return ToolResult(
+                status="ok",
+                output=None,
+                error=None,
+                artifacts=[artifact.artifact_id],
+                metadata={"bytes": output_size},
+                redacted_output=f"[output stored as artifact: {artifact.artifact_id}]",
+            )
         return ToolResult(
             status="ok",
             output=output,
@@ -245,6 +246,12 @@ class ToolBroker:
                 payload=payload,
             )
         )
+
+
+def _artifact_text(output: str | dict[str, Any]) -> str:
+    if isinstance(output, str):
+        return output
+    return json.dumps(output, ensure_ascii=False, sort_keys=True)
 
 
 def _denied_result(message: str) -> ToolResult:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from time import monotonic
@@ -145,6 +146,63 @@ def test_large_output_is_written_to_text_artifact(tmp_path) -> None:
     }
     assert events[2].payload["artifact_ids"] == result.artifacts
     assert events[2].payload["duration"] >= 0
+    db.close()
+
+
+def test_output_at_threshold_remains_inline(tmp_path) -> None:
+    workspace, db, broker, session, run = _runtime(tmp_path)
+    content = "x" * (16 * 1024)
+    (workspace / "threshold.txt").write_text(content, encoding="utf-8")
+
+    result = _invoke(
+        broker, session, run, "read_file", {"path": "threshold.txt"}, workspace
+    )
+
+    assert result.status == "ok"
+    assert result.output == content
+    assert result.artifacts == []
+    assert result.redacted_output is None
+    db.close()
+
+
+def test_large_dict_output_is_written_to_text_artifact(tmp_path) -> None:
+    workspace, db, broker, session, run = _runtime(tmp_path)
+    for index in range(900):
+        (workspace / f"file-{index:04d}.txt").write_text("", encoding="utf-8")
+
+    result = _invoke(broker, session, run, "list_dir", {"path": "."}, workspace)
+
+    artifact_store = ArtifactStore(db.connection, db.path.parent)
+    assert result.status == "ok"
+    assert result.output is None
+    assert result.redacted_output.startswith("[output stored as artifact:")
+    assert len(result.artifacts) == 1
+    artifact_text = artifact_store.resolve_path(result.artifacts[0]).read_text(
+        encoding="utf-8"
+    )
+    assert {
+        "name": "file-0000.txt",
+        "type": "file",
+    } in json.loads(artifact_text)["entries"]
+    assert artifact_store.get(result.artifacts[0]).metadata["tool_name"] == "list_dir"
+    db.close()
+
+
+def test_small_dict_output_remains_inline(tmp_path) -> None:
+    workspace, db, broker, session, run = _runtime(tmp_path)
+    (workspace / "notes.txt").write_text("", encoding="utf-8")
+
+    result = _invoke(broker, session, run, "list_dir", {"path": "."}, workspace)
+
+    assert result.status == "ok"
+    assert result.output == {
+        "entries": [
+            {"name": ".sessions", "type": "directory"},
+            {"name": "notes.txt", "type": "file"},
+        ]
+    }
+    assert result.artifacts == []
+    assert result.redacted_output is None
     db.close()
 
 
