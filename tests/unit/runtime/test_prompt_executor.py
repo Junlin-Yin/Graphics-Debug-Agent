@@ -21,9 +21,9 @@ def _runtime(tmp_path, model):
     db = RuntimeDatabase.bootstrap(workspace)
     sessions = SessionStore(db.connection)
     runs = RunStore(db.connection)
-    events = EventWriter(db.connection)
+    events = EventWriter(db.connection, db.path.parent)
     checkpoints = CheckpointStore(db.connection)
-    artifacts = ArtifactStore(db.connection)
+    artifacts = ArtifactStore(db.connection, db.path.parent)
     session = sessions.create(
         workspace_root=workspace,
         approval_mode="yolo",
@@ -163,7 +163,7 @@ def test_prompt_executor_passes_session_timeout_to_adapter_request(tmp_path) -> 
     db = RuntimeDatabase.bootstrap(workspace)
     sessions = SessionStore(db.connection)
     runs = RunStore(db.connection)
-    events = EventWriter(db.connection)
+    events = EventWriter(db.connection, db.path.parent)
     checkpoints = CheckpointStore(db.connection)
     session = sessions.create(
         workspace_root=workspace,

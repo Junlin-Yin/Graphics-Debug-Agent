@@ -14,9 +14,9 @@ def test_empty_phase_0_stores_can_be_constructed(tmp_path) -> None:
     stores = [
         SessionStore(db.connection),
         RunStore(db.connection),
-        EventWriter(db.connection),
+        EventWriter(db.connection, db.path.parent),
         CheckpointStore(db.connection),
-        ArtifactStore(db.connection),
+        ArtifactStore(db.connection, db.path.parent),
     ]
 
     assert all(store.connection is db.connection for store in stores)

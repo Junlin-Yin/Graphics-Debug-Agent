@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from debug_agent.observability.logging import EngineLogWriter
+from debug_agent.observability.logging import EngineLogWriter, _level_for_event
 
 
 def test_engine_log_writer_emits_json_lines_with_required_fields(tmp_path) -> None:
@@ -33,3 +33,10 @@ def test_engine_log_writer_emits_json_lines_with_required_fields(tmp_path) -> No
         "message": "run_started",
         "metadata": {"kind": "run_started"},
     }
+
+
+def test_failed_events_are_error_level_without_special_cases() -> None:
+    assert _level_for_event("model_call_failed") == "ERROR"
+    assert _level_for_event("tool_call_failed") == "ERROR"
+    assert _level_for_event("tool_call_denied") == "WARN"
+    assert _level_for_event("run_started") == "INFO"

@@ -37,6 +37,9 @@ RUN_EVENT_KINDS = frozenset(
 CHECKPOINT_KINDS = frozenset({"turn", "terminal", "error"})
 ARTIFACT_TYPES = frozenset({"image", "rdc", "text"})
 TOOL_RESULT_STATUSES = frozenset({"ok", "error", "denied", "timeout", "cancelled"})
+AGENT_RUN_RESULT_STATUSES = frozenset(
+    {"completed", "failed", "timeout", "cancelled"}
+)
 ERROR_CLASSES = frozenset(
     {
         "user_error",
@@ -247,6 +250,13 @@ class AgentRunResult:
     usage: dict[str, Any]
     error: dict[str, Any] | None
     metadata: dict[str, Any]
+
+    def __post_init__(self) -> None:
+        _validate(
+            self.status,
+            AGENT_RUN_RESULT_STATUSES,
+            "agent run result status",
+        )
 
 
 class AgentLoopAdapter(Protocol):

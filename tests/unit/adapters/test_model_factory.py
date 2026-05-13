@@ -129,3 +129,27 @@ def test_model_factory_constructs_anthropic_model_without_exposing_secret(
         "base_url": "https://api.example.test",
     }
     assert "secret-token" not in str(result)
+
+
+def test_model_factory_constructs_locked_anthropic_model_without_network(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-token")
+
+    result = ModelFactory().create(
+        {
+            "provider": "anthropic",
+            "model": "claude-test",
+            "temperature": 0.2,
+            "max_tokens": 8192,
+            "timeout_seconds": 120,
+            "auth": {
+                "api_key_env": "ANTHROPIC_API_KEY",
+                "api_key_present": True,
+            },
+            "provider_settings": {},
+        }
+    )
+
+    assert result.error is None
+    assert result.model.__class__.__name__ == "ChatAnthropic"

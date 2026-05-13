@@ -178,8 +178,8 @@ def test_phase_0_toolbroker_artifact_and_trace_acceptance(tmp_path) -> None:
     try:
         sessions = SessionStore(db.connection)
         runs = RunStore(db.connection)
-        events = EventWriter(db.connection)
-        artifacts = ArtifactStore(db.connection)
+        events = EventWriter(db.connection, db.path.parent)
+        artifacts = ArtifactStore(db.connection, db.path.parent)
         session = sessions.create(
             workspace_root=workspace,
             approval_mode="yolo",
@@ -200,7 +200,7 @@ def test_phase_0_toolbroker_artifact_and_trace_acceptance(tmp_path) -> None:
         )
         from debug_agent.observability.trace_writer import TraceWriter
 
-        trace = TraceWriter(db.connection).refresh_if_stale(session.session_id)
+        trace = TraceWriter(db.connection, db.path.parent).refresh_if_stale(session.session_id)
 
         assert result.status == "ok"
         assert result.output is None
@@ -322,7 +322,7 @@ def test_phase_0_trace_surfaces_missing_artifact_path(tmp_path) -> None:
     try:
         sessions = SessionStore(db.connection)
         runs = RunStore(db.connection)
-        artifacts = ArtifactStore(db.connection)
+        artifacts = ArtifactStore(db.connection, db.path.parent)
         session = sessions.create(
             workspace_root=workspace,
             approval_mode="yolo",
@@ -341,7 +341,7 @@ def test_phase_0_trace_surfaces_missing_artifact_path(tmp_path) -> None:
         artifacts.resolve_path(artifact.artifact_id).unlink()
         from debug_agent.observability.trace_writer import TraceWriter
 
-        trace = TraceWriter(db.connection).refresh_if_stale(session.session_id)
+        trace = TraceWriter(db.connection, db.path.parent).refresh_if_stale(session.session_id)
 
         trace_text = trace.trace_path.read_text(encoding="utf-8")
         assert "art_missing_path" in trace_text

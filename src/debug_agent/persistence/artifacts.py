@@ -13,6 +13,7 @@ from debug_agent.runtime.contracts import Artifact, utc_now_iso
 @dataclass(frozen=True)
 class ArtifactStore:
     connection: sqlite3.Connection
+    sessions_root: Path
 
     def write_text(
         self,
@@ -146,13 +147,7 @@ class ArtifactStore:
         return artifact
 
     def _sessions_root(self) -> Path:
-        row = self.connection.execute("PRAGMA database_list").fetchone()
-        if row is None or not row[2]:
-            raise StoreError(
-                error_class="internal_error",
-                message="Runtime database path is unavailable.",
-            )
-        return Path(row[2]).resolve().parent
+        return self.sessions_root.resolve()
 
 
 def _artifact_from_row(row: tuple) -> Artifact:

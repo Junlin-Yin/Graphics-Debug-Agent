@@ -1,5 +1,6 @@
 from debug_agent.runtime.contracts import (
     Artifact,
+    AgentRunResult,
     Checkpoint,
     Run,
     RunEvent,
@@ -118,3 +119,33 @@ def test_contracts_reject_values_outside_phase_0() -> None:
         assert "run_type" in str(exc)
     else:
         raise AssertionError("workflow run type must not be accepted in Phase 0")
+
+
+def test_agent_run_result_rejects_status_outside_adapter_contract() -> None:
+    try:
+        AgentRunResult(
+            status="interrupted",
+            assistant_output=None,
+            tool_results=[],
+            usage={},
+            error=None,
+            metadata={},
+        )
+    except ValueError as exc:
+        assert "agent run result status" in str(exc)
+    else:
+        raise AssertionError("invalid adapter result status must not be accepted")
+
+
+def test_agent_run_result_accepts_phase_0_adapter_statuses() -> None:
+    for status in ("completed", "failed", "timeout", "cancelled"):
+        result = AgentRunResult(
+            status=status,
+            assistant_output="answer" if status == "completed" else None,
+            tool_results=[],
+            usage={},
+            error=None,
+            metadata={},
+        )
+
+        assert result.status == status

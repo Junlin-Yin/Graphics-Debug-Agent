@@ -23,8 +23,8 @@ def _broker(tmp_path):
     )
     run = RunStore(db.connection).create_prompt_run(session.session_id, run_id="run_1")
     broker = ToolBroker(
-        event_writer=EventWriter(db.connection),
-        artifact_store=ArtifactStore(db.connection),
+        event_writer=EventWriter(db.connection, db.path.parent),
+        artifact_store=ArtifactStore(db.connection, db.path.parent),
     )
     return workspace, db, broker, session, run
 
@@ -77,6 +77,7 @@ def test_search_text_returns_matches_and_no_match(tmp_path) -> None:
     workspace, db, broker, session, run = _broker(tmp_path)
     (workspace / "one.txt").write_text("needle\nother", encoding="utf-8")
     (workspace / "two.txt").write_text("nothing", encoding="utf-8")
+    (workspace / "binary.bin").write_bytes(b"\xff\xfe needle")
 
     match = _invoke(
         workspace,
@@ -101,6 +102,56 @@ def test_search_text_returns_matches_and_no_match(tmp_path) -> None:
     }
     assert no_match.status == "ok"
     assert no_match.output == {"matches": []}
+    db.close()
+
+
+def test_search_text_skips_large_directories_unless_explicitly_requested(
+    tmp_path,
+) -> None:
+    workspace, db, broker, session, run = _broker(tmp_path)
+    (workspace / "src").mkdir()
+    (workspace / "src" / "app.txt").write_text("needle app", encoding="utf-8")
+    (workspace / ".git").mkdir()
+    (workspace / ".git" / "config").write_text("needle git", encoding="utf-8")
+    (workspace / "node_modules").mkdir()
+    (workspace / "node_modules" / "pkg.txt").write_text(
+        "needle dependency",
+        encoding="utf-8",
+    )
+    (workspace / "build").mkdir()
+    (workspace / "build" / "output.txt").write_text("needle build", encoding="utf-8")
+
+    default_search = _invoke(
+        workspace,
+        broker,
+        session,
+        run,
+        "search_text",
+        {"query": "needle", "path": "."},
+    )
+    explicit_search = _invoke(
+        workspace,
+        broker,
+        session,
+        run,
+        "search_text",
+        {"query": "needle", "path": "node_modules"},
+    )
+
+    assert default_search.status == "ok"
+    assert default_search.output == {
+        "matches": [{"path": "src/app.txt", "line": 1, "text": "needle app"}]
+    }
+    assert explicit_search.status == "ok"
+    assert explicit_search.output == {
+        "matches": [
+            {
+                "path": "node_modules/pkg.txt",
+                "line": 1,
+                "text": "needle dependency",
+            }
+        ]
+    }
     db.close()
 
 

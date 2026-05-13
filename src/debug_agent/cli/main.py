@@ -9,7 +9,10 @@ from debug_agent.runtime.config import load_config_snapshot
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
 
 
-USAGE = 'Usage: debug-agent [-p "prompt"] | debug-agent status <session_id> | debug-agent trace <session_id>'
+USAGE = (
+    'Usage: debug-agent  # REPL | debug-agent -p "prompt" | '
+    "debug-agent status <session_id> | debug-agent trace <session_id>"
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

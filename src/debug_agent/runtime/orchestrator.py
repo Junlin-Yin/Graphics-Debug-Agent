@@ -160,17 +160,20 @@ class ReplRuntime:
         _append_event(
             self.events, session.session_id, run.run_id, "session_completed", {}
         )
-        TraceWriter(self.db.connection).refresh_if_stale(session.session_id)
+        TraceWriter(self.db.connection, self.db.path.parent).refresh_if_stale(
+            session.session_id
+        )
         self.close()
 
     def fail(self, result: AgentRunResult) -> None:
         if self.closed:
             return
-        RuntimeOrchestrator._mark_failed(
+        _mark_failed_terminal(
             sessions=self.sessions,
             runs=self.runs,
             events=self.events,
             checkpoints=self.checkpoints,
+            trace_writer=TraceWriter(self.db.connection, self.db.path.parent),
             session_id=self.session_id,
             run_id=self.run_id,
             agent_result=result,
@@ -195,11 +198,12 @@ class RuntimeOrchestrator:
 
     def run_one_shot(self, prompt: str, config_snapshot: dict[str, Any]) -> OneShotResult:
         db = RuntimeDatabase.bootstrap(self.workspace_root)
+        sessions_root = db.path.parent
         sessions = SessionStore(db.connection)
         runs = RunStore(db.connection)
-        events = EventWriter(db.connection)
+        events = EventWriter(db.connection, sessions_root)
         checkpoints = CheckpointStore(db.connection)
-        artifacts = ArtifactStore(db.connection)
+        artifacts = ArtifactStore(db.connection, sessions_root)
         try:
             try:
                 session = sessions.create(
@@ -212,7 +216,7 @@ class RuntimeOrchestrator:
                 message = _active_conflict_message(active.session_id if active else "unknown")
                 if active is not None:
                     write_runtime_log(
-                        db.connection,
+                        sessions_root,
                         session_id=active.session_id,
                         run_id=active.active_run_id,
                         level="ERROR",
@@ -240,11 +244,12 @@ class RuntimeOrchestrator:
 
             model_result = ModelFactory().create(config_snapshot)
             if model_result.error is not None:
-                failed = self._mark_failed(
+                failed = _mark_failed_terminal(
                     sessions=sessions,
                     runs=runs,
                     events=events,
                     checkpoints=checkpoints,
+                    trace_writer=TraceWriter(db.connection, sessions_root),
                     session_id=session.session_id,
                     run_id=run.run_id,
                     agent_result=AgentRunResult(
@@ -322,7 +327,9 @@ class RuntimeOrchestrator:
                 )
                 _append_event(events, session.session_id, run.run_id, "run_completed", {})
                 _append_event(events, session.session_id, run.run_id, "session_completed", {})
-                TraceWriter(db.connection).refresh_if_stale(session.session_id)
+                TraceWriter(db.connection, sessions_root).refresh_if_stale(
+                    session.session_id
+                )
                 return OneShotResult(
                     exit_code=0,
                     assistant_output=agent_result.assistant_output,
@@ -331,11 +338,12 @@ class RuntimeOrchestrator:
                     session_id=session.session_id,
                     run_id=run.run_id,
                 )
-            return self._mark_failed(
+            return _mark_failed_terminal(
                 sessions=sessions,
                 runs=runs,
                 events=events,
                 checkpoints=checkpoints,
+                trace_writer=TraceWriter(db.connection, sessions_root),
                 session_id=session.session_id,
                 run_id=run.run_id,
                 agent_result=agent_result,
@@ -372,9 +380,12 @@ class RuntimeOrchestrator:
 
     def trace(self, session_id: str) -> TraceResult:
         db = RuntimeDatabase.bootstrap(self.workspace_root)
+        sessions_root = db.path.parent
         try:
             try:
-                result = TraceWriter(db.connection).refresh_if_stale(session_id)
+                result = TraceWriter(db.connection, sessions_root).refresh_if_stale(
+                    session_id
+                )
             except StoreError as exc:
                 return TraceResult(
                     exit_code=1,
@@ -404,11 +415,12 @@ class RuntimeOrchestrator:
 
     def start_repl(self, config_snapshot: dict[str, Any]) -> ReplStartResult:
         db = RuntimeDatabase.bootstrap(self.workspace_root)
+        sessions_root = db.path.parent
         sessions = SessionStore(db.connection)
         runs = RunStore(db.connection)
-        events = EventWriter(db.connection)
+        events = EventWriter(db.connection, sessions_root)
         checkpoints = CheckpointStore(db.connection)
-        artifacts = ArtifactStore(db.connection)
+        artifacts = ArtifactStore(db.connection, sessions_root)
 
         try:
             session = sessions.create(
@@ -421,7 +433,7 @@ class RuntimeOrchestrator:
             message = _active_conflict_message(active.session_id if active else "unknown")
             if active is not None:
                 write_runtime_log(
-                    db.connection,
+                    sessions_root,
                     session_id=active.session_id,
                     run_id=active.active_run_id,
                     level="ERROR",
@@ -451,11 +463,12 @@ class RuntimeOrchestrator:
 
         model_result = ModelFactory().create(config_snapshot)
         if model_result.error is not None:
-            self._mark_failed(
+            _mark_failed_terminal(
                 sessions=sessions,
                 runs=runs,
                 events=events,
                 checkpoints=checkpoints,
+                trace_writer=TraceWriter(db.connection, sessions_root),
                 session_id=session.session_id,
                 run_id=run.run_id,
                 agent_result=AgentRunResult(
@@ -504,90 +517,91 @@ class RuntimeOrchestrator:
             error=None,
         )
 
-    @staticmethod
-    def _mark_failed(
-        *,
-        sessions: SessionStore,
-        runs: RunStore,
-        events: EventWriter,
-        checkpoints: CheckpointStore | None = None,
-        session_id: str,
-        run_id: str,
-        agent_result: AgentRunResult,
-    ) -> OneShotResult:
-        error = agent_result.error or {
-            "error_class": "internal_error",
-            "message": "Prompt execution failed.",
-            "source": "orchestrator",
-            "recoverable": False,
-        }
-        latest_run = runs.get(run_id)
-        latest_session = sessions.get(session_id)
-        latest_checkpoint_id = latest_run.latest_checkpoint_id
-        if checkpoints is not None:
-            latest_checkpoint = checkpoints.latest_for_run(run_id)
-            if latest_checkpoint is None or latest_checkpoint.kind != "error":
-                checkpoint = checkpoints.save(
-                    Checkpoint(
-                        checkpoint_id=f"chk_{uuid4().hex}",
-                        session_id=session_id,
-                        run_id=run_id,
-                        kind="error",
-                        state={
-                            "session_status": latest_session.status,
-                            "run_status": latest_run.status,
-                            "prompt_turn_counter": agent_result.metadata.get(
-                                "prompt_turn_counter", 0
-                            ),
-                            "latest_model_response_metadata": agent_result.metadata,
-                            "latest_artifact_ids": [],
-                            "latest_error_summary": error["message"],
-                        },
-                        summary=error["message"],
-                        created_at=utc_now_iso(),
-                    )
+def _mark_failed_terminal(
+    *,
+    sessions: SessionStore,
+    runs: RunStore,
+    events: EventWriter,
+    checkpoints: CheckpointStore | None = None,
+    trace_writer: TraceWriter | None = None,
+    session_id: str,
+    run_id: str,
+    agent_result: AgentRunResult,
+) -> OneShotResult:
+    error = agent_result.error or {
+        "error_class": "internal_error",
+        "message": "Prompt execution failed.",
+        "source": "orchestrator",
+        "recoverable": False,
+    }
+    latest_run = runs.get(run_id)
+    latest_session = sessions.get(session_id)
+    latest_checkpoint_id = latest_run.latest_checkpoint_id
+    if checkpoints is not None:
+        latest_checkpoint = checkpoints.latest_for_run(run_id)
+        if latest_checkpoint is None or latest_checkpoint.kind != "error":
+            checkpoint = checkpoints.save(
+                Checkpoint(
+                    checkpoint_id=f"chk_{uuid4().hex}",
+                    session_id=session_id,
+                    run_id=run_id,
+                    kind="error",
+                    state={
+                        "session_status": latest_session.status,
+                        "run_status": latest_run.status,
+                        "prompt_turn_counter": agent_result.metadata.get(
+                            "prompt_turn_counter", 0
+                        ),
+                        "latest_model_response_metadata": agent_result.metadata,
+                        "latest_artifact_ids": [],
+                        "latest_error_summary": error["message"],
+                    },
+                    summary=error["message"],
+                    created_at=utc_now_iso(),
                 )
-                _append_event(
-                    events,
-                    session_id,
-                    run_id,
-                    "checkpoint_written",
-                    {"checkpoint_id": checkpoint.checkpoint_id, "kind": checkpoint.kind},
-                )
-                latest_checkpoint_id = checkpoint.checkpoint_id
-        run = runs.mark_failed(
-            run_id,
-            error["message"],
-            latest_checkpoint_id=latest_checkpoint_id,
-        )
-        session = sessions.mark_failed(
-            session_id,
-            error["message"],
-            latest_checkpoint_id=latest_checkpoint_id,
-        )
-        _append_event(
-            events,
-            session.session_id,
-            run.run_id,
-            "run_failed",
-            {**_error_payload(error), "error": error},
-        )
-        _append_event(
-            events,
-            session.session_id,
-            run.run_id,
-            "session_failed",
-            {**_error_payload(error), "error": error},
-        )
-        TraceWriter(events.connection).refresh_if_stale(session.session_id)
-        return OneShotResult(
-            exit_code=1,
-            assistant_output=None,
-            error=error,
-            message=error["message"],
-            session_id=session.session_id,
-            run_id=run.run_id,
-        )
+            )
+            _append_event(
+                events,
+                session_id,
+                run_id,
+                "checkpoint_written",
+                {"checkpoint_id": checkpoint.checkpoint_id, "kind": checkpoint.kind},
+            )
+            latest_checkpoint_id = checkpoint.checkpoint_id
+    run = runs.mark_failed(
+        run_id,
+        error["message"],
+        latest_checkpoint_id=latest_checkpoint_id,
+    )
+    session = sessions.mark_failed(
+        session_id,
+        error["message"],
+        latest_checkpoint_id=latest_checkpoint_id,
+    )
+    _append_event(
+        events,
+        session.session_id,
+        run.run_id,
+        "run_failed",
+        {**_error_payload(error), "error": error},
+    )
+    _append_event(
+        events,
+        session.session_id,
+        run.run_id,
+        "session_failed",
+        {**_error_payload(error), "error": error},
+    )
+    if trace_writer is not None:
+        trace_writer.refresh_if_stale(session.session_id)
+    return OneShotResult(
+        exit_code=1,
+        assistant_output=None,
+        error=error,
+        message=error["message"],
+        session_id=session.session_id,
+        run_id=run.run_id,
+    )
 
 
 def _append_event(

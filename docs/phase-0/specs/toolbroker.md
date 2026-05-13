@@ -15,6 +15,13 @@ Phase 0 supports exactly these tools:
 
 No writable native tool is part of Phase 0. Writable native tools begin in Phase 1 after path policy and approval grants exist.
 
+`search_text` default workspace searches skip common large generated or dependency
+directories: `.sessions`, `.git`, `node_modules`, `build`, `dist`, `.venv`,
+`__pycache__`, and `.pytest_cache`. If the user explicitly supplies one of those
+directories as the `path` argument, Phase 0 searches that requested subtree.
+`search_text` streams files line by line and skips files that cannot be decoded
+as UTF-8.
+
 ## Tool Definition Schema
 
 Runtime exposes tools to adapters through a framework-neutral schema:

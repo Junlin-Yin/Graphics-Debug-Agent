@@ -20,9 +20,9 @@ def _stores(tmp_path):
         db,
         SessionStore(db.connection),
         RunStore(db.connection),
-        EventWriter(db.connection),
+        EventWriter(db.connection, db.path.parent),
         CheckpointStore(db.connection),
-        ArtifactStore(db.connection),
+        ArtifactStore(db.connection, db.path.parent),
     )
 
 
@@ -172,6 +172,27 @@ def test_run_store_rejects_invalid_status_transition(tmp_path) -> None:
         assert exc.error_class == "internal_error"
     else:
         raise AssertionError("terminal runs must not transition again")
+    finally:
+        db.close()
+
+
+def test_session_store_rejects_invalid_status_transition(tmp_path) -> None:
+    workspace, db, sessions, *_ = _stores(tmp_path)
+    sessions.create(
+        workspace_root=workspace,
+        approval_mode="yolo",
+        config_snapshot={},
+        session_id="sess_1",
+    )
+    sessions.mark_completed("sess_1")
+
+    try:
+        sessions.mark_failed("sess_1", "too late")
+    except StoreError as exc:
+        assert exc.error_class == "internal_error"
+        assert "Invalid session transition" in exc.message
+    else:
+        raise AssertionError("terminal sessions must not transition again")
     finally:
         db.close()
 

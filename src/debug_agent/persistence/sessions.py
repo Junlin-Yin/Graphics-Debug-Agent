@@ -155,6 +155,12 @@ class SessionStore:
         error_summary: str | None,
         latest_checkpoint_id: str | None,
     ) -> Session:
+        current = self.get(session_id)
+        if current.status != "running":
+            raise StoreError(
+                error_class="internal_error",
+                message=f"Invalid session transition from {current.status} to {status}",
+            )
         now = utc_now_iso()
         self.connection.execute(
             """

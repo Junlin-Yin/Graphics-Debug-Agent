@@ -27,12 +27,13 @@ class TraceRenderResult:
 
 
 class TraceWriter:
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(self, connection: sqlite3.Connection, sessions_root: Path) -> None:
         self.connection = connection
+        self.sessions_root = sessions_root.resolve()
 
     def refresh_if_stale(self, session_id: str) -> TraceRenderResult:
         data = self._load(session_id)
-        trace_path = _sessions_root(self.connection) / session_id / "trace.md"
+        trace_path = self.sessions_root / session_id / "trace.md"
         current_metadata = _trace_metadata(data["events"])
         rendered_metadata = _read_rendered_metadata(trace_path)
         refreshed = rendered_metadata != current_metadata
@@ -52,17 +53,20 @@ class TraceWriter:
         )
 
     def _load(self, session_id: str) -> dict[str, Any]:
-        artifact_store = ArtifactStore(self.connection)
+        artifact_store = ArtifactStore(self.connection, self.sessions_root)
         artifacts = artifact_store.list_for_session(session_id)
-        sessions_root = _sessions_root(self.connection)
         return {
             "session": SessionStore(self.connection).get(session_id),
             "runs": RunStore(self.connection).list_for_session(session_id),
-            "events": EventWriter(self.connection).list_for_session(session_id),
+            "events": EventWriter(
+                self.connection, self.sessions_root
+            ).list_for_session(session_id),
             "checkpoints": CheckpointStore(self.connection).list_for_session(session_id),
             "artifacts": artifacts,
             "artifact_exists": {
-                artifact.artifact_id: (sessions_root / artifact.relative_path).exists()
+                artifact.artifact_id: (
+                    self.sessions_root / artifact.relative_path
+                ).exists()
                 for artifact in artifacts
             },
         }
@@ -152,10 +156,3 @@ def _summarize_payload(payload: dict[str, Any]) -> str:
     if len(text) <= 240:
         return text
     return text[:237] + "..."
-
-
-def _sessions_root(connection: sqlite3.Connection) -> Path:
-    row = connection.execute("PRAGMA database_list").fetchone()
-    if row is None or not row[2]:
-        raise RuntimeError("Runtime database path is unavailable.")
-    return Path(row[2]).resolve().parent

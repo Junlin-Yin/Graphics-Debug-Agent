@@ -28,8 +28,8 @@ def _runtime(tmp_path):
     run = runs.create_prompt_run(session.session_id, run_id="run_1")
     sessions.set_active_run(session.session_id, run.run_id)
     broker = ToolBroker(
-        event_writer=EventWriter(db.connection),
-        artifact_store=ArtifactStore(db.connection),
+        event_writer=EventWriter(db.connection, db.path.parent),
+        artifact_store=ArtifactStore(db.connection, db.path.parent),
     )
     return workspace, db, broker, session, run
 
@@ -50,7 +50,7 @@ def test_unknown_tool_returns_denied_and_writes_audit_event(tmp_path) -> None:
 
     result = _invoke(broker, session, run, "write_file", {"path": "x"}, workspace)
 
-    events = EventWriter(db.connection).list_for_run(run.run_id)
+    events = EventWriter(db.connection, db.path.parent).list_for_run(run.run_id)
     assert result.status == "denied"
     assert result.error["error_class"] == "policy_denied"
     assert [event.kind for event in events] == ["tool_call_denied"]
@@ -77,7 +77,7 @@ def test_path_outside_workspace_and_write_intent_are_denied(tmp_path) -> None:
 
     assert outside_result.status == "denied"
     assert write_result.status == "denied"
-    assert [event.kind for event in EventWriter(db.connection).list_for_run(run.run_id)] == [
+    assert [event.kind for event in EventWriter(db.connection, db.path.parent).list_for_run(run.run_id)] == [
         "tool_call_denied",
         "tool_call_denied",
     ]
@@ -103,7 +103,7 @@ def test_successful_read_file_returns_tool_result_and_audit_events(tmp_path) -> 
 
     result = _invoke(broker, session, run, "read_file", {"path": "notes.txt"}, workspace)
 
-    events = EventWriter(db.connection).list_for_run(run.run_id)
+    events = EventWriter(db.connection, db.path.parent).list_for_run(run.run_id)
     assert isinstance(result, ToolResult)
     assert result.status == "ok"
     assert result.output == "hello"
@@ -127,10 +127,10 @@ def test_large_output_is_written_to_text_artifact(tmp_path) -> None:
     assert result.output is None
     assert result.redacted_output.startswith("[output stored as artifact:")
     assert len(result.artifacts) == 1
-    artifact_path = ArtifactStore(db.connection).resolve_path(result.artifacts[0])
+    artifact_path = ArtifactStore(db.connection, db.path.parent).resolve_path(result.artifacts[0])
     assert artifact_path.read_text(encoding="utf-8") == "x" * (16 * 1024 + 1)
-    artifact = ArtifactStore(db.connection).get(result.artifacts[0])
-    events = EventWriter(db.connection).list_for_run(run.run_id)
+    artifact = ArtifactStore(db.connection, db.path.parent).get(result.artifacts[0])
+    events = EventWriter(db.connection, db.path.parent).list_for_run(run.run_id)
     assert artifact.metadata == {"bytes": 16 * 1024 + 1, "tool_name": "read_file"}
     assert [event.kind for event in events] == [
         "tool_call_started",
@@ -169,7 +169,7 @@ def test_timeout_returns_timeout_result_and_failed_audit_event(tmp_path) -> None
     )
     elapsed = monotonic() - start
 
-    events = EventWriter(db.connection).list_for_run(run.run_id)
+    events = EventWriter(db.connection, db.path.parent).list_for_run(run.run_id)
     assert result.status == "timeout"
     assert result.error["error_class"] == "timeout"
     assert elapsed < 0.1

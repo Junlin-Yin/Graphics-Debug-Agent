@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -40,8 +39,8 @@ class EngineLogWriter:
             handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
-def write_event_log(connection: sqlite3.Connection, event: RunEvent) -> None:
-    EngineLogWriter(_log_path(connection, event.session_id)).write(
+def write_event_log(sessions_root: Path, event: RunEvent) -> None:
+    EngineLogWriter(_log_path(sessions_root, event.session_id)).write(
         timestamp=event.timestamp,
         session_id=event.session_id,
         run_id=event.run_id,
@@ -54,7 +53,7 @@ def write_event_log(connection: sqlite3.Connection, event: RunEvent) -> None:
 
 
 def write_runtime_log(
-    connection: sqlite3.Connection,
+    sessions_root: Path,
     *,
     session_id: str,
     run_id: str | None,
@@ -63,7 +62,7 @@ def write_runtime_log(
     message: str,
     metadata: dict[str, Any],
 ) -> None:
-    EngineLogWriter(_log_path(connection, session_id)).write(
+    EngineLogWriter(_log_path(sessions_root, session_id)).write(
         timestamp=utc_now_iso(),
         session_id=session_id,
         run_id=run_id,
@@ -75,15 +74,12 @@ def write_runtime_log(
     )
 
 
-def _log_path(connection: sqlite3.Connection, session_id: str) -> Path:
-    row = connection.execute("PRAGMA database_list").fetchone()
-    if row is None or not row[2]:
-        raise RuntimeError("Runtime database path is unavailable.")
-    return Path(row[2]).resolve().parent / session_id / "logs" / "engine.log"
+def _log_path(sessions_root: Path, session_id: str) -> Path:
+    return Path(sessions_root).resolve() / session_id / "logs" / "engine.log"
 
 
 def _level_for_event(kind: str) -> str:
-    if kind.endswith("_failed") or kind == "tool_call_failed":
+    if kind.endswith("_failed"):
         return "ERROR"
     if kind == "tool_call_denied":
         return "WARN"

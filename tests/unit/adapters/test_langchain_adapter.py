@@ -8,6 +8,11 @@ from debug_agent.adapters.langchain_adapter import (
     _langchain_tools,
 )
 from debug_agent.adapters.model_factory import FakeChatModel
+from debug_agent.persistence.checkpoints import CheckpointStore
+from debug_agent.persistence.events import EventWriter
+from debug_agent.persistence.runs import RunStore
+from debug_agent.persistence.sessions import SessionStore
+from debug_agent.persistence.sqlite import RuntimeDatabase
 from debug_agent.runtime.contracts import AgentRunRequest, RunContext, ToolResult
 
 
@@ -192,6 +197,46 @@ def test_langchain_adapter_delegates_tool_calls_to_toolbroker() -> None:
             },
         )
     ]
+
+
+def test_langchain_adapter_does_not_mutate_runtime_state(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    db = RuntimeDatabase.bootstrap(workspace)
+    try:
+        sessions = SessionStore(db.connection)
+        runs = RunStore(db.connection)
+        checkpoints = CheckpointStore(db.connection)
+        session = sessions.create(
+            workspace_root=workspace,
+            approval_mode="yolo",
+            config_snapshot={"provider": "fake"},
+            session_id="sess_1",
+        )
+        run = runs.create_prompt_run(session.session_id, run_id="run_1")
+        before_session = sessions.get(session.session_id)
+        before_run = runs.get(run.run_id)
+        before_checkpoint = checkpoints.latest_for_run(run.run_id)
+
+        result = LangChainAgentLoopAdapter(model=FakeChatModel(response="answer")).run(
+            _request(),
+            RunContext(
+                workspace_root=str(workspace),
+                artifact_root=session.artifact_root,
+                approval_mode=session.approval_mode,
+                cancellation_token=None,
+                metadata={},
+                model_event_recorder=lambda _kind, _payload: None,
+            ),
+        )
+
+        assert result.status == "completed"
+        assert sessions.get(session.session_id) == before_session
+        assert runs.get(run.run_id) == before_run
+        assert checkpoints.latest_for_run(run.run_id) == before_checkpoint
+        assert EventWriter(db.connection, db.path.parent).list_for_run(run.run_id) == []
+    finally:
+        db.close()
 
 
 def test_langchain_adapter_feeds_tool_results_back_to_model() -> None:

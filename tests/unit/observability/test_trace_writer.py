@@ -16,7 +16,7 @@ def _persist_session_with_events(tmp_path):
     db = RuntimeDatabase.bootstrap(workspace)
     sessions = SessionStore(db.connection)
     runs = RunStore(db.connection)
-    events = EventWriter(db.connection)
+    events = EventWriter(db.connection, db.path.parent)
     checkpoints = CheckpointStore(db.connection)
     session = sessions.create(
         workspace_root=workspace,
@@ -73,7 +73,7 @@ def _persist_session_with_events(tmp_path):
                 payload=payload,
             )
         )
-    ArtifactStore(db.connection).write_text(
+    ArtifactStore(db.connection, db.path.parent).write_text(
         session_id=session.session_id,
         run_id=run.run_id,
         artifact_id="art_trace",
@@ -109,7 +109,7 @@ def _persist_session_with_events(tmp_path):
 def test_trace_writer_renders_required_sections_and_metadata(tmp_path) -> None:
     db, session = _persist_session_with_events(tmp_path)
     try:
-        result = TraceWriter(db.connection).refresh_if_stale(session.session_id)
+        result = TraceWriter(db.connection, db.path.parent).refresh_if_stale(session.session_id)
     finally:
         db.close()
 
@@ -138,10 +138,10 @@ def test_trace_writer_renders_required_sections_and_metadata(tmp_path) -> None:
 def test_trace_writer_skips_fresh_trace_and_refreshes_stale_trace(tmp_path) -> None:
     db, session = _persist_session_with_events(tmp_path)
     try:
-        writer = TraceWriter(db.connection)
+        writer = TraceWriter(db.connection, db.path.parent)
         first = writer.refresh_if_stale(session.session_id)
         second = writer.refresh_if_stale(session.session_id)
-        EventWriter(db.connection).append(
+        EventWriter(db.connection, db.path.parent).append(
             RunEvent(
                 event_id="evt_completed",
                 timestamp=utc_now_iso(),

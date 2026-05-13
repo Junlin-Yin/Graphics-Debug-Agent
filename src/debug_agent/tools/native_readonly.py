@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
@@ -8,6 +9,18 @@ from debug_agent.runtime.contracts import ToolDefinition
 
 
 ToolHandler = Callable[[Path, dict[str, Any]], str | dict[str, Any]]
+SEARCH_DEFAULT_EXCLUDED_DIRS = frozenset(
+    {
+        ".sessions",
+        ".git",
+        "node_modules",
+        "build",
+        "dist",
+        ".venv",
+        "__pycache__",
+        ".pytest_cache",
+    }
+)
 
 
 def tool_definitions() -> list[ToolDefinition]:
@@ -93,24 +106,53 @@ def search_text(workspace_root: Path, arguments: dict[str, Any]) -> dict[str, An
     query = arguments["query"]
     start = workspace_root / arguments.get("path", ".")
     matches: list[dict[str, Any]] = []
-    files = [start] if start.is_file() else sorted(path for path in start.rglob("*"))
-    for path in files:
-        if not path.is_file() or ".sessions" in path.relative_to(workspace_root).parts:
-            continue
+    explicit_path = "path" in arguments and arguments["path"] not in {"", "."}
+    for path in _iter_search_files(workspace_root, start, explicit_path=explicit_path):
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()
+            with path.open("r", encoding="utf-8") as handle:
+                for index, line in enumerate(handle, start=1):
+                    text = line.rstrip("\n")
+                    if query in text:
+                        matches.append(
+                            {
+                                "path": path.relative_to(workspace_root).as_posix(),
+                                "line": index,
+                                "text": text,
+                            }
+                        )
         except UnicodeDecodeError:
             continue
-        for index, line in enumerate(lines, start=1):
-            if query in line:
-                matches.append(
-                    {
-                        "path": path.relative_to(workspace_root).as_posix(),
-                        "line": index,
-                        "text": line,
-                    }
-                )
     return {"matches": matches}
+
+
+def _iter_search_files(
+    workspace_root: Path,
+    start: Path,
+    *,
+    explicit_path: bool,
+):
+    if start.is_file():
+        yield start
+        return
+
+    start = start.resolve()
+    for root, dirnames, filenames in os.walk(start):
+        root_path = Path(root)
+        if not explicit_path and _is_excluded_search_dir(workspace_root, root_path):
+            dirnames[:] = []
+            continue
+        dirnames[:] = [
+            dirname
+            for dirname in dirnames
+            if dirname not in SEARCH_DEFAULT_EXCLUDED_DIRS
+        ]
+        for filename in filenames:
+            yield root_path / filename
+
+
+def _is_excluded_search_dir(workspace_root: Path, path: Path) -> bool:
+    relative_parts = path.relative_to(workspace_root).parts
+    return any(part in SEARCH_DEFAULT_EXCLUDED_DIRS for part in relative_parts)
 
 
 def git_status(workspace_root: Path, _arguments: dict[str, Any]) -> str:

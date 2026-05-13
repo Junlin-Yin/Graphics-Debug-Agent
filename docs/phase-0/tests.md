@@ -72,6 +72,8 @@ Fake tool or fixture workspace must cover:
 - file read success
 - directory listing success
 - text search success and no-match
+- text search skips common large generated or dependency directories by default
+  while honoring an explicit `path` into those directories
 - git status success in a temporary git repository
 - denied path outside workspace
 - output large enough to become artifact

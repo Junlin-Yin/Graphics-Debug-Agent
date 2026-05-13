@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
 
 from debug_agent.observability.logging import write_event_log
 from debug_agent.runtime.contracts import RunEvent
@@ -11,6 +12,7 @@ from debug_agent.runtime.contracts import RunEvent
 @dataclass(frozen=True)
 class EventWriter:
     connection: sqlite3.Connection
+    sessions_root: Path
 
     def append(self, event: RunEvent) -> RunEvent:
         self.connection.execute(
@@ -33,7 +35,7 @@ class EventWriter:
             ),
         )
         self.connection.commit()
-        write_event_log(self.connection, event)
+        write_event_log(self.sessions_root, event)
         return event
 
     def list_for_session(self, session_id: str) -> list[RunEvent]:
