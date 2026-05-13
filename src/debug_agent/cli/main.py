@@ -19,6 +19,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     try:
         return _main(args)
+    except KeyboardInterrupt:
+        result = RuntimeOrchestrator().cancel_active_session("Interrupted by Ctrl+C.")
+        print(result.message, file=sys.stderr)
+        return result.exit_code
     except RuntimeBootstrapError as exc:
         print(str(exc), file=sys.stderr)
         return 1

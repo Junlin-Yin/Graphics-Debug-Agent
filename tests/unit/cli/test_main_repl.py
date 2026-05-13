@@ -4,8 +4,12 @@ import io
 import sqlite3
 
 import pytest
+import debug_agent.cli.main as cli_main
 from debug_agent.cli.main import main
 from debug_agent.cli.repl import run_repl
+from debug_agent.persistence.runs import RunStore
+from debug_agent.persistence.sessions import SessionStore
+from debug_agent.persistence.sqlite import RuntimeDatabase
 
 
 def _write_fake_config(
@@ -218,3 +222,57 @@ def test_repl_ctrl_c_after_session_creation_marks_failed_and_releases_ownership(
         workspace_root=workspace,
     )
     assert second_exit == 0
+
+
+def test_main_ctrl_c_fallback_marks_active_session_failed_and_releases_ownership(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    db = RuntimeDatabase.bootstrap(workspace)
+    try:
+        sessions = SessionStore(db.connection)
+        runs = RunStore(db.connection)
+        session = sessions.create(
+            workspace_root=workspace,
+            approval_mode="yolo",
+            config_snapshot={"provider": "fake"},
+            session_id="sess_interrupt",
+        )
+        run = runs.create_prompt_run(session.session_id, run_id="run_interrupt")
+        sessions.set_active_run(session.session_id, run.run_id)
+    finally:
+        db.close()
+
+    def interrupt(_args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_main, "_main", interrupt)
+
+    exit_code = main([])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Interrupted by Ctrl+C." in captured.err
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        session_status, active_run_id, session_error = conn.execute(
+            "SELECT status, active_run_id, error_summary FROM sessions"
+        ).fetchone()
+        run_status, run_error = conn.execute(
+            "SELECT status, error_summary FROM runs"
+        ).fetchone()
+        failed_error_class = conn.execute(
+            """
+            SELECT json_extract(payload_json, '$.error_class')
+            FROM run_events
+            WHERE kind = 'session_failed'
+            ORDER BY rowid DESC
+            LIMIT 1
+            """
+        ).fetchone()[0]
+
+    assert (session_status, active_run_id, run_status) == ("failed", None, "failed")
+    assert session_error == "Interrupted by Ctrl+C."
+    assert run_error == "Interrupted by Ctrl+C."
+    assert failed_error_class == "cancelled"

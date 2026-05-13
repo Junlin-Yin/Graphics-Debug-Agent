@@ -413,6 +413,61 @@ class RuntimeOrchestrator:
         finally:
             db.close()
 
+    def cancel_active_session(self, message: str) -> OneShotResult:
+        db = RuntimeDatabase.bootstrap(self.workspace_root)
+        sessions_root = db.path.parent
+        sessions = SessionStore(db.connection)
+        runs = RunStore(db.connection)
+        events = EventWriter(db.connection, sessions_root)
+        checkpoints = CheckpointStore(db.connection)
+        try:
+            session = sessions.find_active_for_workspace(self.workspace_root)
+            error = {
+                "error_class": "cancelled",
+                "message": message,
+                "source": "cli",
+                "recoverable": False,
+            }
+            if session is None:
+                return OneShotResult(
+                    exit_code=1,
+                    assistant_output=None,
+                    error=error,
+                    message=message,
+                    session_id=None,
+                    run_id=None,
+                )
+            run_id = session.active_run_id
+            if run_id is None:
+                session = sessions.mark_failed(session.session_id, message)
+                return OneShotResult(
+                    exit_code=1,
+                    assistant_output=None,
+                    error=error,
+                    message=message,
+                    session_id=session.session_id,
+                    run_id=None,
+                )
+            return _mark_failed_terminal(
+                sessions=sessions,
+                runs=runs,
+                events=events,
+                checkpoints=checkpoints,
+                trace_writer=TraceWriter(db.connection, sessions_root),
+                session_id=session.session_id,
+                run_id=run_id,
+                agent_result=AgentRunResult(
+                    status="cancelled",
+                    assistant_output=None,
+                    tool_results=[],
+                    usage={},
+                    error=error,
+                    metadata={},
+                ),
+            )
+        finally:
+            db.close()
+
     def start_repl(self, config_snapshot: dict[str, Any]) -> ReplStartResult:
         db = RuntimeDatabase.bootstrap(self.workspace_root)
         sessions_root = db.path.parent
