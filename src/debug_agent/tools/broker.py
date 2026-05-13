@@ -289,4 +289,6 @@ def _audit_payload(
         payload["message"] = result.error["message"]
         payload["source"] = result.error["source"]
         payload["recoverable"] = result.error["recoverable"]
+    if result.status == "ok":
+        payload["result"] = result.to_dict()
     return payload

@@ -21,6 +21,10 @@
 - `ModelFactory` maps config snapshot to a model instance or clear `config_error`.
 - `LangChainAgentLoopAdapter` maps model success, model failure, timeout, and cancellation to `AgentRunResult`.
 - `PromptAgentExecutor` writes model events and final checkpoint using a fake model.
+- `model_call_completed` persists model response content, normalized tool calls,
+  or artifact references when content is large.
+- `tool_call_completed` persists the standardized `ToolResult`, with large
+  output represented by artifact references.
 - `TraceWriter` renders trace from persisted run events.
 - `TraceWriter` refreshes trace on terminal session state and on explicit trace command when missing or stale.
 
@@ -35,6 +39,8 @@
 - active workspace ownership conflict returns exit code `3`.
 - read-only native tool invocation is visible in run events and trace.
 - read-only native tool output larger than 16 KiB is stored as a `text` artifact and referenced from `ToolResult`.
+- model response content larger than 16 KiB is stored as a `text` artifact and
+  referenced from `model_call_completed`.
 - model failure marks run/session failed and records `model_error`.
 - config failure exits with code `4`.
 - config failure records `config_error` when a session exists.

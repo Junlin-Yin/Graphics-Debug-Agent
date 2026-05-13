@@ -102,7 +102,7 @@ def _render_trace(data: dict[str, Any], metadata: dict[str, Any]) -> str:
     for event in data["events"]:
         lines.append(
             f"- {event.timestamp} {event.kind} run={event.run_id} "
-            f"payload={_summarize_payload(event.payload)}"
+            f"payload={_summarize_payload(event.payload, event.kind)}"
         )
     lines.extend(["", "## Checkpoints"])
     for checkpoint in data["checkpoints"]:
@@ -125,7 +125,10 @@ def _render_trace(data: dict[str, Any], metadata: dict[str, Any]) -> str:
     if session.error_summary:
         lines.append(f"- session_error: {session.error_summary}")
     for event in error_events:
-        lines.append(f"- {event.timestamp} {event.kind}: {_summarize_payload(event.payload)}")
+        lines.append(
+            f"- {event.timestamp} {event.kind}: "
+            f"{_summarize_payload(event.payload, event.kind)}"
+        )
     if not session.error_summary and not error_events:
         lines.append("- none")
     lines.append("")
@@ -151,8 +154,48 @@ def _read_rendered_metadata(path: Path) -> dict[str, Any] | None:
     return {"event_count": int(event_count.group(1)), "latest_event_id": latest_event_id}
 
 
-def _summarize_payload(payload: dict[str, Any]) -> str:
+def _summarize_payload(payload: dict[str, Any], kind: str | None = None) -> str:
+    if kind == "model_call_completed":
+        return _summarize_model_completed(payload)
+    if kind == "tool_call_completed":
+        return _summarize_tool_completed(payload)
     text = str(payload)
     if len(text) <= 240:
         return text
     return text[:237] + "..."
+
+
+def _summarize_model_completed(payload: dict[str, Any]) -> str:
+    response = payload.get("redacted_output") or payload.get("content") or ""
+    tool_names = [
+        str(call.get("name", ""))
+        for call in payload.get("tool_calls", [])
+        if isinstance(call, dict)
+    ]
+    return (
+        f"{{'duration': {payload.get('duration')}, "
+        f"response={_shorten(str(response))}, "
+        f"tool_calls={','.join(tool_names)}, "
+        f"artifact_ids={payload.get('artifact_ids', [])}, "
+        f"usage={payload.get('usage', {})}}}"
+    )
+
+
+def _summarize_tool_completed(payload: dict[str, Any]) -> str:
+    result = payload.get("result", {})
+    result_text = ""
+    if isinstance(result, dict):
+        result_text = str(result.get("redacted_output") or result.get("output") or "")
+    return (
+        f"{{'duration': {payload.get('duration')}, "
+        f"tool_name={payload.get('tool_name', '')}, "
+        f"status={payload.get('status', '')}, "
+        f"result={_shorten(result_text)}, "
+        f"artifact_ids={payload.get('artifact_ids', [])}}}"
+    )
+
+
+def _shorten(text: str) -> str:
+    if len(text) <= 160:
+        return text
+    return text[:157] + "..."

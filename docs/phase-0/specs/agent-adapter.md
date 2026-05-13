@@ -36,7 +36,8 @@ When a model returns tool calls, the adapter runs a bounded tool-calling loop
 inside the single `AgentLoopAdapter.run(...)` call:
 
 1. invoke the model with the composed prompt and runtime tool definitions
-2. record `model_call_completed` for that model invocation
+2. record `model_call_completed` for that model invocation, including the
+   model response content or artifact references
 3. delegate each returned tool call to `ToolBroker.invoke(...)`
 4. append the assistant tool-call message and corresponding tool result messages
 5. invoke the model again until it returns a final assistant response
@@ -90,6 +91,19 @@ class RunContext:
 `model_event_recorder` is provided by Runtime Core. The adapter uses it to write
 `model_call_started`, `model_call_completed`, and `model_call_failed` at the
 boundary of each actual model invocation.
+
+`model_call_completed` payload includes:
+
+- usage metadata returned by the provider, when available
+- duration
+- response content for assistant text responses
+- normalized tool calls for model responses that request tools
+- artifact ids for response content stored outside SQLite
+- redacted output summary when response content is stored as an artifact
+
+Model response content larger than 16 KiB must be stored as a `text` artifact
+and referenced from the event payload. Runtime must not store large model
+response content inline in `run_events.payload_json`.
 
 ```python
 class AgentRunResult:

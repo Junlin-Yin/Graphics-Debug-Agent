@@ -187,6 +187,10 @@ def _invoke_model(
                 "usage": getattr(response, "usage", {}) or {},
                 "metadata": {},
                 "duration": monotonic() - start,
+                "content": _response_content(response),
+                "tool_calls": _normalized_tool_calls(_tool_calls(response)),
+                "artifact_ids": [],
+                "redacted_output": None,
             },
         )
     return response

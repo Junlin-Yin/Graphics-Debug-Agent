@@ -115,6 +115,7 @@ def test_successful_read_file_returns_tool_result_and_audit_events(tmp_path) -> 
         "tool_call_completed",
     ]
     assert events[-1].payload["status"] == "ok"
+    assert events[-1].payload["result"] == result.to_dict()
     db.close()
 
 
@@ -145,6 +146,7 @@ def test_large_output_is_written_to_text_artifact(tmp_path) -> None:
         "metadata": artifact.metadata,
     }
     assert events[2].payload["artifact_ids"] == result.artifacts
+    assert events[2].payload["result"] == result.to_dict()
     assert events[2].payload["duration"] >= 0
     db.close()
 

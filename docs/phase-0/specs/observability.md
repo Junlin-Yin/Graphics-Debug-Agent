@@ -71,8 +71,10 @@ Trace must be readable by humans and useful to future agent runs. It is not a st
 - `user_message`: timeline item with redacted or summarized user input.
 - `assistant_message`: timeline item with assistant output summary.
 - `model_call_started`: timeline item with provider/model metadata.
-- `model_call_completed`: timeline item with usage and duration.
-- `tool_call_*`: timeline item with tool name, status, duration, artifact ids.
+- `model_call_completed`: timeline item with usage, duration, response summary,
+  tool-call summary, and artifact ids.
+- `tool_call_*`: timeline item with tool name, status, duration, result summary,
+  and artifact ids.
 - `checkpoint_written`: checkpoint section entry.
 - `artifact_registered`: artifact section entry.
 - `*_failed`: errors section entry.

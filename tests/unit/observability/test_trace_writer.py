@@ -31,7 +31,18 @@ def _persist_session_with_events(tmp_path):
         ("run_started", {}),
         ("user_message", {"content": "hello"}),
         ("model_call_started", {"provider": "fake", "model": "fake-model"}),
-        ("model_call_completed", {"usage": {}, "metadata": {}, "duration": 0.025}),
+        (
+            "model_call_completed",
+            {
+                "usage": {},
+                "metadata": {},
+                "duration": 0.025,
+                "content": "model answer",
+                "tool_calls": [{"id": "call_1", "name": "read_file", "args": {}}],
+                "artifact_ids": [],
+                "redacted_output": None,
+            },
+        ),
         (
             "tool_call_completed",
             {
@@ -39,6 +50,14 @@ def _persist_session_with_events(tmp_path):
                 "status": "ok",
                 "duration": 0.013,
                 "artifact_ids": ["art_trace"],
+                "result": {
+                    "status": "ok",
+                    "output": "tool answer",
+                    "error": None,
+                    "artifacts": ["art_trace"],
+                    "metadata": {},
+                    "redacted_output": None,
+                },
             },
         ),
         (
@@ -126,8 +145,11 @@ def test_trace_writer_renders_required_sections_and_metadata(tmp_path) -> None:
     assert "model_call_started" in content
     assert "model_call_completed" in content
     assert "'duration': 0.025" in content
+    assert "response=model answer" in content
+    assert "tool_calls=read_file" in content
     assert "tool_call_completed" in content
     assert "'duration': 0.013" in content
+    assert "result=tool answer" in content
     assert "artifact_registered" in content
     assert "art_trace" in content
     assert "model_call_failed" in content

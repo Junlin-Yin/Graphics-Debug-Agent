@@ -278,6 +278,7 @@ class RuntimeOrchestrator:
             executor = PromptAgentExecutor(
                 event_writer=events,
                 checkpoint_store=checkpoints,
+                artifact_store=artifacts,
                 adapter=adapter,
                 tool_definitions=tool_definitions(),
                 system_prompt=config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
@@ -553,6 +554,7 @@ class RuntimeOrchestrator:
         executor = PromptAgentExecutor(
             event_writer=events,
             checkpoint_store=checkpoints,
+            artifact_store=artifacts,
             adapter=adapter,
             tool_definitions=tool_definitions(),
             system_prompt=config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),

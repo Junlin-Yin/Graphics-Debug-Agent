@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.checkpoints import CheckpointStore
 from debug_agent.persistence.events import EventWriter
 from debug_agent.runtime.contracts import (
@@ -20,10 +21,14 @@ from debug_agent.runtime.contracts import (
 )
 
 
+LARGE_MODEL_CONTENT_THRESHOLD_BYTES = 16 * 1024
+
+
 @dataclass(frozen=True)
 class PromptAgentExecutor:
     event_writer: EventWriter
     checkpoint_store: CheckpointStore
+    artifact_store: ArtifactStore
     adapter: AgentLoopAdapter
     tool_definitions: list[ToolDefinition]
     system_prompt: str
@@ -60,11 +65,11 @@ class PromptAgentExecutor:
             approval_mode=session.approval_mode,
             cancellation_token=None,
             metadata={},
-            model_event_recorder=lambda kind, payload: self._append_event(
-                session_id=session.session_id,
-                run_id=run.run_id,
+            model_event_recorder=lambda kind, payload: self._append_model_event(
+                session=session,
+                run=run,
                 kind=kind,
-                payload=payload,
+                payload=dict(payload),
             ),
         )
         result = self.adapter.run(request, context)
@@ -148,6 +153,60 @@ class PromptAgentExecutor:
                 payload=payload,
             )
         )
+
+    def _append_model_event(
+        self, *, session: Session, run: Run, kind: str, payload: dict[str, Any]
+    ) -> None:
+        if kind == "model_call_completed":
+            payload = self._normalize_model_completed_payload(session, run, payload)
+        self._append_event(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            kind=kind,
+            payload=payload,
+        )
+
+    def _normalize_model_completed_payload(
+        self, session: Session, run: Run, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        content = payload.get("content")
+        artifact_ids = list(payload.get("artifact_ids", []))
+        payload["artifact_ids"] = artifact_ids
+        payload.setdefault("redacted_output", None)
+        payload.setdefault("tool_calls", [])
+        if not isinstance(content, str):
+            return payload
+        content_size = len(content.encode("utf-8"))
+        if content_size <= LARGE_MODEL_CONTENT_THRESHOLD_BYTES:
+            return payload
+        artifact = self.artifact_store.write_text(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            artifact_id=f"art_{uuid4().hex}",
+            filename="model_call_completed_output.txt",
+            content=content,
+            metadata={
+                "event_kind": "model_call_completed",
+                "bytes": content_size,
+            },
+        )
+        self._append_event(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            kind="artifact_registered",
+            payload={
+                "artifact_id": artifact.artifact_id,
+                "artifact_type": artifact.artifact_type,
+                "relative_path": artifact.relative_path,
+                "metadata": artifact.metadata,
+            },
+        )
+        payload["content"] = None
+        payload["artifact_ids"] = [*artifact_ids, artifact.artifact_id]
+        payload["redacted_output"] = (
+            f"[model response stored as artifact: {artifact.artifact_id}]"
+        )
+        return payload
 
 
 def _artifact_ids(result: AgentRunResult) -> list[str]:

@@ -105,7 +105,14 @@ Audit payload includes:
 - status
 - duration
 - artifact ids
+- standardized `ToolResult` payload for completed tool calls
 - error class if any
+
+For `tool_call_completed`, the payload must include the complete standardized
+`ToolResult` as `result`. Inline `result.output` is allowed only when it is at or
+below the 16 KiB output threshold. Larger tool output must be represented through
+`result.artifacts` and `result.redacted_output`, with the full content stored as
+a `text` artifact.
 
 ## Timeout
 

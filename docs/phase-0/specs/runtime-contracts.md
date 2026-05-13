@@ -100,6 +100,17 @@ Phase 0 event kinds:
 - `checkpoint_written`
 - `artifact_registered`
 
+Phase 0 event payloads may include inline model response content and tool output
+only when the serialized content is at or below 16 KiB. Larger model response
+content and tool output are stored as artifacts and referenced by artifact id.
+
+`model_call_completed` payload includes usage, duration, model response content
+or redacted artifact references, and normalized tool calls when the model
+requested tools.
+
+`tool_call_completed` payload includes the standard audit fields plus the
+standardized `ToolResult` payload as `result`.
+
 ## Checkpoint
 
 ```python

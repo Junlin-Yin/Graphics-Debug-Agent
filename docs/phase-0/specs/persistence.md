@@ -134,8 +134,12 @@ CREATE TABLE artifacts (
 - `run_started` event is written before calling the adapter.
 - `model_call_started` is written before each model call.
 - `model_call_completed` or `model_call_failed` is written after each model call.
+- `model_call_completed` stores model response content or artifact references,
+  including normalized tool calls when the model requests tools.
 - For tool-using turns, the model call that requested tools is completed before
   any `tool_call_*` events for those requested tools are written.
+- `tool_call_completed` stores the standardized `ToolResult` payload or artifact
+  references.
 - `assistant_message` is written before final checkpoint.
 - A `turn` checkpoint is written after each completed one-shot and after each successful REPL turn.
 - A `terminal` checkpoint is written when the run/session exits successfully.
@@ -155,3 +159,14 @@ CREATE TABLE artifacts (
 - Artifact paths are relative to `.sessions/<session_id>/`.
 - Long-term references use `artifact_id`, not raw filesystem path.
 - `temp/` can be cleaned after terminal session status.
+
+## Large Content Rules
+
+- Model response content and tool output larger than 16 KiB are stored as `text`
+  artifacts.
+- Event payloads reference large content with artifact ids and redacted summary
+  fields instead of inline content.
+- Small model response content and small `ToolResult.output` values may be stored
+  inline in `run_events.payload_json`.
+- Checkpoints continue to store only authoritative state and artifact references;
+  they do not store raw large model or tool content.

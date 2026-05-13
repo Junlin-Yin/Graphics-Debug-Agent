@@ -37,19 +37,40 @@ def _runtime(tmp_path, model):
     executor = PromptAgentExecutor(
         event_writer=events,
         checkpoint_store=checkpoints,
+        artifact_store=artifacts,
         adapter=adapter,
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
     )
-    return workspace, db, sessions, runs, events, checkpoints, session, run, executor
+    return (
+        workspace,
+        db,
+        sessions,
+        runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        executor,
+    )
 
 
 def test_prompt_executor_writes_model_events_assistant_event_and_turn_checkpoint(
     tmp_path,
 ) -> None:
-    workspace, db, sessions, runs, events, checkpoints, session, run, executor = _runtime(
-        tmp_path, FakeChatModel(response="assistant answer")
-    )
+    (
+        workspace,
+        db,
+        sessions,
+        runs,
+        events,
+        checkpoints,
+        _artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="assistant answer"))
 
     result = executor.run_turn(
         session=session,
@@ -69,6 +90,10 @@ def test_prompt_executor_writes_model_events_assistant_event_and_turn_checkpoint
         "checkpoint_written",
     ]
     assert persisted_events[2].payload["duration"] >= 0
+    assert persisted_events[2].payload["content"] == "assistant answer"
+    assert persisted_events[2].payload["tool_calls"] == []
+    assert persisted_events[2].payload["artifact_ids"] == []
+    assert persisted_events[2].payload["redacted_output"] is None
     assert latest_checkpoint.kind == "turn"
     assert latest_checkpoint.state["session_status"] == "running"
     assert latest_checkpoint.state["run_status"] == "running"
@@ -112,9 +137,18 @@ def test_prompt_executor_records_model_completion_before_react_tool_events(
                 {"content": "notes say hello", "tool_calls": [], "usage": {}},
             )()
 
-    workspace, db, sessions, runs, events, checkpoints, session, run, executor = _runtime(
-        tmp_path, ToolLoopModel()
-    )
+    (
+        workspace,
+        db,
+        sessions,
+        runs,
+        events,
+        checkpoints,
+        _artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, ToolLoopModel())
     (workspace / "notes.txt").write_text("hello", encoding="utf-8")
 
     result = executor.run_turn(
@@ -136,6 +170,59 @@ def test_prompt_executor_records_model_completion_before_react_tool_events(
         "assistant_message",
         "checkpoint_written",
     ]
+    first_model_completed = events.list_for_run(run.run_id)[2]
+    assert first_model_completed.payload["content"] == ""
+    assert first_model_completed.payload["tool_calls"] == [
+        {"id": "read_file_0", "name": "read_file", "args": {"path": "notes.txt"}}
+    ]
+    db.close()
+
+
+def test_prompt_executor_writes_large_model_response_to_text_artifact(
+    tmp_path,
+) -> None:
+    large_response = "x" * (16 * 1024 + 1)
+    (
+        workspace,
+        db,
+        _sessions,
+        _runs,
+        events,
+        _checkpoints,
+        artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, FakeChatModel(response=large_response))
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="hello",
+        workspace_root=str(workspace),
+    )
+
+    persisted_events = events.list_for_run(run.run_id)
+    model_completed = next(
+        event for event in persisted_events if event.kind == "model_call_completed"
+    )
+    artifact_id = model_completed.payload["artifact_ids"][0]
+    assert result.assistant_output == large_response
+    assert [event.kind for event in persisted_events[:4]] == [
+        "user_message",
+        "model_call_started",
+        "artifact_registered",
+        "model_call_completed",
+    ]
+    assert model_completed.payload["content"] is None
+    assert model_completed.payload["redacted_output"].startswith(
+        "[model response stored as artifact:"
+    )
+    assert artifacts.resolve_path(artifact_id).read_text(encoding="utf-8") == large_response
+    assert artifacts.get(artifact_id).metadata == {
+        "bytes": 16 * 1024 + 1,
+        "event_kind": "model_call_completed",
+    }
     db.close()
 
 
@@ -177,6 +264,7 @@ def test_prompt_executor_passes_session_timeout_to_adapter_request(tmp_path) -> 
     executor = PromptAgentExecutor(
         event_writer=events,
         checkpoint_store=checkpoints,
+        artifact_store=ArtifactStore(db.connection, db.path.parent),
         adapter=adapter,
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
@@ -195,9 +283,18 @@ def test_prompt_executor_passes_session_timeout_to_adapter_request(tmp_path) -> 
 
 
 def test_prompt_executor_writes_failed_model_event_and_error_checkpoint(tmp_path) -> None:
-    workspace, db, sessions, runs, events, checkpoints, session, run, executor = _runtime(
-        tmp_path, FakeChatModel(error=RuntimeError("provider failed"))
-    )
+    (
+        workspace,
+        db,
+        sessions,
+        runs,
+        events,
+        checkpoints,
+        _artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, FakeChatModel(error=RuntimeError("provider failed")))
 
     result = executor.run_turn(
         session=session,
