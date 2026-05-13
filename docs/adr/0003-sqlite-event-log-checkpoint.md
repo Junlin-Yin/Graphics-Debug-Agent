@@ -1,4 +1,4 @@
-# ADR 0002: SQLite Event Log Plus Checkpoint Snapshot
+# ADR 0003: SQLite Event Log Plus Checkpoint Snapshot
 
 ## Status
 
@@ -44,3 +44,21 @@ Operationally heavier than needed for local-first Phase 0.
 - Migration strategy must exist from Phase 0, even if minimal.
 - Artifact ids, not raw paths, become long-term references.
 
+## Trace And Log Derivation
+
+`trace.md` and `engine.log` are observability outputs, not runtime truth.
+
+Runtime truth remains in SQLite rows and artifact records. `trace.md` is rendered
+from sessions, runs, run events, checkpoints, and artifacts. It may be refreshed
+when a session reaches a terminal state, and it may be refreshed on demand by
+`debug-agent trace <session_id>` when missing or stale.
+
+Phase 0 trace freshness is intentionally cheap: compare rendered event metadata
+with current persisted event metadata, such as event count and latest event id.
+Phase 0 does not checksum event payloads or artifact contents for trace
+freshness.
+
+This keeps event writing simple and avoids turning trace generation into a
+synchronous dependency for every runtime event. If richer trace integrity is
+needed later, it should extend the renderer metadata without making `trace.md`
+the authoritative state store.

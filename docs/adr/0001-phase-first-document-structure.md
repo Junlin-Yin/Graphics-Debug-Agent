@@ -1,4 +1,4 @@
-# ADR 0003: Phase-First Document Structure
+# ADR 0001: Phase-First Document Structure
 
 ## Status
 
@@ -48,4 +48,3 @@ Captures rationale, but does not provide enough coding guidance or acceptance cr
 - Future phases can add their own scope, architecture, specs, and tests without rewriting Phase 0 docs.
 - ADRs remain cross-phase and stable.
 - Root historical docs can be retired or treated as source input after the phase docs become authoritative.
-

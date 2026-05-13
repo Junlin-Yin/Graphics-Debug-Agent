@@ -1,4 +1,4 @@
-# ADR 0001: LangChain As Adapter
+# ADR 0002: LangChain As Adapter
 
 ## Status
 
@@ -46,4 +46,3 @@ This avoids a framework dependency but fragments tool and event behavior across 
 - Switching from LangChain to another framework later requires a new adapter, not a runtime rewrite.
 - Phase 0 must define adapter request/result contracts early.
 - Some LangChain conveniences may be intentionally ignored if they conflict with runtime ownership.
-

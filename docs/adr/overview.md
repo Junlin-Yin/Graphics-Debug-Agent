@@ -13,6 +13,15 @@
 - **垂直切片优先**：每个 phase 都交付可运行闭环，避免先横向铺满所有模块但长期不可用。
 - **不过度设计**：v1 不做 MCP 集成、完整 plugin 平台、通用 YAML workflow DSL、多层嵌套 workflow、step-level retry、skill 热更新、云存储或 Postgres。
 
+## Accepted ADRs
+
+- [ADR 0001: Phase-First Document Structure](0001-phase-first-document-structure.md)
+- [ADR 0002: LangChain As Adapter](0002-langchain-as-adapter.md)
+- [ADR 0003: SQLite Event Log Plus Checkpoint Snapshot](0003-sqlite-event-log-checkpoint.md)
+- [ADR 0004: ToolBroker As Mandatory Execution Boundary](0004-toolbroker-execution-boundary.md)
+- [ADR 0005: Workspace Active Session Ownership](0005-workspace-active-session-ownership.md)
+- [ADR 0006: Frozen Session Config Snapshot And Narrow Provider Strategy](0006-frozen-config-snapshot-provider-strategy.md)
+
 ## 2. 核心设计
 
 ### 2.1 Session / Run 模型
