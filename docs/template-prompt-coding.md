@@ -39,6 +39,18 @@ Default scope:
   it before implementation.
 - If the prompt explicitly names a narrower task, implement only that task.
 
+Branch and planning mode:
+
+- This repository is maintained by a single developer. It is acceptable to work
+  directly on the current branch, including `main`.
+- Do not stop to ask whether to create a feature branch or git worktree solely
+  because the current branch is `main`.
+- If the host environment supports an explicit Plan mode, switch to Plan mode at
+  the start of the coding task before making file edits.
+- If explicit Plan mode is not available, report the plan using the "Before
+  coding" section below, then proceed according to the approved repository
+  contracts.
+
 Before coding, report the derived:
 
 - active phase
