@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from debug_agent.adapters.langchain_adapter import (
     LangChainAgentLoopAdapter,
     MAX_TOOL_CALL_ITERATIONS,
@@ -70,6 +72,51 @@ def test_langchain_adapter_maps_model_failure_timeout_and_cancellation() -> None
     assert timeout.error["error_class"] == "timeout"
     assert cancelled.status == "cancelled"
     assert cancelled.error["error_class"] == "cancelled"
+
+
+def test_langchain_adapter_times_out_blocking_model_call() -> None:
+    events = []
+
+    class SlowModel:
+        def invoke(self, messages):
+            time.sleep(0.2)
+            return type(
+                "Response",
+                (),
+                {"content": "too late", "tool_calls": [], "usage": {}},
+            )()
+
+    request = AgentRunRequest(
+        session_id="sess_1",
+        run_id="run_1",
+        user_input="hello",
+        system_prompt="system prompt",
+        conversation=[],
+        tools=[],
+        model_config={"provider": "fake", "model": "slow"},
+        timeout_seconds=0.01,
+    )
+    context = RunContext(
+        workspace_root="/repo",
+        artifact_root="/repo/.sessions/sess_1/artifacts",
+        approval_mode="yolo",
+        cancellation_token=None,
+        metadata={},
+        model_event_recorder=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    started = time.monotonic()
+    result = LangChainAgentLoopAdapter(model=SlowModel()).run(request, context)
+    duration = time.monotonic() - started
+
+    assert result.status == "timeout"
+    assert result.error["error_class"] == "timeout"
+    assert duration < 0.15
+    assert [kind for kind, _payload in events] == [
+        "model_call_started",
+        "model_call_failed",
+    ]
+    assert events[-1][1]["error_class"] == "timeout"
 
 
 def test_langchain_adapter_delegates_tool_calls_to_toolbroker() -> None:

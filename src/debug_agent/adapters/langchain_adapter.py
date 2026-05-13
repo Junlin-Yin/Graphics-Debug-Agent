@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import json
+import queue
+import threading
 from time import monotonic
 from typing import Any
 
@@ -168,7 +170,7 @@ def _invoke_model(
         )
     start = monotonic()
     try:
-        response = model.invoke(messages)
+        response = _invoke_with_timeout(model, messages, request.timeout_seconds)
     except TimeoutError as exc:
         _record_model_failure(recorder, "timeout", str(exc), start)
         raise
@@ -188,6 +190,41 @@ def _invoke_model(
             },
         )
     return response
+
+
+def _invoke_with_timeout(
+    model: object,
+    messages: list[object],
+    timeout_seconds: int | float | None,
+) -> object:
+    if timeout_seconds is None or timeout_seconds <= 0:
+        return model.invoke(messages)
+
+    result_queue: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
+
+    def invoke() -> None:
+        try:
+            result_queue.put(("ok", model.invoke(messages)))
+        except BaseException as exc:
+            result_queue.put(("error", exc))
+
+    thread = threading.Thread(target=invoke, daemon=True)
+    thread.start()
+    thread.join(timeout=float(timeout_seconds))
+    if thread.is_alive():
+        raise TimeoutError(f"Model call timed out after {timeout_seconds:g} seconds.")
+
+    try:
+        status, value = result_queue.get_nowait()
+    except queue.Empty as exc:
+        raise RuntimeError("Model call finished without returning a result.") from exc
+    if status == "error":
+        if not isinstance(value, BaseException):
+            raise RuntimeError("Model call failed without returning an exception.")
+        raise value
+    if status != "ok":
+        raise RuntimeError(f"Unsupported model call result status: {status}")
+    return value
 
 
 def _record_model_failure(
