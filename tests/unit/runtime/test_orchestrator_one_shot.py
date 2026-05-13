@@ -39,7 +39,15 @@ def test_one_shot_success_persists_lifecycle_and_completes_session(tmp_path) -> 
         event_kinds = [
             row[0] for row in conn.execute("SELECT kind FROM run_events ORDER BY rowid")
         ]
-        checkpoint_count = conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0]
+        checkpoint_rows = conn.execute(
+            "SELECT checkpoint_id, kind FROM checkpoints ORDER BY rowid"
+        ).fetchall()
+        session_latest_checkpoint_id = conn.execute(
+            "SELECT latest_checkpoint_id FROM sessions"
+        ).fetchone()[0]
+        run_latest_checkpoint_id = conn.execute(
+            "SELECT latest_checkpoint_id FROM runs"
+        ).fetchone()[0]
 
     assert session_row == ("completed", "yolo", None)
     assert run_row == ("completed", "prompt")
@@ -51,10 +59,14 @@ def test_one_shot_success_persists_lifecycle_and_completes_session(tmp_path) -> 
         "model_call_completed",
         "assistant_message",
         "checkpoint_written",
+        "checkpoint_written",
         "run_completed",
         "session_completed",
     ]
-    assert checkpoint_count == 1
+    assert [row[1] for row in checkpoint_rows] == ["turn", "terminal"]
+    terminal_checkpoint_id = checkpoint_rows[-1][0]
+    assert session_latest_checkpoint_id == terminal_checkpoint_id
+    assert run_latest_checkpoint_id == terminal_checkpoint_id
 
 
 def test_one_shot_model_failure_marks_run_and_session_failed(tmp_path) -> None:

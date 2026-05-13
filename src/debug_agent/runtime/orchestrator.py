@@ -283,15 +283,42 @@ class RuntimeOrchestrator:
                 user_input=prompt,
                 workspace_root=str(self.workspace_root),
             )
-            latest_run = runs.get(run.run_id)
-            latest_session = sessions.get(session.session_id)
             if agent_result.status == "completed":
+                terminal_checkpoint = checkpoints.save(
+                    Checkpoint(
+                        checkpoint_id=f"chk_{uuid4().hex}",
+                        session_id=session.session_id,
+                        run_id=run.run_id,
+                        kind="terminal",
+                        state={
+                            "session_status": "completed",
+                            "run_status": "completed",
+                            "prompt_turn_counter": 1,
+                            "latest_model_response_metadata": agent_result.metadata,
+                            "latest_artifact_ids": _artifact_ids(agent_result),
+                            "latest_error_summary": None,
+                        },
+                        summary="One-shot completed successfully.",
+                        created_at=utc_now_iso(),
+                    )
+                )
+                _append_event(
+                    events,
+                    session.session_id,
+                    run.run_id,
+                    "checkpoint_written",
+                    {
+                        "checkpoint_id": terminal_checkpoint.checkpoint_id,
+                        "kind": terminal_checkpoint.kind,
+                    },
+                )
                 run = runs.mark_completed(
-                    run.run_id, latest_checkpoint_id=latest_run.latest_checkpoint_id
+                    run.run_id,
+                    latest_checkpoint_id=terminal_checkpoint.checkpoint_id,
                 )
                 session = sessions.mark_completed(
                     session.session_id,
-                    latest_checkpoint_id=latest_session.latest_checkpoint_id,
+                    latest_checkpoint_id=terminal_checkpoint.checkpoint_id,
                 )
                 _append_event(events, session.session_id, run.run_id, "run_completed", {})
                 _append_event(events, session.session_id, run.run_id, "session_completed", {})
@@ -581,6 +608,13 @@ def _append_event(
             payload=payload,
         )
     )
+
+
+def _artifact_ids(result: AgentRunResult) -> list[str]:
+    artifact_ids: list[str] = []
+    for tool_result in result.tool_results:
+        artifact_ids.extend(tool_result.get("artifacts", []))
+    return artifact_ids
 
 
 def _active_conflict_message(session_id: str) -> str:

@@ -45,7 +45,10 @@ fake_response = "integration answer"
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM run_events").fetchone()[0] >= 1
-        assert conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 1
+        checkpoint_kinds = [
+            row[0] for row in conn.execute("SELECT kind FROM checkpoints ORDER BY rowid")
+        ]
+        assert checkpoint_kinds == ["turn", "terminal"]
 
 
 def test_debug_agent_one_shot_model_cancellation_records_terminal_failure(
