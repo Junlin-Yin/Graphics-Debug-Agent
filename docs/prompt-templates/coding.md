@@ -74,6 +74,10 @@ Before claiming completion:
 
 - Run the verification command derived from `docs/<active-phase>/operations.md`
   and the named milestone, or stop and explain why it cannot be run.
+- After the named milestone is fully completed and accepted, update
+  `docs/<active-phase>/implementation-plan.md` to mark that milestone's
+  completed checklist items with `[x]`. Do not mark future milestones or
+  unverified items complete.
 - Report what was verified, what remains unverified, and whether the acceptance
   criteria are satisfied.
 
