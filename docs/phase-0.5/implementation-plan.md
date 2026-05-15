@@ -80,18 +80,18 @@ Runnable state: the package resolves and the existing unit test suite remains ru
 
 ## Milestone 2: UI-neutral Contracts And Pure Helpers
 
-- [ ] Define `ReplView` protocol with `run(controller) -> int`.
-- [ ] Define `ReplViewEvent`.
-- [ ] Define `WelcomeSnapshot`, `StatusBarSnapshot`, and `SessionCloseSummary`.
-- [ ] Implement token formatting for status bar display.
-- [ ] Implement current-session `PromptHistory`.
-- [ ] Implement `ToolResultPreviewFormatter`.
-- [ ] Ensure dictionary tool output uses `json.dumps(output, ensure_ascii=False, sort_keys=True)`.
-- [ ] Ensure `redacted_output` is preferred over raw output for previews.
-- [ ] Add unit tests for prompt history navigation, multiline storage, empty prompt exclusion, and slash command storage.
-- [ ] Add unit tests for snapshot fallback values, full session id in close summary, and status bar token formatting.
-- [ ] Add unit tests for tool preview line truncation, character truncation, artifact ids, dictionary formatting, and redacted output.
-- [ ] Verify with `uv run pytest tests/unit/cli -v`.
+- [x] Define `ReplView` protocol with `run(controller) -> int`.
+- [x] Define `ReplViewEvent`.
+- [x] Define `WelcomeSnapshot`, `StatusBarSnapshot`, and `SessionCloseSummary`.
+- [x] Implement token formatting for status bar display.
+- [x] Implement current-session `PromptHistory`.
+- [x] Implement `ToolResultPreviewFormatter`.
+- [x] Ensure dictionary tool output uses `json.dumps(output, ensure_ascii=False, sort_keys=True)`.
+- [x] Ensure `redacted_output` is preferred over raw output for previews.
+- [x] Add unit tests for prompt history navigation, multiline storage, empty prompt exclusion, and slash command storage.
+- [x] Add unit tests for snapshot fallback values, full session id in close summary, and status bar token formatting.
+- [x] Add unit tests for tool preview line truncation, character truncation, artifact ids, dictionary formatting, and redacted output.
+- [x] Verify with `uv run pytest tests/unit/cli -v`.
 
 Modified boundaries: CLI/REPL UI contract modules and pure helper tests.
 
