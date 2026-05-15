@@ -1,0 +1,158 @@
+# Phase 0.5 Test Plan
+
+## Unit Tests
+
+- `PromptHistory` navigates previous and next entries.
+- `PromptHistory` stores multiline prompts as one history item.
+- empty prompts are not submitted and are not stored in history.
+- slash commands are stored in current-session history.
+- multiline input submission preserves newlines.
+- `ToolResultPreviewFormatter` truncates by line limit.
+- `ToolResultPreviewFormatter` truncates by character limit.
+- `ToolResultPreviewFormatter` includes artifact ids when present.
+- tool result preview truncation does not create artifacts.
+- Markdown rendering falls back to plain text when rendering fails.
+- model text above `max_markdown_render_chars` remains plain text.
+- `AgentStreamEvent` maps to `ReplViewEvent` or render state.
+- `ReplView` does not directly consume `AgentStreamEvent`.
+- `AgentStreamEvent.kind` values use the `stream_` prefix.
+- `AgentStreamEvent` is not written to persisted `run_events`.
+- model calls without text deltas do not create model output blocks.
+- intermediate model-call text renders but does not participate in final assistant output equality.
+- function-call-only chunks do not render as model text.
+- partial tool args do not render as model text.
+- tool args produce only redacted or short preview output when displayed.
+- duplicate tool names correlate by `tool_call_id`.
+- status bar snapshot formatting handles known usage.
+- status bar snapshot formatting handles unavailable usage.
+- session cumulative token usage aggregates best-effort provider usage.
+- session close summary formats known token usage.
+- session close summary formats unavailable token usage.
+- `agent_stream_callback` sends events to the controller queue.
+- controller queue draining maps events in order.
+- final assistant model-call deltas concatenate to `AgentRunResult.assistant_output`.
+- non-streaming provider fallback uses `invoke()`.
+- non-streaming provider fallback emits the warning at most once.
+- `/status` appends a TUI system message.
+- prompt_toolkit initialization failure falls back to `PlainReplView`.
+- prompt_toolkit initialization failure emits at most one warning.
+- welcome version lookup failure displays `unknown`.
+
+## Integration Tests
+
+- `debug-agent` in a TTY starts TUI and shows the welcome panel.
+- submitted prompt appears as a fixed user message.
+- input is disabled while a prompt turn is running.
+- mock streaming model deltas render incrementally.
+- mock streaming model final text switches to Markdown rendering when allowed.
+- mock tool call start and completion render as tool blocks.
+- mock tool result renders as a preview block.
+- long tool output is truncated for display.
+- turn status updates while running and becomes final at completion.
+- timeout displays as `timeout` while persisted state remains `failed` with `error_class=timeout`.
+- cancellation displays as `cancelled` while persisted state remains `failed` with `error_class=cancelled`.
+- `/status` during active execution appends a system message.
+- ordinary prompt during active execution is rejected and shown clearly.
+- `/exit` displays session closed and token summary.
+- active execution `/exit` does not introduce mid-call cancel propagation.
+- one-shot mode does not start TUI and keeps plain stdout.
+- non-TTY REPL uses `PlainReplView`.
+- injected input/output streams use `PlainReplView`.
+- prompt_toolkit initialization failure uses `PlainReplView`.
+
+## Failure Scenarios
+
+- prompt_toolkit initialization failure.
+- provider does not support streaming.
+- model stream raises provider error.
+- model timeout.
+- model cancellation observed by runtime.
+- tool result output exceeds preview line limit.
+- tool result output exceeds preview character limit.
+- tool call has no provider tool call id.
+- duplicate tool names in one turn.
+- malformed stream event payload from adapter.
+- Markdown rendering failure.
+- token usage missing from provider response.
+- version lookup failure.
+
+## Fake Model Testing
+
+Fake model must support:
+
+- deterministic non-streaming assistant text.
+- deterministic streaming text deltas.
+- multiple model-call lifecycles in one turn.
+- model calls with no displayable text.
+- provider-visible text before a tool call.
+- function-call-only chunks.
+- partial tool argument chunks.
+- forced provider error.
+- forced timeout.
+- forced lack of streaming support.
+
+Tests should not require network access.
+
+## Fake Tool Testing
+
+Fake tool or fixture workspace must cover:
+
+- tool call start.
+- tool call success.
+- tool call error.
+- output large enough for preview truncation.
+- artifact ids present in `ToolResult`.
+- dictionary output requiring controller formatting.
+- repeated use of the same tool name in one turn.
+
+## Manual Tests
+
+- macOS Terminal.
+- iTerm2.
+- Chinese input, best effort.
+- Chinese backspace behavior, best effort.
+- multiline prompt entry.
+- fast history navigation.
+- long Markdown output.
+- long tool result output.
+- narrow terminal layout with wrapping and readable tool blocks.
+
+## Smoke Commands
+
+```bash
+uv run pytest tests/unit -v
+uv run pytest tests/integration -v
+```
+
+TUI smoke test:
+
+```text
+debug-agent
+> hello
+> /status
+> tell me one more thing
+> /exit
+```
+
+Fallback smoke test:
+
+```text
+debug-agent < input.txt
+```
+
+one-shot smoke test:
+
+```bash
+debug-agent -p "hello"
+```
+
+## Phase 0.5 Acceptance
+
+Phase 0.5 is accepted only if:
+
+- the Phase 0.5 TUI smoke path works with fake model configuration.
+- one-shot behavior remains plain stdout.
+- non-TTY and injected I/O paths use `PlainReplView`.
+- streaming tests pass with a fake or mock streaming provider.
+- non-streaming fallback tests pass.
+- no Phase 1+ feature is required.

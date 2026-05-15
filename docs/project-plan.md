@@ -11,6 +11,7 @@
 - Runtime Core 自研，LangChain/LangGraph 只作为 `AgentLoopAdapter`。
 - Workflow 第一版采用 code-first，不提前设计复杂 YAML DSL。
 - Phase 按垂直可运行切片推进。
+- 在 Phase 0 和 Phase 1 之间加入 Phase 0.5：轻量 TUI 与 streaming REPL，用于补强人类可观测交互体验，但不改变 runtime 真值模型。
 - MCP 不在 v1 主线中实现，后移为 shader-debug readiness 之后的可选扩展。
 - Plugin 后移为可选静态打包层。
 - 持久化采用 SQLite `event log + checkpoint snapshot`。
@@ -20,7 +21,7 @@
 
 系统分为 7 层：
 
-- `CLI Entrypoint`：`debug-agent`、one-shot、resume、status、trace、registry 查询。
+- `CLI Entrypoint`：`debug-agent`、REPL/TUI、one-shot、resume、status、trace、registry 查询。
 - `Runtime Orchestrator`：创建 session/run，解析 skill 路由，调度 prompt/subagent/workflow executor。
 - `Registry`：发现 skills、agents，后续可发现 MCP config 和 plugins。
 - `Agent Runtime`：执行 prompt agent、subagent、skill 动态注入。
@@ -37,6 +38,7 @@
 - v1 不支持同一工作目录内多 session 并行；如需并行，使用 git worktree 创建独立 repo 副本后分别启动 session。
 - REPL 默认启动长寿命 prompt run。
 - one-shot 默认启动单次 prompt run。
+- Phase 0.5 起，TTY REPL 默认启动轻量 TUI；one-shot、非 TTY 和注入 I/O 场景保持纯 stdout/stdin。
 - prompt run 命中 workflow skill 时，创建 workflow run 压栈执行，结束后返回原 prompt run。
 - v1 只支持单层 handoff：`prompt run -> workflow run -> prompt run`。
 - v1 不支持 nested workflow 或任意深度 run 嵌套。
@@ -150,6 +152,15 @@ REPL slash commands：
 
 Slash command 由 CLI/REPL 本地解析，不进入 LLM。
 
+Phase 0.5 REPL UI 规则：
+
+- TTY 交互默认使用轻量 TUI。
+- one-shot 模式始终使用裸 stdout 输出，不启动 TUI。
+- 非 TTY、测试注入 `input_stream` / `output_stream` 或 prompt_toolkit 初始化失败时，自动回退到 `PlainReplView`。
+- TUI 只属于 `CLI Entrypoint / REPL UI` 层，不新增 runtime 真值语义。
+- TUI 可展示输入历史、多行输入、模型 streaming delta、工具调用状态、turn 状态、token/mode 状态栏和退出摘要。
+- TUI 不改变 Session/Run/Event/Checkpoint/Artifact、ToolBroker、Approval、Path Policy 或 AgentLoopAdapter ownership。
+
 审批模式：
 
 - `normal`：所有工具调用都要求审批，可在当前 session 内记住同类批准。
@@ -169,6 +180,218 @@ normal -> semi-auto -> yolo -> normal
 - `/exit` 允许执行，并先中断当前 run。
 - `/resume`、`/compress` 在 `running` 状态下拒绝执行。
 
+## REPL TUI And Streaming
+
+Phase 0.5 在 Phase 0 最小 REPL 之后、Phase 1 skill/tool 扩展之前实现。它是 `CLI Entrypoint / REPL UI` 层增强，不是新的 runtime 语义层。
+
+Phase 0.5 负责：
+
+- 输入体验：prompt history、`Ctrl+J` 多行、输入锁定。
+- 输出排版：用户消息、模型输出、工具调用信息、slash command 结果。
+- 模型流式展示：streaming delta。
+- 工具调用信息展示：名称、状态、耗时、预览截断。
+- turn 状态与计时。
+- session 退出摘要。
+- 基础 token/mode/model 状态展示。
+
+Phase 0.5 不负责：
+
+- 改变 session/run/checkpoint/event/artifact 的权威状态。
+- 改变 ToolBroker、Approval、Path Policy 的安全语义。
+- 改变 AgentLoopAdapter 的 ownership。
+- 引入 skill、subagent、workflow、MCP 或 plugin。
+- 引入复杂 GUI、跨平台终端框架过度设计、跨 session prompt history 持久化或完整主题系统。
+- 实现 mid-call cancel propagation；该能力等 Phase 2 run control/cancellation path 后再接入。
+
+架构原则：
+
+- TUI 消费 runtime event 和 adapter stream observation，但 runtime 不依赖 TUI。
+- `Runtime Event` 是 authoritative/audit event，写入 `run_events`。
+- `AgentStreamEvent` 是 runtime-neutral stream observation event，不作为恢复真值，永不写入 `run_events`。
+- `ReplViewEvent` / `ReplRenderState` 是纯渲染层对象，由 Controller 从 `AgentStreamEvent` 映射而来。
+- Runtime 保持 headless。若实现 `ReplRuntime`，它只能是 UI-facing facade，不拥有 Session/Run/Event/Checkpoint/Artifact 真值，也不复制 orchestration 语义。
+- `PromptAgentExecutor` 不感知 TUI 存在。`AgentLoopAdapter.run()` 继续供 one-shot、测试、workflow 复用；`AgentLoopAdapter.stream()` 是 TUI 额外路径。
+
+MVC 分层：
+
+- Model = 现有 `RuntimeOrchestrator` / REPL runtime services；可选 `ReplRuntime` 只能做 UI-facing adapter。
+- View = `ReplView` Protocol；Phase 0.5 默认实现为 prompt_toolkit + rich。
+- Controller = `ReplController`；接收输入，调用 Model，把 stream observation 映射成 view state/event，显式更新 View。
+
+Controller 职责：
+
+- 维护 turn timer，每秒刷新 View。
+- 处理用户输入、slash command 和 interrupt。
+- 在后台线程执行 runtime turn，通过 queue 接收 `AgentStreamEvent`。
+- 把 `AgentStreamEvent` 转换为 `ReplViewEvent` 或 `ReplRenderState` 后更新 View。
+- 映射 `stream_tool_result` 时，若 `output` 为 dict，先用 `json.dumps(..., ensure_ascii=False, sort_keys=True)` 转换为字符串。
+- Runtime 完成后更新 View 的最终状态。
+
+`AgentStreamEvent` 形状：
+
+```python
+class AgentStreamEvent:
+    kind: Literal[
+        "stream_model_call_started",
+        "stream_text_delta",
+        "stream_model_call_completed",
+        "stream_tool_call_started",
+        "stream_tool_call_completed",
+        "stream_tool_result",
+    ]
+    payload: dict
+```
+
+Payload 约定：
+
+- `stream_model_call_started`: `{"model_call_id": str}`。
+- `stream_text_delta`: `{"model_call_id": str, "text": str}`。
+- `stream_model_call_completed`: `{"model_call_id": str, "is_final": bool, "usage": dict, "duration_ms": int}`。
+- `stream_tool_call_started`: `{"tool_call_id": str, "model_call_id": str, "name": str, "args": dict}`。
+- `stream_tool_call_completed`: `{"tool_call_id": str, "model_call_id": str, "name": str, "status": str, "duration_ms": int}`。
+- `stream_tool_result`: `{"tool_call_id": str, "model_call_id": str, "output": str | dict | None, "redacted_output": str | None, "artifact_ids": list[str]}`。
+
+`stream_tool_call_started.args` 是 runtime observation payload，不是默认 UI 输出。TUI 默认只展示 tool name、status、duration；如需展示参数，只展示 Controller 生成的 redacted/short preview。`stream_tool_result` 数据来自本次 adapter/tool invocation 返回的 `ToolResult`，不是从 persisted `run_events` 反查。
+
+`model_call_id` 和 `tool_call_id` 是单 turn 内 correlation id。`tool_call_id` 优先使用 provider 返回的 tool call id；缺失时由 adapter/runtime 在单 turn 内生成。adapter/runtime 在生成 persisted runtime event 时，可以复制这些 correlation id 到 payload 用于 trace 关联，但这些 id 不作为恢复真值，也不承诺跨 session 稳定。
+
+`ReplViewEvent` 形状：
+
+```python
+class ReplViewEvent:
+    kind: Literal[
+        "model_text_delta",
+        "model_markdown_final",
+        "tool_block",
+        "system_message",
+        "error_message",
+    ]
+    payload: dict
+```
+
+View 应按 `model_call_id` 维护可替换的 message block。`model_text_delta` 追加到对应 block；`model_markdown_final` 替换同一 block 的 plain text 渲染结果。View 不直接消费 `AgentStreamEvent`。
+
+`ReplView` Protocol：
+
+```python
+class ReplView(Protocol):
+    def run(self, controller: ReplController) -> int: ...
+    def show_welcome(self, snapshot: WelcomeSnapshot) -> None: ...
+    def set_input_enabled(self, enabled: bool) -> None: ...
+    def append_user_message(self, message: str) -> None: ...
+    def append_view_event(self, event: ReplViewEvent) -> None: ...
+    def set_turn_status(self, turn_id: int, status: str, elapsed_seconds: int) -> None: ...
+    def update_status_bar(self, snapshot: StatusBarSnapshot) -> None: ...
+    def show_session_closed(self, summary: SessionCloseSummary) -> None: ...
+    def show_error(self, message: str) -> None: ...
+```
+
+`ReplController` callback：
+
+```python
+class ReplController:
+    def on_submit(self, text: str) -> None: ...
+    def on_slash_command(self, cmd: str) -> None: ...
+    def on_interrupt(self) -> None: ...
+    def on_agent_stream_event(self, event: AgentStreamEvent) -> None: ...
+    def notify_event_ready(self) -> None: ...
+    def on_turn_finished(self, result: AgentRunResult) -> None: ...
+```
+
+`PromptAgentExecutor.run_turn()` 在 Phase 0.5 增加可选 callback：
+
+```python
+def run_turn(
+    self,
+    *,
+    session: Session,
+    run: Run,
+    user_input: str,
+    workspace_root: str,
+    conversation: list[dict[str, Any]] | None = None,
+    prompt_turn_counter: int = 1,
+    agent_stream_callback: Callable[[AgentStreamEvent], None] | None = None,
+) -> AgentRunResult: ...
+```
+
+线程模型：
+
+- 主线程运行 prompt_toolkit `Application.run()`，负责键盘、渲染、定时器回调和 queue drain。
+- Runtime 后台线程执行 `executor.run_turn()`，仅通过 `queue.put(AgentStreamEvent)` 推送事件。
+- Runtime 线程绝不直接调用 View 方法或 prompt_toolkit 对象。
+- Runtime 线程 `queue.put(event)` 后调用 Controller 注入的 `notify_event_ready()`；该回调只触发 thread-safe wakeup，例如封装后的 `app.invalidate()`，不读取 queue，不修改 View state。
+- Controller 在 UI event loop 内 drain queue，按 `kind` 映射为 View state / View Event 后触发重绘。
+
+输入与历史：
+
+- 输入框采用 shell 风格，以 `>` 开头，并与输出区样式区分。
+- 支持单行输入、`Ctrl+J` 换行、`Enter` 提交、上下键切换历史。
+- `Shift+Enter` 换行是 terminal-dependent best-effort。
+- 提交后用户输入保留在消息列表中，并通过 `set_input_enabled(False)` 锁定不可编辑。
+- 历史只记录成功提交的用户 prompt；空 prompt 不提交、不进历史。
+- slash command 进入历史；多行 prompt 作为一个历史项保存。
+- prompt history 仅当前 session 内存态，跨 session 持久化留到后续 phase。
+- 中文 IME 和中文退格属于独立可选能力；Phase 0.5 时间盒内无法解决时可标记为 known limitation。
+
+消息渲染：
+
+- 展示用户 prompt、模型输出、工具调用开始/完成、slash command 结果、error/interrupt/completed 状态。
+- 每个有文本内容的 model call 在 streaming 期间以 plain text 增量显示；该 model call 结束后，一次性切换为 rich Markdown 渲染。
+- table 不作为 Phase 0.5 验收能力；若 Markdown 渲染异常，fallback 到 plain text。
+- 若单个 model call accumulated text 超过 `max_markdown_render_chars = 50_000`，完成后保留 plain text，避免 Markdown 解析阻塞 UI。该阈值只影响渲染策略，不截断输出。
+- 如果某次 model call 没有任何 `stream_text_delta`，不渲染空模型输出块，只渲染 tool call / tool result view block。
+- 工具调用和工具结果作为独立 view block 渲染，不与 model output 混在同一个 Markdown 文本中。
+- 全局 scrollback 和长 assistant 输出依赖用户 terminal 的 scrollback 设置，不在 Phase 0.5 自建 hard limit。
+
+工具结果预览：
+
+```text
+tool: read_file
+status: ok
+duration: 1.2s
+```
+
+```text
+> line 1
+> line 2
+> ...
+> [truncated: showing 10 of 325 lines, full output saved as artifact art_xxx]
+```
+
+默认阈值：
+
+```text
+max_tool_result_preview_lines = 10
+max_tool_result_preview_chars = 1000
+```
+
+超过限制时，Controller 或独立 `ToolResultPreviewFormatter` 负责生成预览；runtime/adapter 不持有 UI 截断阈值。预览截断仅影响显示，不触发新的 artifact 生成。完整内容仍按 `ArtifactStore` / `run_events` 的既有规则持久化。
+
+Turn 状态与状态栏：
+
+- 每个用户 prompt 都有对应 turn 状态和秒级耗时。
+- UI 可展示 `running` / `completed` / `failed` / `cancelled` / `timeout`。
+- 持久层 `run/session status` 只有 `running` / `completed` / `failed`；`cancelled` 映射为 `failed + error_class=cancelled`，`timeout` 映射为 `failed + error_class=timeout`。
+- active run 期间普通 prompt 仍按现有规则拒绝，TUI 在消息列表中追加 error/system 样式消息说明原因。
+- active run 期间 `/status` 作为 system message 追加到消息列表，不做 modal，不替换状态栏。
+- 状态栏至少展示 token usage、当前 approval mode 和当前 model。
+- token usage 是 best effort；provider 返回则展示，否则显示 `unavailable` 或保留已知累计值。
+- 不做 `context remaining percentage`，待 Phase 1 `ContextManager` 实现后再接入。
+
+欢迎界面与退出摘要：
+
+- REPL 启动时显示欢迎卡片，字段包括 `debug-agent`、版本号、当前模型、工作目录、approval mode、session id 短 id。
+- 版本号来自 `importlib.metadata.version("debug-agent")`；editable/dev 环境无法读取时 fallback 为 `unknown`，不得阻塞 REPL 启动。
+- 正常退出显示 `session <session_id> closed.` 和 token summary；usage 不可用时显示 `tokens used: unavailable`。
+- `Ctrl+C` / 取消显示 `cancelled`；未捕获异常显示 `failed`；timeout 显示 `failed` + `error: timeout`，并提示 `debug-agent trace <session_id>`。
+
+技术选型：
+
+- prompt_toolkit 用于 REPL 输入、history、key binding 和事件循环。
+- rich 用于 Markdown 渲染、panel、颜色和 status 展示。
+- 新增运行时依赖：`prompt_toolkit >= 3.0.0`、`rich >= 13.0.0`。
+- 迁移到 Textual 时只重写 UI 层；Controller 和 Runtime 不应需要改动。
+
 ## Agent Runtime
 
 Agent loop 通过 adapter 接入。
@@ -176,10 +399,30 @@ Agent loop 通过 adapter 接入。
 ```python
 class AgentLoopAdapter:
     def run(self, request: AgentRunRequest, context: RunContext) -> AgentRunResult: ...
+    def stream(
+        self,
+        request: AgentRunRequest,
+        context: RunContext,
+        on_event: Callable[[AgentStreamEvent], None],
+    ) -> AgentRunResult: ...
     def cancel(self, run_id: str) -> None: ...
 ```
 
-Phase 0/1 默认 adapter：
+`run()` 是 authoritative result path，继续供 one-shot、plain REPL、测试和 workflow 复用。Phase 0.5 起，`stream()` 是 TUI 使用的 observation path；它额外推送 `AgentStreamEvent`，但最终持久化和 checkpoint 仍以完整 `AgentRunResult` 与 runtime event log 为准。
+
+Streaming consistency contract：
+
+- `stream()` 的 `on_event` 回调为每次 model call 推送 `AgentStreamEvent`。
+- 每次 model call 都有独立 lifecycle event。
+- 有文本内容的 model call 推送 `stream_text_delta` 并可在 TUI 上渲染。
+- 工具调用前置的 model response 如果包含 provider 明确返回的 user-visible content，也可产生 `stream_text_delta`；这些 delta 不参与 `AgentRunResult.assistant_output` consistency 约束。
+- `tool_call_chunks`、function-call-only chunk、partial tool args 和内部 planning 数据不渲染为模型文本。
+- 如果某次中间 model call 没有任何可展示文本，TUI 不渲染空模型输出块，只渲染后续 tool events。
+- Authoritative assistant message 是 `PromptAgentExecutor` 最终持久化的 `AgentRunResult`。
+- Adapter 必须保证最终 assistant model call 的所有 `stream_text_delta` 拼接结果等于 `AgentRunResult.assistant_output`。中间 model call 的 delta 不做此约束。
+- `LangChainAgentLoopAdapter.stream()` 主路径使用 LangChain 原生 `model.stream()`；若当前 model/provider 不支持 `stream()`，fallback 为非流式 `invoke()`，不模拟 streaming。
+
+Phase 0/0.5/1 默认 adapter：
 
 - `LangChainAgentLoopAdapter`
 - 使用 LangChain `create_agent`
@@ -188,7 +431,7 @@ Phase 0/1 默认 adapter：
 
 Provider 策略：
 
-- Phase 0/1 使用 LangChain 兼容 chat model。
+- Phase 0/0.5/1 使用 LangChain 兼容 chat model。
 - `ModelFactory` 只负责读取配置并实例化模型。
 - 不在早期实现完整 provider abstraction。
 - 后续 OpenAI-compatible provider 通过 `ModelFactory` 或新 adapter 扩展。
@@ -766,6 +1009,107 @@ plugins/
 - plugin
 - `/compress`
 
+### Phase 0.5: Lightweight TUI And Streaming REPL
+
+目标：在不改变 Runtime Core、Session/Run 模型、ToolBroker、安全边界和持久化语义的前提下，为 `debug-agent` 提供轻量、稳定、可观测的命令行 TUI，使后续 Phase 1+ 的 skill、tool、subagent、workflow 能被人类直观评估。
+
+Phase 0.5 是 Phase 0 最小 REPL 的 UX 补强，不是 agent 能力层面的新语义。
+
+Milestone A：非流式 TUI shell。
+
+实现内容：
+
+- `ReplView` Protocol。
+- `ReplController`。
+- `PromptToolkitReplView`。
+- `PlainReplView` fallback。
+- welcome panel。
+- shell 风格输入框。
+- 当前 session 内 prompt history。
+- `Ctrl+J` 多行输入。
+- 用户消息固定显示与输入锁定。
+- slash command 结果追加到消息列表。
+- 工具调用和工具结果 view block。
+- `ToolResultPreviewFormatter`。
+- turn running/completed/failed/cancelled/timeout 展示。
+- 底部 token/mode/model 状态栏。
+- session close summary。
+- TTY / 非 TTY / 注入 I/O / prompt_toolkit 初始化失败 fallback。
+
+Milestone A 验收标准：
+
+- REPL 启动显示欢迎界面。
+- 用户输入区与模型输出区不会混杂。
+- 支持 prompt history 上下键。
+- 支持 `Ctrl+J` 多行输入；`Shift+Enter` 为 best-effort。
+- 提交后的用户 prompt 固定显示，输入框锁定。
+- 工具调用和工具结果有独立样式。
+- 长工具结果被截断预览，不撑爆 UI。
+- 每个 turn 有状态和秒级耗时。
+- 底部状态栏展示 token/mode/model 的最小信息。
+- `/exit` 后显示 `session <session_id> closed.` 和最终 token 用量。
+- 非 TTY 或注入 I/O 环境自动回退到 `PlainReplView`。
+- prompt_toolkit 初始化失败时自动降级到 `PlainReplView`，warning 最多输出一次。
+- one-shot 模式不启动 TUI，保持裸 stdout。
+
+Milestone B：streaming adapter。
+
+实现内容：
+
+- `AgentLoopAdapter.stream()`。
+- `LangChainAgentLoopAdapter` 的 `model.stream()` 路径。
+- 不支持 streaming 的 model/provider 走现有 `invoke()` fallback，不做 simulated streaming。
+- `PromptAgentExecutor.run_turn(..., agent_stream_callback=...)`。
+- `AgentStreamEvent` 到 queue 到 `ReplViewEvent` / `ReplRenderState` 的链路。
+- streaming text delta 增量渲染。
+- model call 完成后的 Markdown final render。
+- tool call started/completed/result stream observation。
+
+Milestone B 验收标准：
+
+- mock streaming model delta 能逐步渲染。
+- mock tool call start/result 能显示工具块。
+- provider/model 不支持 `stream()` 时 fallback 到 `invoke()`，并提示一次 `streaming unavailable for this model; using non-streaming response.`。
+- function-call-only chunk、partial tool args 和内部 planning 数据不渲染为模型文本。
+- 无文本 model call 不创建 model output block，只展示 tool events。
+- 有文本的中间 model call 会渲染 model output block，但不参与 `AgentRunResult.assistant_output` consistency contract。
+- 最终 assistant model call 的 delta 拼接结果等于 `AgentRunResult.assistant_output`。
+- `AgentStreamEvent` 不写入 persisted `run_events`。
+
+完整 Phase 0.5 验收标准：
+
+- Milestone A 和 Milestone B 均通过。
+- TUI 不改变 Session/Run/Event/Checkpoint/Artifact runtime contract。
+- ToolBroker、Approval、Path Policy 安全边界不被 TUI 绕过或弱化。
+- Runtime 线程不直接调用 View 或 prompt_toolkit 对象。
+- View 不直接消费 `AgentStreamEvent`。
+- `display_status=cancelled` 和 `display_status=timeout` 到持久层 `failed + error_class` 的映射在实现中显式存在。
+- active execution 期间 `/exit` 沿用 runtime safe-boundary 行为，不引入新的 mid-call cancellation 语义。
+
+不做：
+
+- skill、subagent、workflow、MCP、plugin。
+- approval UI 弹窗。
+- trace viewer、diff viewer、workflow viewer。
+- session list/browser。
+- 跨 session 输入历史持久化。
+- 完整主题系统。
+- 完整 provider/token abstraction。
+- 中文 IME 完整支持。
+- mid-call cancel propagation。
+- 块级增量 Markdown 渲染。
+- mouse 交互、多 pane layout、消息折叠/展开。
+
+正式文档拆分 TODO：
+
+- 新建 `docs/phase-0.5/`。
+- 拆分为 `scope.md`、`architecture.md`、`tests.md`、`operations.md`。
+- 新增 `specs/repl-tui.md`：View、Controller、fallback、输入、状态栏、退出摘要。
+- 新增 `specs/agent-streaming.md`：`AgentLoopAdapter.stream()`、`AgentStreamEvent`、streaming consistency contract、id 规则。
+- 新增或更新 `implementation-plan.md`，明确 Milestone A/B 验收顺序。
+- 补 ADR：`ADR 0007: AgentLoopAdapter Streaming Observation Path`，记录 `stream()` 作为长期 adapter public contract、`run()` 作为 authoritative result path、`AgentStreamEvent` 不写入 `run_events`、provider 不支持 streaming 时的 `invoke()` fallback。
+- `operations.md` 明确 Phase 0.5 标准验证命令。
+
 ### Phase 1: Skills And Native Tools
 
 目标：支持 prompt skill 和受控工具调用。
@@ -961,6 +1305,28 @@ Unit tests：
 - `WorkflowEngine` step transition、checkpoint、resume。
 - `ShellStepExecutor` stdout artifact 化。
 - `InterruptExecutor` checkpoint 后中断。
+- `PromptHistory` 上下切换。
+- 多行输入提交规则。
+- `ToolResultPreviewFormatter` 行数/字符数截断。
+- Markdown render fallback；table 不作为验收能力。
+- `AgentStreamEvent` 到 view state / view event 的转换。
+- `ReplView` 不直接消费 `AgentStreamEvent`。
+- `AgentStreamEvent.kind` 使用 `stream_*` 前缀，且不会写入 persisted `run_events`。
+- 无文本 model call 不创建 model output block，只展示 tool events。
+- 有文本的中间 model call 会渲染 model output block，但不参与 `AgentRunResult.assistant_output` consistency contract。
+- function-call-only chunk / partial tool args 不渲染为模型文本。
+- tool args 默认只生成 redacted/short preview。
+- 重复同名 tool call 通过 `tool_call_id` 正确关联 started/completed/result。
+- status bar snapshot formatting。
+- token usage unavailable fallback。
+- session cumulative token usage aggregation。
+- session close summary formatting。
+- `agent_stream_callback` 到 queue 到 view 的链路。
+- `AgentLoopAdapter.stream()` 一致性 contract。
+- provider/model 不支持 `stream()` 时 fallback 到 `invoke()`，并只提示一次 non-streaming system message。
+- `/status` 在 TUI 中追加 system message。
+- prompt_toolkit 初始化失败降级 warning 最多输出一次。
+- welcome version lookup failure fallback to `unknown`。
 
 Integration tests：
 
@@ -982,6 +1348,19 @@ Integration tests：
 - fake shader-debug-loop 完整控制流。
 - MCP fake server 调用（Phase 5）。
 - 全局级 / 项目级覆盖规则正确。
+- REPL 启动显示 welcome panel。
+- 输入 prompt 后用户消息固定显示。
+- mock streaming model delta 能逐步渲染。
+- mock tool call start/result 能显示工具块。
+- 长 tool output 被截断展示。
+- turn running 状态每秒更新，完成后固定为 completed。
+- timeout 结果在 TUI 显示为 `timeout`，持久层保持 `failed + error_class=timeout`。
+- `/exit` 显示 session closed 和 token summary。
+- active execution 期间 `/exit` 不引入 mid-call cancel propagation，沿用 runtime safe-boundary 行为。
+- active run 期间普通 prompt 被拒绝，并在 TUI 中清楚显示。
+- one-shot 模式不启动 TUI，保持裸 stdout。
+- 非 TTY 或注入 I/O 环境下自动回退到 `PlainReplView`，不启动 prompt_toolkit。
+- prompt_toolkit 初始化失败时降级到 `PlainReplView`，并验证 warning 只输出一次。
 
 Failure scenarios：
 
@@ -998,10 +1377,21 @@ Failure scenarios：
 - schema/parser 失败。
 - model provider 调用失败。
 
+Manual tests：
+
+- macOS Terminal / iTerm2。
+- 中文输入、中文退格（best-effort）。
+- 多行 prompt。
+- 快速连续输入历史切换。
+- 长 markdown 输出。
+- 长 tool result。
+- 窄终端宽度下布局不崩溃，文本换行，状态栏可截断，工具块仍可读。
+
 ## Assumptions
 
 - 语言使用 Python。
-- Phase 0/1 默认通过 LangChain adapter 接模型。
+- Phase 0/0.5/1 默认通过 LangChain adapter 接模型。
+- Phase 0.5 插入在 Phase 0 和 Phase 1 之间，只补强 REPL/TUI 与 streaming observation path，不提前引入 Phase 1+ agent 能力。
 - 早期只实现一个稳定 provider 路径。
 - OpenAI-compatible 后续通过 `ModelFactory` 或新 adapter 扩展。
 - v1 metadata store 只支持 SQLite。
