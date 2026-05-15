@@ -10,7 +10,7 @@ Selects TUI REPL, plain REPL, or one-shot execution. Slash commands remain local
 
 Coordinates user input, local slash commands, runtime turn execution, stream-event queue draining, timer updates, and view updates.
 
-The controller maps `AgentStreamEvent` into `ReplViewEvent` or view render state before calling the view.
+The controller maps `AgentStreamEvent` into `ReplViewEvent`, snapshots, or direct view method calls before calling the view.
 
 ### ReplView
 
@@ -96,7 +96,7 @@ debug-agent
 -> controller starts runtime turn in background thread
 -> runtime emits AgentStreamEvent through callback
 -> controller drains queue in UI event loop
--> controller maps AgentStreamEvent to ReplViewEvent or render state
+-> controller maps AgentStreamEvent to ReplViewEvent, snapshots, or direct view method calls
 -> view renders model text, tool blocks, status, and status bar
 -> runtime returns AgentRunResult
 -> controller finalizes turn status and reenables input
@@ -128,7 +128,7 @@ UI thread
     - layout rendering
     - timer callback
     - queue drain
-    - AgentStreamEvent -> ReplViewEvent / render state
+    - AgentStreamEvent -> ReplViewEvent / snapshots / view method calls
     - view redraw
 
 Runtime background thread
@@ -141,6 +141,12 @@ Runtime background thread
 ```
 
 The background thread may call the controller-provided thread-safe wakeup hook after queueing an event. The hook only invalidates the application or schedules a drain. It must not inspect queue contents or mutate view state.
+
+## Milestone Execution Model
+
+Milestone A uses the existing `AgentLoopAdapter.run(...)` path. It does not require `AgentLoopAdapter.stream(...)` to exist. The controller adapts the final `AgentRunResult` into view updates for the TUI shell.
+
+Milestone B adds `AgentLoopAdapter.stream(...)`, `agent_stream_callback`, and queue-driven stream event delivery. After Milestone B, TUI model and tool progress comes from stream observations when streaming is available, or from the non-streaming fallback result when `AgentRunResult.metadata["streaming_fallback"] = True`.
 
 ## Recommended Code Directory Structure
 

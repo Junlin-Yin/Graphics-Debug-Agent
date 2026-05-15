@@ -50,6 +50,11 @@ path when available. If the provider or model does not support streaming, the
 adapter falls back to the existing non-streaming `invoke()` path. It must not
 simulate streaming.
 
+When `stream(...)` falls back to `invoke()`, the returned `AgentRunResult`
+sets `metadata["streaming_fallback"] = True`. The controller uses that metadata
+to show the non-streaming warning once. `AgentStreamEvent` does not grow a
+status or warning event kind for this case.
+
 `PromptAgentExecutor.run_turn(...)` may accept an optional
 `agent_stream_callback`. When absent, callers keep the existing non-streaming
 behavior.
@@ -88,5 +93,7 @@ stream.
   consistent.
 - Tests must cover final-delta equality, non-streaming fallback, and the rule
   that `AgentStreamEvent` is never persisted to `run_events`.
+- Tests must cover `metadata["streaming_fallback"] = True` for non-streaming
+  provider fallback.
 - Future providers can add true streaming support without changing Runtime Core
   persistence contracts.

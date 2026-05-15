@@ -10,6 +10,13 @@ It is not a tutorial. Keep it short, contract-oriented, and append-oriented.
 
 Phase 0.5 uses `uv` for package management and command execution.
 
+Phase 0.5 adds runtime dependencies:
+
+- `prompt_toolkit >= 3.0.0`
+- `rich >= 13.0.0`
+
+Implementation acceptance requires the project lockfile to include these dependencies.
+
 Agents must not guess commands such as `ruff`, `mypy`, `npm`, `make`, or `just` unless repository files or human instructions prove they are valid for this project.
 
 ## Discovery Protocol
@@ -86,3 +93,11 @@ uv run pytest -v
 ```
 
 Use the narrowest command that meaningfully validates the modified behavior. Use `uv run pytest -v` for Phase 0.5 acceptance or broad cross-module changes.
+
+This command is canonical for Phase 0.5 dependency lockfile updates:
+
+```bash
+uv lock
+```
+
+Run `uv lock` whenever Phase 0.5 dependency declarations change.

@@ -26,6 +26,14 @@ class AgentLoopAdapter:
 
 `stream(...)` returns the same final `AgentRunResult` shape as `run(...)`.
 
+If `stream(...)` falls back to a non-streaming provider path, the returned result sets:
+
+```python
+AgentRunResult.metadata["streaming_fallback"] = True
+```
+
+Otherwise, this metadata key is absent or false.
+
 ```python
 def run_turn(
     self,
@@ -78,7 +86,7 @@ Phase 0.5 supports only these event kinds.
 
 ## ReplViewEvent
 
-The controller maps `AgentStreamEvent` into rendering-layer events or render state.
+The controller maps `AgentStreamEvent` into rendering-layer events, snapshots, or direct view method calls.
 
 ```python
 class ReplViewEvent:
@@ -114,7 +122,8 @@ If the current provider or model does not support streaming:
 
 - fall back to the existing non-streaming `invoke()` path.
 - do not simulate streaming.
-- emit or allow the controller to show one system message:
+- set `AgentRunResult.metadata["streaming_fallback"] = True`.
+- the controller shows one system message after the result is returned:
 
 ```text
 streaming unavailable for this model; using non-streaming response.

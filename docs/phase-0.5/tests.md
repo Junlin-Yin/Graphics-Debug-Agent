@@ -7,13 +7,21 @@
 - empty prompts are not submitted and are not stored in history.
 - slash commands are stored in current-session history.
 - multiline input submission preserves newlines.
+- `ReplView.run(controller)` returns CLI-style exit code `0` for normal close.
 - `ToolResultPreviewFormatter` truncates by line limit.
 - `ToolResultPreviewFormatter` truncates by character limit.
 - `ToolResultPreviewFormatter` includes artifact ids when present.
+- `ToolResultPreviewFormatter` converts dictionary output with `json.dumps(..., ensure_ascii=False, sort_keys=True)`.
+- `ToolResultPreviewFormatter` prefers `redacted_output` when present.
 - tool result preview truncation does not create artifacts.
+- `WelcomeSnapshot` uses `unknown` when version lookup fails.
+- `WelcomeSnapshot` uses `unknown` when model is missing from the config snapshot.
+- `StatusBarSnapshot` includes model for every render.
+- `SessionCloseSummary` uses the full session id.
 - Markdown rendering falls back to plain text when rendering fails.
+- Markdown rendering is attempted for completed model text below the render threshold.
 - model text above `max_markdown_render_chars` remains plain text.
-- `AgentStreamEvent` maps to `ReplViewEvent` or render state.
+- `AgentStreamEvent` maps to `ReplViewEvent`, snapshots, or direct view method calls.
 - `ReplView` does not directly consume `AgentStreamEvent`.
 - `AgentStreamEvent.kind` values use the `stream_` prefix.
 - `AgentStreamEvent` is not written to persisted `run_events`.
@@ -25,6 +33,8 @@
 - duplicate tool names correlate by `tool_call_id`.
 - status bar snapshot formatting handles known usage.
 - status bar snapshot formatting handles unavailable usage.
+- status bar token formatting uses raw integers below `1000`.
+- status bar token formatting uses one decimal `k` for values of `1000` or greater.
 - session cumulative token usage aggregates best-effort provider usage.
 - session close summary formats known token usage.
 - session close summary formats unavailable token usage.
@@ -32,6 +42,7 @@
 - controller queue draining maps events in order.
 - final assistant model-call deltas concatenate to `AgentRunResult.assistant_output`.
 - non-streaming provider fallback uses `invoke()`.
+- non-streaming provider fallback sets `AgentRunResult.metadata["streaming_fallback"] = True`.
 - non-streaming provider fallback emits the warning at most once.
 - `/status` appends a TUI system message.
 - prompt_toolkit initialization failure falls back to `PlainReplView`.
@@ -59,6 +70,8 @@
 - non-TTY REPL uses `PlainReplView`.
 - injected input/output streams use `PlainReplView`.
 - prompt_toolkit initialization failure uses `PlainReplView`.
+- Milestone A TUI shell works through `AgentLoopAdapter.run(...)` without requiring `AgentLoopAdapter.stream(...)`.
+- Milestone B TUI streaming works through `AgentLoopAdapter.stream(...)`.
 
 ## Failure Scenarios
 

@@ -44,6 +44,9 @@ Phase 0.5 is a `CLI Entrypoint / REPL UI` enhancement. It must not introduce a n
   - non-streaming `invoke()` fallback when the provider/model does not support streaming.
   - `PromptAgentExecutor.run_turn(..., agent_stream_callback=...)`.
   - `AgentStreamEvent` to queue to `ReplViewEvent` conversion.
+- Dependencies:
+  - `prompt_toolkit >= 3.0.0`.
+  - `rich >= 13.0.0`.
 
 ## Must Not Implement
 
@@ -65,7 +68,7 @@ Phase 0.5 is a `CLI Entrypoint / REPL UI` enhancement. It must not introduce a n
 - mouse interaction, multi-pane layout, or message folding.
 - any change to Session, Run, RunEvent, Checkpoint, Artifact, ToolBroker, Approval, or Path Policy semantics.
 
-## Minimum Runnable Slice
+## Minimum Runnable Slice For Complete Phase 0.5
 
 1. User runs `debug-agent` in a TTY.
 2. Runtime creates the session and long-lived prompt run using the Phase 0 runtime path.
@@ -80,6 +83,53 @@ Phase 0.5 is a `CLI Entrypoint / REPL UI` enhancement. It must not introduce a n
 11. User enters `/exit`, and TUI displays the session close summary.
 
 one-shot mode, non-TTY mode, and injected I/O tests must continue to use plain stdout/stdin and must not start the TUI.
+
+## Milestone A Runnable Slice
+
+1. User runs `debug-agent` in a TTY.
+2. Runtime creates the session and long-lived prompt run using the Phase 0 runtime path.
+3. CLI selects `PromptToolkitReplView`.
+4. TUI displays the welcome panel from session and config snapshots.
+5. User enters one prompt.
+6. TUI appends the submitted user message and disables input while the turn runs.
+7. Runtime executes the prompt turn through `PromptAgentExecutor` and `AgentLoopAdapter.run(...)`.
+8. Controller adapts the final `AgentRunResult` into view updates.
+9. TUI displays model output, tool blocks when present, and final turn status.
+10. User enters `/exit`, and TUI displays the session close summary.
+
+Milestone A does not use stream events and does not require `AgentLoopAdapter.stream(...)`.
+
+## Milestone Guidance
+
+Milestone A delivers the non-streaming TUI shell.
+
+Milestone A must implement:
+
+- TTY TUI startup.
+- `ReplView`, `ReplController`, `PromptToolkitReplView`, and `PlainReplView`.
+- welcome panel.
+- prompt history and multiline input.
+- input disablement while a turn is running.
+- user, system, error, model, tool, and slash command message rendering.
+- tool result preview formatting.
+- turn status, status bar, and session close summary.
+- TTY, non-TTY, injected I/O, and prompt_toolkit initialization fallback.
+
+Milestone A uses the existing `AgentLoopAdapter.run(...)` path. It does not require an `AgentLoopAdapter.stream(...)` stub. The controller may create view events or snapshots from the final `AgentRunResult`.
+
+Milestone B delivers streaming.
+
+Milestone B must implement:
+
+- `AgentLoopAdapter.stream(...)`.
+- `LangChainAgentLoopAdapter` native `model.stream()` path.
+- non-streaming `invoke()` fallback with `AgentRunResult.metadata["streaming_fallback"] = True`.
+- `PromptAgentExecutor.run_turn(..., agent_stream_callback=...)`.
+- `AgentStreamEvent` queue delivery.
+- `AgentStreamEvent` to `ReplViewEvent` conversion.
+- final assistant delta equality with `AgentRunResult.assistant_output`.
+
+Milestone A may be accepted independently for TUI shell behavior. Complete Phase 0.5 acceptance requires both Milestone A and Milestone B.
 
 ## Completion Definition
 
@@ -106,6 +156,7 @@ Phase 0.5 is complete when all of these pass:
 - `AgentLoopAdapter.stream()` final assistant model-call deltas concatenate to `AgentRunResult.assistant_output`.
 - `AgentStreamEvent` is never persisted to `run_events`.
 - TUI does not change Session/Run/Event/Checkpoint/Artifact runtime contracts.
+- lockfile updates include Phase 0.5 runtime dependencies before implementation acceptance.
 
 ## Cancellation And Interruption In Phase 0.5
 

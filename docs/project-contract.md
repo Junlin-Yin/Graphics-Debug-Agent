@@ -113,9 +113,14 @@ Phase 1 是 native 可写工具的最早引入点。可写工具必须经过 Too
 
 ## Source Of Truth Order
 
-当文档之间产生冲突时，优先级为：
+实现工作必须按以下来源理解需求：
 
 1. `docs/project-contract.md`
 2. 当前 phase 文档，例如 `docs/phase-0/*`
-3. `docs/adr/*`
-4. 根目录历史输入文档，例如 `docs/project-plan.md`
+3. accepted `docs/adr/*`
+
+当前 phase 文档用于细化和收窄 project contract 在该 phase 的行为、范围、验收和操作命令。phase 文档不得扩展或违反 project contract。
+
+如果 project contract、当前 phase 文档和 accepted ADRs 之间产生冲突，不得按优先级静默覆盖；必须停下并请求澄清。
+
+`docs/project-plan.md` 是历史规划上下文，不是实现真值来源，不得用于扩展 active phase scope。

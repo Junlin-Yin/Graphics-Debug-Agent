@@ -8,13 +8,15 @@ If the active phase is unclear, stop and ask.
 
 Source order:
 
-1. `docs/<active-phase>/`
-2. `docs/project-contract.md`
+1. `docs/project-contract.md`
+2. `docs/<active-phase>/`
 3. accepted `docs/adr/`
 
 `docs/project-plan.md` is historical context only. Do not use it to expand active phase scope.
 
-If active phase docs, project contract, and ADRs conflict, stop and ask for clarification.
+Active phase docs refine and narrow the project contract for the active phase. They must not expand or contradict the project contract.
+
+If active phase docs, project contract, and ADRs conflict, stop and ask for clarification. Do not silently resolve conflicts by priority order.
 
 ## Scope And Diff Discipline
 
@@ -42,7 +44,7 @@ Prefer concrete, minimal implementations that follow documented module responsib
 
 Do not introduce speculative extensibility, unused abstractions, placeholder paths, compatibility shims, commented-out logic, or temporary debugging code unless explicitly required.
 
-Runtime behavior, observability, and failure handling must follow the active phase docs, project contract, and accepted ADRs. Do not bypass, weaken, or invent documented contracts for implementation convenience.
+Runtime behavior, observability, and failure handling must follow the project contract, active phase docs, and accepted ADRs. Do not bypass, weaken, or invent documented contracts for implementation convenience.
 
 ## Verification
 

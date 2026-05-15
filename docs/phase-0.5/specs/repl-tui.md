@@ -23,6 +23,8 @@ class ReplView:
 
 `run(controller)` replaces a blocking `read_prompt()` model. The view owns the UI event loop.
 
+`run(controller)` returns a CLI-style exit code. `0` means normal REPL close. Non-zero values follow the runtime or CLI failure exit code for the terminal condition.
+
 `append_view_event()` receives rendering-layer events only. The view must not depend on `AgentStreamEvent`.
 
 ```python
@@ -36,6 +38,41 @@ class ReplController:
 ```
 
 `notify_event_ready()` is a thread-safe wakeup hook. It must not update view state directly.
+
+## Snapshot Types
+
+```python
+class WelcomeSnapshot:
+    tool_name: str
+    version: str
+    model: str
+    workspace_root: str
+    approval_mode: str
+    session_id_short: str
+```
+
+```python
+class StatusBarSnapshot:
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    approval_mode: str
+    model: str
+```
+
+```python
+class SessionCloseSummary:
+    session_id: str
+    status: Literal["closed", "cancelled", "failed"]
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    error_type: str | None
+```
+
+`session_id` in `SessionCloseSummary` is the full session id.
+
+When the model is missing from the config snapshot, snapshot builders use `unknown`.
 
 ## Welcome Panel
 
@@ -77,6 +114,18 @@ History rules:
 - store a multiline prompt as one history item.
 - keep history in memory for the current session only.
 
+`PromptHistory` is a current-session in-memory component. The minimum interface is:
+
+```python
+class PromptHistory:
+    def add(self, entry: str) -> None: ...
+    def previous(self) -> str | None: ...
+    def next(self) -> str | None: ...
+    def reset_navigation(self) -> None: ...
+```
+
+`PlainReplView` does not need interactive history navigation.
+
 Chinese IME input and Chinese backspace correctness are best-effort manual checks in Phase 0.5. Complete support is not required for acceptance.
 
 ## Message Rendering
@@ -93,7 +142,7 @@ The message list displays:
 Model output rules:
 
 - during streaming, text deltas append to a plain-text model block.
-- when a model call completes, the view may replace that block with rich Markdown rendering.
+- when a model call completes and accumulated text is at or below `max_markdown_render_chars`, the view must attempt to replace that block with rich Markdown rendering.
 - if Markdown rendering fails, keep plain text.
 - tables are not an acceptance capability.
 - if accumulated text for a model call exceeds `max_markdown_render_chars = 50_000`, keep plain text and do not run Markdown rendering.
@@ -128,7 +177,37 @@ max_tool_result_preview_lines = 10
 max_tool_result_preview_chars = 1000
 ```
 
-The controller or a dedicated `ToolResultPreviewFormatter` generates previews. Runtime and adapter code must not own UI preview thresholds.
+The controller delegates preview formatting to `ToolResultPreviewFormatter`. Runtime and adapter code must not own UI preview thresholds.
+
+```python
+class ToolResultPreview:
+    text: str
+    truncated: bool
+    shown_lines: int
+    total_lines: int | None
+    artifact_ids: list[str]
+```
+
+```python
+class ToolResultPreviewFormatter:
+    def format(
+        self,
+        *,
+        output: str | dict | None,
+        redacted_output: str | None,
+        artifact_ids: list[str],
+        max_lines: int = 10,
+        max_chars: int = 1000,
+    ) -> ToolResultPreview: ...
+```
+
+If `output` is a dictionary, the formatter converts it to a string with:
+
+```python
+json.dumps(output, ensure_ascii=False, sort_keys=True)
+```
+
+If `redacted_output` is present, it is used as the preview source instead of `output`.
 
 Preview truncation affects display only. It must not create artifacts and must not alter persistence. Full content remains governed by existing `ArtifactStore` and `run_events` rules.
 
@@ -164,7 +243,9 @@ The status bar displays:
 
 - token usage, best effort.
 - current approval mode from persisted session state.
-- current model, when available.
+- current model.
+
+`StatusBarSnapshot` carries raw token counts. The controller owns best-effort usage aggregation. The view owns display formatting using the token formatting rules in this section.
 
 Example:
 
@@ -172,7 +253,22 @@ Example:
 tokens: 12.4k used | mode: normal | model: claude-sonnet-4
 ```
 
-If provider usage is unavailable, display `unavailable` or preserve the last known cumulative value. Phase 0.5 does not display context remaining percentage.
+If the model is missing from the config snapshot, display `unknown`.
+
+Token usage formatting:
+
+- if usage is unavailable, display `unavailable`.
+- if the value is below `1000`, display the raw integer.
+- if the value is `1000` or greater, display one decimal place with a `k` suffix.
+
+Phase 0.5 does not display context remaining percentage.
+
+Update timing:
+
+- initialize the status bar after REPL startup.
+- update token usage after each completed model response.
+- for turns with multiple model calls, the controller maintains cumulative best-effort usage.
+- if a model response omits usage, keep the last known cumulative value; if no usage has ever been observed, display `unavailable`.
 
 ## Session Close Summary
 
