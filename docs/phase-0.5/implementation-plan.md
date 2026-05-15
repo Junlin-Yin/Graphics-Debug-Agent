@@ -62,11 +62,11 @@ This order is mandatory. It keeps fallback behavior available before TUI selecti
 
 ## Milestone 1: Dependency And Lockfile Boundary
 
-- [ ] Add `prompt_toolkit >= 3.0.0` to the package dependency declarations.
-- [ ] Add `rich >= 13.0.0` to the package dependency declarations.
-- [ ] Run `uv lock`.
-- [ ] Verify dependency changes do not introduce runtime imports outside CLI/UI modules.
-- [ ] Verify with `uv run pytest tests/unit -v`.
+- [x] Add `prompt_toolkit >= 3.0.0` to the package dependency declarations.
+- [x] Add `rich >= 13.0.0` to the package dependency declarations.
+- [x] Run `uv lock`.
+- [x] Verify dependency changes do not introduce runtime imports outside CLI/UI modules.
+- [x] Verify with `uv run pytest tests/unit -v`.
 
 Modified boundaries: package dependency declarations and lockfile only.
 
