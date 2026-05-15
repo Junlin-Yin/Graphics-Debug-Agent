@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
+from debug_agent.cli.plain_repl_view import PlainReplView
 from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.orchestrator import ReplRuntime, RuntimeOrchestrator
 
@@ -97,11 +98,10 @@ def run_repl(
         return exc.exit_code
 
     try:
-        for line in input_stream:
-            if not controller.handle_line(line, output_stream):
-                return controller.exit_code
-        controller.runtime.complete()
-        return 0
+        return PlainReplView(
+            input_stream=input_stream,
+            output_stream=output_stream,
+        ).run(controller)
     except KeyboardInterrupt:
         controller.runtime.fail(
             AgentRunResult(

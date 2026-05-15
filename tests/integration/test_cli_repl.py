@@ -1,31 +1,56 @@
 from __future__ import annotations
 
+import io
 import os
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
+import debug_agent.cli.repl as repl_module
+from debug_agent.cli.main import main
+from debug_agent.cli.repl import run_repl
+from debug_agent.cli.plain_repl_view import PlainReplView
+
 
 def _subprocess_env(home: Path) -> dict[str, str]:
     return {**os.environ, "HOME": str(home)}
 
 
-def test_debug_agent_repl_accepts_two_turns_status_and_exit(tmp_path) -> None:
-    home = tmp_path / "home"
-    workspace = tmp_path / "workspace"
+def _write_fake_config(home: Path, response: str = "integration repl answer") -> None:
     config_dir = home / ".debug-agent"
     config_dir.mkdir(parents=True)
-    workspace.mkdir()
     (config_dir / "config.toml").write_text(
-        """
+        f"""
 [defaults]
 provider = "fake"
 model = "fake-model"
-fake_response = "integration repl answer"
+fake_response = "{response}"
 """.strip(),
         encoding="utf-8",
     )
+
+
+def _fake_config_snapshot(response: str = "integration repl answer") -> dict[str, object]:
+    return {
+        "provider": "fake",
+        "model": "fake-model",
+        "fake_response": response,
+        "temperature": 0.2,
+        "max_tokens": 8192,
+        "timeout_seconds": 120,
+        "system_prompt": (
+            "You are debug-agent, a local debugging assistant. Answer concisely "
+            "and use only tools exposed by the runtime."
+        ),
+    }
+
+
+def test_debug_agent_repl_accepts_two_turns_status_and_exit(tmp_path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_fake_config(home)
 
     executable = str(Path(sys.executable).parent / "debug-agent")
     result = subprocess.run(
@@ -56,3 +81,81 @@ fake_response = "integration repl answer"
             row[0] for row in conn.execute("SELECT kind FROM checkpoints ORDER BY rowid")
         ]
     assert checkpoint_kinds == ["turn", "turn", "terminal"]
+
+
+def test_injected_io_repl_uses_plain_repl_view(tmp_path, monkeypatch) -> None:
+    constructed: list[type[PlainReplView]] = []
+
+    class RecordingPlainReplView(PlainReplView):
+        def __init__(self, **kwargs) -> None:
+            constructed.append(type(self))
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(repl_module, "PlainReplView", RecordingPlainReplView)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    output = io.StringIO()
+
+    exit_code = run_repl(
+        _fake_config_snapshot("injected answer"),
+        input_stream=io.StringIO("hello\n/status\n/exit\n"),
+        output_stream=output,
+        error_stream=io.StringIO(),
+        workspace_root=workspace,
+    )
+
+    assert exit_code == 0
+    assert constructed == [RecordingPlainReplView]
+    assert "injected answer\n" in output.getvalue()
+    assert "session_id:" in output.getvalue()
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "completed"
+
+
+def test_non_tty_repl_uses_plain_repl_view(tmp_path, monkeypatch, capsys) -> None:
+    constructed: list[type[PlainReplView]] = []
+
+    class RecordingPlainReplView(PlainReplView):
+        def __init__(self, **kwargs) -> None:
+            constructed.append(type(self))
+            super().__init__(**kwargs)
+
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home.mkdir()
+    workspace.mkdir()
+    _write_fake_config(home, "non tty answer")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr("sys.stdin", io.StringIO("hello\n/status\n/exit\n"))
+    monkeypatch.setattr(repl_module, "PlainReplView", RecordingPlainReplView)
+
+    exit_code = main([])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert constructed == [RecordingPlainReplView]
+    assert "non tty answer\n" in captured.out
+    assert "session_id:" in captured.out
+
+
+def test_one_shot_does_not_construct_plain_repl_view(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    class FailingPlainReplView(PlainReplView):
+        def __init__(self, **kwargs) -> None:
+            raise AssertionError("one-shot must not construct a ReplView")
+
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home.mkdir()
+    workspace.mkdir()
+    _write_fake_config(home, "one shot still plain")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(repl_module, "PlainReplView", FailingPlainReplView)
+
+    exit_code = main(["-p", "hello"])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out == "one shot still plain\n"

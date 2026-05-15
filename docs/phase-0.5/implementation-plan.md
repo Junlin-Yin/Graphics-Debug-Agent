@@ -105,17 +105,17 @@ Runnable state: UI contracts and pure helpers can be tested without terminal UI.
 
 ## Milestone 3: PlainReplView Compatibility Boundary
 
-- [ ] Implement `PlainReplView` as a `ReplView`.
-- [ ] Preserve existing injected input/output stream behavior.
-- [ ] Preserve local `/status` and `/exit` behavior.
-- [ ] Ensure `run(controller)` returns `0` for normal REPL close.
-- [ ] Keep this milestone limited to `PlainReplView` extraction and compatibility; use a fake or minimal controller in tests when `run(controller)` needs callbacks.
-- [ ] Do not route CLI execution through the real `ReplController` until Milestone 4.
-- [ ] Ensure one-shot mode does not construct or run a `ReplView`.
-- [ ] Add integration test for injected I/O selecting `PlainReplView`.
-- [ ] Add integration test for non-TTY REPL selecting `PlainReplView`.
-- [ ] Add integration test proving one-shot output remains plain stdout.
-- [ ] Verify existing Phase 0 REPL and one-shot tests still pass.
+- [x] Implement `PlainReplView` as a `ReplView`.
+- [x] Preserve existing injected input/output stream behavior.
+- [x] Preserve local `/status` and `/exit` behavior.
+- [x] Ensure `run(controller)` returns `0` for normal REPL close.
+- [x] Keep this milestone limited to `PlainReplView` extraction and compatibility; use a fake or minimal controller in tests when `run(controller)` needs callbacks.
+- [x] Do not route CLI execution through the real `ReplController` until Milestone 4.
+- [x] Ensure one-shot mode does not construct or run a `ReplView`.
+- [x] Add integration test for injected I/O selecting `PlainReplView`.
+- [x] Add integration test for non-TTY REPL selecting `PlainReplView`.
+- [x] Add integration test proving one-shot output remains plain stdout.
+- [x] Verify existing Phase 0 REPL and one-shot tests still pass.
 
 Modified boundaries: CLI REPL entry code and test doubles around input/output streams.
 
