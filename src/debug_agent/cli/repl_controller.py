@@ -12,6 +12,8 @@ from debug_agent.cli.repl_view import (
     SessionCloseSummary,
     StatusBarSnapshot,
     ToolResultPreviewFormatter,
+    WelcomeSnapshot,
+    build_welcome_snapshot,
 )
 from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.orchestrator import ReplRuntime, RuntimeOrchestrator
@@ -124,6 +126,18 @@ class ReplController:
 
     def on_interrupt(self) -> None:
         self._append_system_message("Interrupt requested; active turn continues to the next safe boundary.")
+
+    def welcome_snapshot(self) -> WelcomeSnapshot:
+        session = self.runtime.sessions.get(self.runtime.session_id)
+        return build_welcome_snapshot(
+            config_snapshot=session.config_snapshot,
+            workspace_root=session.workspace_root,
+            approval_mode=session.approval_mode,
+            session_id=session.session_id,
+        )
+
+    def status_bar_snapshot(self) -> StatusBarSnapshot:
+        return self._status_bar_snapshot()
 
     def notify_event_ready(self) -> None:
         if self.wakeup_callback is not None:

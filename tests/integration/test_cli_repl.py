@@ -88,6 +88,11 @@ class FakeControllerView:
         self.errors.append(message)
 
 
+class TtyStringIO(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
 def test_debug_agent_repl_accepts_two_turns_status_and_exit(tmp_path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
@@ -186,6 +191,68 @@ def test_injected_io_repl_uses_plain_repl_view(tmp_path, monkeypatch) -> None:
     assert "session_id:" in output.getvalue()
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "completed"
+
+
+def test_tty_repl_selects_prompt_toolkit_view(tmp_path, monkeypatch) -> None:
+    constructed: list[type[object]] = []
+
+    class RecordingPromptToolkitReplView:
+        def __init__(self, **kwargs) -> None:
+            constructed.append(type(self))
+
+        def run(self, controller) -> int:
+            controller.runtime.complete()
+            return 0
+
+    monkeypatch.setattr(
+        repl_module, "PromptToolkitReplView", RecordingPromptToolkitReplView
+    )
+    monkeypatch.setattr("sys.stdin", TtyStringIO("/exit\n"))
+    monkeypatch.setattr("sys.stdout", TtyStringIO())
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    exit_code = run_repl(
+        _fake_config_snapshot("tty answer"),
+        error_stream=io.StringIO(),
+        workspace_root=workspace,
+    )
+
+    assert exit_code == 0
+    assert constructed == [RecordingPromptToolkitReplView]
+
+
+def test_prompt_toolkit_initialization_failure_falls_back_to_plain_view(
+    tmp_path, monkeypatch
+) -> None:
+    constructed_plain: list[type[PlainReplView]] = []
+
+    class FailingPromptToolkitReplView:
+        def __init__(self, **kwargs) -> None:
+            raise RuntimeError("terminal unavailable")
+
+    class RecordingPlainReplView(PlainReplView):
+        def __init__(self, **kwargs) -> None:
+            constructed_plain.append(type(self))
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(repl_module, "PromptToolkitReplView", FailingPromptToolkitReplView)
+    monkeypatch.setattr(repl_module, "PlainReplView", RecordingPlainReplView)
+    monkeypatch.setattr("sys.stdin", TtyStringIO("/exit\n"))
+    monkeypatch.setattr("sys.stdout", TtyStringIO())
+    error_stream = io.StringIO()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    exit_code = run_repl(
+        _fake_config_snapshot("fallback answer"),
+        error_stream=error_stream,
+        workspace_root=workspace,
+    )
+
+    assert exit_code == 0
+    assert constructed_plain == [RecordingPlainReplView]
+    assert error_stream.getvalue().count("falling back to plain REPL") == 1
 
 
 def test_non_tty_repl_uses_plain_repl_view(tmp_path, monkeypatch, capsys) -> None:

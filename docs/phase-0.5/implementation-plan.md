@@ -164,25 +164,25 @@ Runnable state: a non-streaming TUI controller path can complete one fake-model 
 
 ## Milestone 5: PromptToolkitReplView Shell
 
-- [ ] Implement `PromptToolkitReplView`.
-- [ ] Render the welcome panel from `WelcomeSnapshot`.
-- [ ] Render shell-style input beginning with `>`.
-- [ ] Support `Ctrl+J` multiline input.
-- [ ] Support best-effort `Shift+Enter` multiline input.
-- [ ] Support up/down current-session history navigation.
-- [ ] Render user, model, tool, system, and error message blocks.
-- [ ] Attempt rich Markdown final rendering under `max_markdown_render_chars = 50_000`.
-- [ ] Keep plain text on Markdown render failure or size threshold.
-- [ ] Render status bar from raw `StatusBarSnapshot` values.
-- [ ] Initialize the status bar after REPL startup.
-- [ ] Format status bar token values from raw `StatusBarSnapshot` counts only.
-- [ ] Do not aggregate or preserve token usage inside `PromptToolkitReplView`.
-- [ ] Render `SessionCloseSummary`.
-- [ ] Fall back to `PlainReplView` with one warning if prompt_toolkit initialization fails.
-- [ ] Add unit tests for view selection.
-- [ ] Add rendering snapshot/golden tests where deterministic.
-- [ ] Add integration test for prompt_toolkit initialization failure fallback.
-- [ ] Run manual TTY smoke with fake model: `hello`, `/status`, `/exit`.
+- [x] Implement `PromptToolkitReplView`.
+- [x] Render the welcome panel from `WelcomeSnapshot`.
+- [x] Render shell-style input beginning with `>`.
+- [x] Support `Ctrl+J` multiline input.
+- [x] Support best-effort `Shift+Enter` multiline input.
+- [x] Support up/down current-session history navigation.
+- [x] Render user, model, tool, system, and error message blocks.
+- [x] Attempt rich Markdown final rendering under `max_markdown_render_chars = 50_000`.
+- [x] Keep plain text on Markdown render failure or size threshold.
+- [x] Render status bar from raw `StatusBarSnapshot` values.
+- [x] Initialize the status bar after REPL startup.
+- [x] Format status bar token values from raw `StatusBarSnapshot` counts only.
+- [x] Do not aggregate or preserve token usage inside `PromptToolkitReplView`.
+- [x] Render `SessionCloseSummary`.
+- [x] Fall back to `PlainReplView` with one warning if prompt_toolkit initialization fails.
+- [x] Add unit tests for view selection.
+- [x] Add rendering snapshot/golden tests where deterministic.
+- [x] Add integration test for prompt_toolkit initialization failure fallback.
+- [x] Run manual TTY smoke with fake model: `hello`, `/status`, `/exit`.
 
 Modified boundaries: prompt_toolkit view module, rich rendering adapter code, and CLI view selection.
 
