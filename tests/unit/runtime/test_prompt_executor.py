@@ -11,6 +11,7 @@ from debug_agent.persistence.sqlite import RuntimeDatabase
 from debug_agent.runtime.config import PHASE_0_SYSTEM_PROMPT
 from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.prompt_executor import PromptAgentExecutor
+from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.tools.broker import ToolBroker
 from debug_agent.tools.native_readonly import tool_definitions
 
@@ -279,6 +280,164 @@ def test_prompt_executor_passes_session_timeout_to_adapter_request(tmp_path) -> 
 
     assert result.status == "completed"
     assert adapter.timeout_seconds == 7
+    db.close()
+
+
+def test_prompt_executor_uses_stream_path_when_callback_is_supplied(tmp_path) -> None:
+    class RecordingAdapter:
+        def __init__(self) -> None:
+            self.run_called = False
+            self.stream_called = False
+
+        def run(self, request, context):
+            self.run_called = True
+            raise AssertionError("run should not be called when stream callback is supplied")
+
+        def stream(self, request, context, on_event):
+            self.stream_called = True
+            on_event(
+                AgentStreamEvent(
+                    kind="stream_text_delta",
+                    payload={"model_call_id": "model_1", "text": "answer"},
+                )
+            )
+            return AgentRunResult(
+                status="completed",
+                assistant_output="answer",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+        def cancel(self, run_id: str) -> None:
+            raise AssertionError("cancel should not be called")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    db = RuntimeDatabase.bootstrap(workspace)
+    sessions = SessionStore(db.connection)
+    runs = RunStore(db.connection)
+    events = EventWriter(db.connection, db.path.parent)
+    checkpoints = CheckpointStore(db.connection)
+    session = sessions.create(
+        workspace_root=workspace,
+        approval_mode="yolo",
+        config_snapshot={"provider": "fake", "timeout_seconds": 7},
+        session_id="sess_1",
+    )
+    run = runs.create_prompt_run(session.session_id, run_id="run_1")
+    sessions.set_active_run(session.session_id, run.run_id)
+    adapter = RecordingAdapter()
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=ArtifactStore(db.connection, db.path.parent),
+        adapter=adapter,
+        tool_definitions=tool_definitions(),
+        system_prompt=PHASE_0_SYSTEM_PROMPT,
+    )
+    stream_events = []
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="hello",
+        workspace_root=str(workspace),
+        agent_stream_callback=stream_events.append,
+    )
+
+    assert result.status == "completed"
+    assert adapter.stream_called is True
+    assert adapter.run_called is False
+    assert stream_events == [
+        AgentStreamEvent(
+            kind="stream_text_delta",
+            payload={"model_call_id": "model_1", "text": "answer"},
+        )
+    ]
+    assert [event.kind for event in events.list_for_run(run.run_id)] == [
+        "user_message",
+        "assistant_message",
+        "checkpoint_written",
+    ]
+    db.close()
+
+
+def test_prompt_executor_does_not_persist_agent_stream_events(tmp_path) -> None:
+    class StreamingAdapter:
+        def run(self, request, context):
+            raise AssertionError("run should not be called")
+
+        def stream(self, request, context, on_event):
+            on_event(
+                AgentStreamEvent(
+                    kind="stream_model_call_started",
+                    payload={"model_call_id": "model_1"},
+                )
+            )
+            on_event(
+                AgentStreamEvent(
+                    kind="stream_model_call_completed",
+                    payload={
+                        "model_call_id": "model_1",
+                        "is_final": True,
+                        "usage": {},
+                        "duration_ms": 1,
+                    },
+                )
+            )
+            return AgentRunResult(
+                status="completed",
+                assistant_output="answer",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+        def cancel(self, run_id: str) -> None:
+            raise AssertionError("cancel should not be called")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    db = RuntimeDatabase.bootstrap(workspace)
+    sessions = SessionStore(db.connection)
+    runs = RunStore(db.connection)
+    events = EventWriter(db.connection, db.path.parent)
+    checkpoints = CheckpointStore(db.connection)
+    session = sessions.create(
+        workspace_root=workspace,
+        approval_mode="yolo",
+        config_snapshot={"provider": "fake", "timeout_seconds": 7},
+        session_id="sess_1",
+    )
+    run = runs.create_prompt_run(session.session_id, run_id="run_1")
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=ArtifactStore(db.connection, db.path.parent),
+        adapter=StreamingAdapter(),
+        tool_definitions=tool_definitions(),
+        system_prompt=PHASE_0_SYSTEM_PROMPT,
+    )
+
+    executor.run_turn(
+        session=session,
+        run=run,
+        user_input="hello",
+        workspace_root=str(workspace),
+        agent_stream_callback=lambda _event: None,
+    )
+
+    persisted_kinds = [event.kind for event in events.list_for_run(run.run_id)]
+    assert "stream_model_call_started" not in persisted_kinds
+    assert "stream_model_call_completed" not in persisted_kinds
+    assert persisted_kinds == [
+        "user_message",
+        "assistant_message",
+        "checkpoint_written",
+    ]
     db.close()
 
 

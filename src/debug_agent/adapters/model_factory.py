@@ -25,6 +25,7 @@ class FakeChatModel:
         response: str = "fake response",
         tool_calls: list[dict[str, Any]] | None = None,
         usage: dict[str, Any] | None = None,
+        stream_chunks: list[str] | None = None,
         error: Exception | None = None,
         timeout: bool = False,
         cancelled: bool = False,
@@ -32,6 +33,7 @@ class FakeChatModel:
         self.response = response
         self.tool_calls = tool_calls or []
         self.usage = usage or {}
+        self.stream_chunks = stream_chunks
         self.error = error
         self.timeout = timeout
         self.cancelled = cancelled
@@ -51,6 +53,24 @@ class FakeChatModel:
             usage=self.usage,
         )
 
+    def stream(self, messages: list[dict[str, str]]):
+        self.messages = messages
+        if self.timeout:
+            raise TimeoutError("fake model timeout")
+        if self.cancelled:
+            raise KeyboardInterrupt("fake model cancelled")
+        if self.error is not None:
+            raise self.error
+        if self.stream_chunks is None:
+            raise NotImplementedError("fake model streaming is not configured")
+        last_index = len(self.stream_chunks) - 1
+        for index, chunk in enumerate(self.stream_chunks):
+            yield FakeModelResponse(
+                content=chunk,
+                tool_calls=[],
+                usage=self.usage if index == last_index else {},
+            )
+
 
 class ModelFactory:
     def create(self, config_snapshot: dict[str, Any]) -> ModelFactoryResult:
@@ -60,6 +80,7 @@ class ModelFactory:
             return ModelFactoryResult(
                 model=FakeChatModel(
                     response=config_snapshot.get("fake_response", "fake response"),
+                    stream_chunks=config_snapshot.get("fake_stream_chunks"),
                     error=RuntimeError(fake_error) if fake_error else None,
                     timeout=bool(config_snapshot.get("fake_timeout", False)),
                     cancelled=bool(config_snapshot.get("fake_cancelled", False)),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -19,6 +20,7 @@ from debug_agent.runtime.contracts import (
     ToolDefinition,
     utc_now_iso,
 )
+from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
 LARGE_MODEL_CONTENT_THRESHOLD_BYTES = 16 * 1024
@@ -42,6 +44,7 @@ class PromptAgentExecutor:
         workspace_root: str,
         conversation: list[dict[str, Any]] | None = None,
         prompt_turn_counter: int = 1,
+        agent_stream_callback: Callable[[AgentStreamEvent], None] | None = None,
     ) -> AgentRunResult:
         self._append_event(
             session_id=session.session_id,
@@ -72,7 +75,10 @@ class PromptAgentExecutor:
                 payload=dict(payload),
             ),
         )
-        result = self.adapter.run(request, context)
+        if agent_stream_callback is None:
+            result = self.adapter.run(request, context)
+        else:
+            result = self.adapter.stream(request, context, agent_stream_callback)
         if result.status == "completed":
             self._append_event(
                 session_id=session.session_id,
@@ -214,4 +220,3 @@ def _artifact_ids(result: AgentRunResult) -> list[str]:
     for tool_result in result.tool_results:
         artifact_ids.extend(tool_result.get("artifacts", []))
     return artifact_ids
-

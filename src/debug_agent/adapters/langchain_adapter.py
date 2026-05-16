@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
 from debug_agent.runtime.contracts import AgentRunRequest, AgentRunResult, RunContext
+from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
 RUNTIME_SAFETY_PREFIX = (
@@ -62,6 +63,22 @@ class LangChainAgentLoopAdapter:
             return _error_result("cancelled", "cancelled", str(exc), source="model")
         except Exception as exc:
             return _error_result("failed", "model_error", str(exc), source="model")
+
+    def stream(
+        self,
+        request: AgentRunRequest,
+        context: RunContext,
+        on_event: Callable[[AgentStreamEvent], None],
+    ) -> AgentRunResult:
+        result = self.run(request, context)
+        return AgentRunResult(
+            status=result.status,
+            assistant_output=result.assistant_output,
+            tool_results=result.tool_results,
+            usage=result.usage,
+            error=result.error,
+            metadata={**result.metadata, "streaming_fallback": True},
+        )
 
     def cancel(self, run_id: str) -> None:
         self._cancelled_runs.add(run_id)

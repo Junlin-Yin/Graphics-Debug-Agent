@@ -230,17 +230,17 @@ Runnable state: Phase 0.5 Milestone A satisfies the non-streaming TUI shell cont
 
 ## Milestone 7: Streaming Contracts And Executor Dual Path
 
-- [ ] Define `AgentStreamEvent`.
-- [ ] Add `AgentLoopAdapter.stream(...)` to the adapter protocol.
-- [ ] Add optional `agent_stream_callback` to `PromptAgentExecutor.run_turn(...)`.
-- [ ] Preserve existing behavior when `agent_stream_callback is None`.
-- [ ] Add fake streaming model support for deterministic tests.
-- [ ] Add non-streaming fallback metadata: `AgentRunResult.metadata["streaming_fallback"] = True`.
-- [ ] Add unit tests for `AgentStreamEvent` construction or validation.
-- [ ] Add unit tests proving `agent_stream_callback=None` preserves existing behavior.
-- [ ] Add tests proving fallback metadata is set for non-streaming fallback.
-- [ ] Add tests proving `AgentStreamEvent` is not written to `run_events`.
-- [ ] Verify existing adapter and prompt executor tests still pass.
+- [x] Define `AgentStreamEvent`.
+- [x] Add `AgentLoopAdapter.stream(...)` to the adapter protocol.
+- [x] Add optional `agent_stream_callback` to `PromptAgentExecutor.run_turn(...)`.
+- [x] Preserve existing behavior when `agent_stream_callback is None`.
+- [x] Add fake streaming model support for deterministic tests.
+- [x] Add non-streaming fallback metadata: `AgentRunResult.metadata["streaming_fallback"] = True`.
+- [x] Add unit tests for `AgentStreamEvent` construction or validation.
+- [x] Add unit tests proving `agent_stream_callback=None` preserves existing behavior.
+- [x] Add tests proving fallback metadata is set for non-streaming fallback.
+- [x] Add tests proving `AgentStreamEvent` is not written to `run_events`.
+- [x] Verify existing adapter and prompt executor tests still pass.
 
 Modified boundaries: adapter contract module, prompt executor signature, fake model/test adapter path.
 

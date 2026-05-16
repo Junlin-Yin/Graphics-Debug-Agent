@@ -13,7 +13,12 @@ from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
-from debug_agent.runtime.contracts import AgentRunRequest, RunContext, ToolResult
+from debug_agent.runtime.contracts import (
+    AgentRunRequest,
+    AgentRunResult,
+    RunContext,
+    ToolResult,
+)
 
 
 def _request() -> AgentRunRequest:
@@ -58,6 +63,42 @@ def test_langchain_adapter_maps_model_success() -> None:
     assert "runtime safety" in adapter.model.messages[0]["content"]
     assert adapter.model.messages[-1]["role"] == "user"
     assert adapter.model.messages[-1]["content"] == "hello"
+
+
+def test_langchain_adapter_stream_falls_back_to_non_streaming_invoke() -> None:
+    stream_events = []
+    model = FakeChatModel(response="answer")
+    adapter = LangChainAgentLoopAdapter(model=model)
+
+    result = adapter.stream(_request(), _context(), stream_events.append)
+
+    assert result.status == "completed"
+    assert result.assistant_output == "answer"
+    assert result.metadata["streaming_fallback"] is True
+    assert stream_events == []
+    assert model.messages[-1]["content"] == "hello"
+
+
+def test_langchain_adapter_stream_preserves_existing_result_metadata_on_fallback() -> None:
+    class MetadataAdapter(LangChainAgentLoopAdapter):
+        def run(self, request, context):
+            result = super().run(request, context)
+            return AgentRunResult(
+                status=result.status,
+                assistant_output=result.assistant_output,
+                tool_results=result.tool_results,
+                usage=result.usage,
+                error=result.error,
+                metadata={"provider": "fake"},
+            )
+
+    result = MetadataAdapter(model=FakeChatModel(response="answer")).stream(
+        _request(),
+        _context(),
+        lambda _event: None,
+    )
+
+    assert result.metadata == {"provider": "fake", "streaming_fallback": True}
 
 
 def test_langchain_adapter_maps_model_failure_timeout_and_cancellation() -> None:

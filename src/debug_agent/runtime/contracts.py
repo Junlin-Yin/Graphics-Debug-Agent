@@ -5,6 +5,8 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, Self
 
+from debug_agent.runtime.stream_events import AgentStreamEvent
+
 
 CONTRACT_VERSION = 1
 ModelEventRecorder = Callable[[str, dict[str, Any]], None]
@@ -261,5 +263,12 @@ class AgentRunResult:
 
 class AgentLoopAdapter(Protocol):
     def run(self, request: AgentRunRequest, context: RunContext) -> AgentRunResult: ...
+
+    def stream(
+        self,
+        request: AgentRunRequest,
+        context: RunContext,
+        on_event: Callable[[AgentStreamEvent], None],
+    ) -> AgentRunResult: ...
 
     def cancel(self, run_id: str) -> None: ...

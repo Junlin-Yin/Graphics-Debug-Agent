@@ -52,6 +52,21 @@ def test_model_factory_creates_fake_model_for_tests() -> None:
     assert result.model.invoke([]).content == "hello from fake"
 
 
+def test_fake_chat_model_streams_deterministic_chunks() -> None:
+    model = FakeChatModel(
+        response="fallback response",
+        stream_chunks=["hel", "lo"],
+        usage={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+    )
+
+    chunks = list(model.stream([{"role": "user", "content": "hello"}]))
+
+    assert [chunk.content for chunk in chunks] == ["hel", "lo"]
+    assert chunks[0].usage == {}
+    assert chunks[1].usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+    assert model.messages == [{"role": "user", "content": "hello"}]
+
+
 def test_model_factory_returns_config_error_for_unsupported_provider() -> None:
     result = ModelFactory().create({"provider": "openai", "model": "gpt"})
 
