@@ -291,22 +291,22 @@ Runnable state: fake streaming provider can produce deterministic stream observa
 
 ## Milestone 9: Controller Stream Queue Integration
 
-- [ ] Reuse the Milestone 4 background runtime turn thread for streaming TUI execution.
-- [ ] Add queue-based `AgentStreamEvent` delivery.
-- [ ] Extend the thread-safe wakeup hook for stream-event queue readiness.
-- [ ] Drain the queue on the UI event-loop side.
-- [ ] Map `AgentStreamEvent` to `ReplViewEvent`, snapshots, or direct view method calls.
-- [ ] Show one non-streaming fallback warning when `metadata["streaming_fallback"] = True`.
-- [ ] Finalize turn status from `AgentRunResult`.
-- [ ] Reenable input only after final turn handling.
-- [ ] Add unit tests for queue drain ordering.
-- [ ] Add unit tests for malformed stream event payloads during queue drain or mapping.
-- [ ] Ensure malformed stream event payloads produce an error or system view event and do not crash the UI loop, block remaining queue drain, or prevent final turn handling.
-- [ ] Add unit tests for thread-safe wakeup behavior with a fake invalidator.
-- [ ] Add integration test for streaming fake model deltas rendering incrementally.
-- [ ] Add integration test for non-streaming fallback warning.
-- [ ] Add integration test for active prompt rejection during a running turn.
-- [ ] Verify with `uv run pytest tests/unit/cli tests/integration -v`.
+- [x] Reuse the Milestone 4 background runtime turn thread for streaming TUI execution.
+- [x] Add queue-based `AgentStreamEvent` delivery.
+- [x] Extend the thread-safe wakeup hook for stream-event queue readiness.
+- [x] Drain the queue on the UI event-loop side.
+- [x] Map `AgentStreamEvent` to `ReplViewEvent`, snapshots, or direct view method calls.
+- [x] Show one non-streaming fallback warning when `metadata["streaming_fallback"] = True`.
+- [x] Finalize turn status from `AgentRunResult`.
+- [x] Reenable input only after final turn handling.
+- [x] Add unit tests for queue drain ordering.
+- [x] Add unit tests for malformed stream event payloads during queue drain or mapping.
+- [x] Ensure malformed stream event payloads produce an error or system view event and do not crash the UI loop, block remaining queue drain, or prevent final turn handling.
+- [x] Add unit tests for thread-safe wakeup behavior with a fake invalidator.
+- [x] Add integration test for streaming fake model deltas rendering incrementally.
+- [x] Add integration test for non-streaming fallback warning.
+- [x] Add integration test for active prompt rejection during a running turn.
+- [x] Verify with `uv run pytest tests/unit/cli tests/integration -v`.
 
 Modified boundaries: `ReplController` and optional TUI runtime facade.
 

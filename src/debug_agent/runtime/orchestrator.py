@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,7 @@ from debug_agent.persistence.sqlite import RuntimeDatabase
 from debug_agent.runtime.config import PHASE_0_SYSTEM_PROMPT
 from debug_agent.runtime.contracts import AgentRunResult, Checkpoint, RunEvent, utc_now_iso
 from debug_agent.runtime.prompt_executor import PromptAgentExecutor
+from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.runtime.workspace import resolve_workspace_root
 from debug_agent.tools.broker import ToolBroker
 from debug_agent.tools.native_readonly import tool_definitions
@@ -85,7 +87,11 @@ class ReplRuntime:
         self.closed = False
         self._lock = threading.RLock()
 
-    def run_turn(self, user_input: str) -> AgentRunResult:
+    def run_turn(
+        self,
+        user_input: str,
+        agent_stream_callback: Callable[[AgentStreamEvent], None] | None = None,
+    ) -> AgentRunResult:
         with self._lock:
             self.turn_counter += 1
             session = self.sessions.get(self.session_id)
@@ -97,6 +103,7 @@ class ReplRuntime:
                 workspace_root=str(self.workspace_root),
                 conversation=self.conversation,
                 prompt_turn_counter=self.turn_counter,
+                agent_stream_callback=agent_stream_callback,
             )
             if result.status == "completed":
                 self.conversation.append({"role": "user", "content": user_input})

@@ -17,9 +17,13 @@ from debug_agent.cli.repl_view import (
 )
 from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.orchestrator import ReplRuntime, RuntimeOrchestrator
+from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
 BUSY_MESSAGE = "Prompt run is already executing. Use /status or /exit."
+STREAMING_FALLBACK_MESSAGE = (
+    "streaming unavailable for this model; using non-streaming response."
+)
 
 
 @dataclass
@@ -36,6 +40,9 @@ class ReplController:
     _last_elapsed_seconds: int = -1
     _active_thread: threading.Thread | None = None
     _completion_queue: queue.Queue[AgentRunResult] = field(default_factory=queue.Queue)
+    _stream_event_queue: queue.Queue[AgentStreamEvent] = field(default_factory=queue.Queue)
+    _streamed_model_text: dict[str, str] = field(default_factory=dict)
+    _streamed_output_seen: bool = False
     _usage_input_tokens: int | None = None
     _usage_output_tokens: int | None = None
     _usage_total_tokens: int | None = None
@@ -153,12 +160,30 @@ class ReplController:
             self.on_turn_finished(result)
             drained += 1
 
+    def on_agent_stream_event(self, event: AgentStreamEvent) -> None:
+        self._stream_event_queue.put(event)
+        self.notify_event_ready()
+
+    def drain_stream_events(self) -> int:
+        drained = 0
+        while True:
+            try:
+                event = self._stream_event_queue.get_nowait()
+            except queue.Empty:
+                return drained
+            self._map_stream_event(event)
+            drained += 1
+
     def on_turn_finished(self, result: AgentRunResult) -> None:
         turn_id = self._active_turn_id or self._turn_counter or 1
         elapsed_seconds = self._elapsed_seconds()
         self._update_usage(result.usage)
         if result.status == "completed":
-            self._append_result_events(result)
+            if result.metadata.get("streaming_fallback"):
+                self._append_system_message(STREAMING_FALLBACK_MESSAGE)
+                self._append_result_events(result)
+            elif not self._streamed_output_seen:
+                self._append_result_events(result)
         else:
             self.runtime.fail(result)
             self.exit_code = 1
@@ -176,6 +201,8 @@ class ReplController:
         self.is_executing = False
         self._active_turn_id = None
         self._active_turn_started_at = None
+        self._streamed_model_text.clear()
+        self._streamed_output_seen = False
 
     def update_running_turn_status(self) -> None:
         if not self.is_executing or self._active_turn_id is None or self.view is None:
@@ -196,7 +223,10 @@ class ReplController:
 
     def _run_turn_background(self, command: str) -> None:
         try:
-            result = self.runtime.run_turn(command)
+            result = self.runtime.run_turn(
+                command,
+                agent_stream_callback=self.on_agent_stream_event,
+            )
         except KeyboardInterrupt as exc:
             result = _error_result("cancelled", "cancelled", str(exc))
         except TimeoutError as exc:
@@ -205,6 +235,98 @@ class ReplController:
             result = _error_result("failed", "model_error", str(exc))
         self._completion_queue.put(result)
         self.notify_event_ready()
+
+    def _map_stream_event(self, event: AgentStreamEvent) -> None:
+        if self.view is None:
+            return
+        try:
+            if event.kind == "stream_text_delta":
+                model_call_id = _required_str(event.payload, "model_call_id")
+                text = _required_str(event.payload, "text")
+                self._streamed_model_text[model_call_id] = (
+                    self._streamed_model_text.get(model_call_id, "") + text
+                )
+                self._streamed_output_seen = True
+                self.view.append_view_event(
+                    ReplViewEvent(
+                        kind="model_text_delta",
+                        payload={"model_call_id": model_call_id, "text": text},
+                    )
+                )
+                return
+            if event.kind == "stream_model_call_completed":
+                model_call_id = _required_str(event.payload, "model_call_id")
+                if bool(event.payload.get("is_final")):
+                    text = self._streamed_model_text.get(model_call_id)
+                    if text:
+                        self._streamed_output_seen = True
+                        self.view.append_view_event(
+                            ReplViewEvent(
+                                kind="model_markdown_final",
+                                payload={"model_call_id": model_call_id, "text": text},
+                            )
+                        )
+                return
+            if event.kind == "stream_tool_call_started":
+                self._append_stream_tool_status(event, "running")
+                return
+            if event.kind == "stream_tool_call_completed":
+                self._append_stream_tool_status(event, event.payload.get("status"))
+                return
+            if event.kind == "stream_tool_result":
+                self._append_stream_tool_result(event)
+        except Exception as exc:
+            self.view.append_view_event(
+                ReplViewEvent(
+                    kind="error_message",
+                    payload={"message": f"Malformed stream event: {exc}"},
+                )
+            )
+
+    def _append_stream_tool_status(
+        self, event: AgentStreamEvent, status: object
+    ) -> None:
+        if self.view is None:
+            return
+        self._streamed_output_seen = True
+        self.view.append_view_event(
+            ReplViewEvent(
+                kind="tool_block",
+                payload={
+                    "name": _required_str(event.payload, "name"),
+                    "status": str(status or "unknown"),
+                    "metadata": {
+                        "tool_call_id": _required_str(event.payload, "tool_call_id"),
+                        "model_call_id": _required_str(event.payload, "model_call_id"),
+                    },
+                },
+            )
+        )
+
+    def _append_stream_tool_result(self, event: AgentStreamEvent) -> None:
+        if self.view is None:
+            return
+        tool_call_id = _required_str(event.payload, "tool_call_id")
+        model_call_id = _required_str(event.payload, "model_call_id")
+        preview = ToolResultPreviewFormatter().format(
+            output=event.payload.get("output"),
+            redacted_output=event.payload.get("redacted_output"),
+            artifact_ids=list(event.payload.get("artifact_ids", [])),
+        )
+        self._streamed_output_seen = True
+        self.view.append_view_event(
+            ReplViewEvent(
+                kind="tool_block",
+                payload={
+                    "status": "result",
+                    "metadata": {
+                        "tool_call_id": tool_call_id,
+                        "model_call_id": model_call_id,
+                    },
+                    "preview": preview,
+                },
+            )
+        )
 
     def _handle_plain_slash_command(self, command: str, output: TextIO) -> bool:
         if command == "/status":
@@ -323,6 +445,13 @@ def _usage_value(usage: dict[str, Any], *keys: str) -> int | None:
         if isinstance(value, int):
             return value
     return None
+
+
+def _required_str(payload: dict[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"missing stream payload field: {key}")
+    return value
 
 
 def _error_result(status: str, error_class: str, message: str) -> AgentRunResult:

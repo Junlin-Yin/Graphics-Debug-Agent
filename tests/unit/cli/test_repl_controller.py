@@ -5,6 +5,7 @@ from typing import Any
 
 from debug_agent.cli.repl_view import ReplViewEvent
 from debug_agent.runtime.contracts import AgentRunResult
+from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
 class FakeView:
@@ -63,10 +64,16 @@ class FakeRuntime:
         self.block_turn = False
         self.turn_started = threading.Event()
         self.release_turn = threading.Event()
+        self.stream_events: list[AgentStreamEvent] = []
+        self.stream_callback_seen = False
 
-    def run_turn(self, user_input: str) -> AgentRunResult:
+    def run_turn(self, user_input: str, agent_stream_callback=None) -> AgentRunResult:
         self.run_inputs.append(user_input)
         self.turn_started.set()
+        if agent_stream_callback is not None:
+            self.stream_callback_seen = True
+            for event in self.stream_events:
+                agent_stream_callback(event)
         if self.block_turn:
             self.release_turn.wait(timeout=2)
         return self.result
@@ -91,6 +98,7 @@ def _result(
     usage: dict[str, Any] | None = None,
     tool_results: list[dict[str, Any]] | None = None,
     error: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> AgentRunResult:
     return AgentRunResult(
         status=status,
@@ -98,7 +106,7 @@ def _result(
         tool_results=tool_results or [],
         usage=usage or {},
         error=error,
-        metadata={},
+        metadata=metadata or {},
     )
 
 
@@ -161,6 +169,175 @@ def test_background_runtime_does_not_call_view_before_ui_drain() -> None:
     assert controller.drain_completed_turns() == 1
     assert view.events
     assert view.input_enabled == [False, True]
+
+
+def test_stream_events_are_queued_wakeup_and_drained_on_ui_side() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime(_result("completed", assistant_output="hello"))
+    runtime.stream_events = [
+        AgentStreamEvent(
+            kind="stream_model_call_started",
+            payload={"model_call_id": "model_1"},
+        ),
+        AgentStreamEvent(
+            kind="stream_text_delta",
+            payload={"model_call_id": "model_1", "text": "hel"},
+        ),
+        AgentStreamEvent(
+            kind="stream_text_delta",
+            payload={"model_call_id": "model_1", "text": "lo"},
+        ),
+        AgentStreamEvent(
+            kind="stream_model_call_completed",
+            payload={
+                "model_call_id": "model_1",
+                "is_final": True,
+                "usage": {},
+                "duration_ms": 1,
+            },
+        ),
+    ]
+    wakeups: list[str] = []
+    controller = ReplController(
+        runtime=runtime,
+        view=view,
+        wakeup_callback=lambda: wakeups.append("ready"),
+    )
+
+    controller.on_submit("hello")
+    controller.wait_for_active_turn(timeout=2)
+
+    assert runtime.stream_callback_seen is True
+    assert wakeups
+    assert view.events == []
+    assert controller.drain_stream_events() == 4
+    assert view.events == [
+        ReplViewEvent(
+            kind="model_text_delta",
+            payload={"model_call_id": "model_1", "text": "hel"},
+        ),
+        ReplViewEvent(
+            kind="model_text_delta",
+            payload={"model_call_id": "model_1", "text": "lo"},
+        ),
+        ReplViewEvent(
+            kind="model_markdown_final",
+            payload={"model_call_id": "model_1", "text": "hello"},
+        ),
+    ]
+    controller.drain_completed_turns()
+
+
+def test_notify_event_ready_does_not_mutate_view_state() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    wakeups: list[str] = []
+    controller = ReplController(
+        runtime=runtime,
+        view=view,
+        wakeup_callback=lambda: wakeups.append("ready"),
+    )
+
+    controller.notify_event_ready()
+
+    assert wakeups == ["ready"]
+    assert view.events == []
+    assert view.input_enabled == []
+
+
+def test_malformed_stream_event_payload_does_not_block_queue_or_finalization() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime(_result("completed", assistant_output="ok"))
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_agent_stream_event(
+        AgentStreamEvent(kind="stream_text_delta", payload={"model_call_id": "model_1"})
+    )
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_text_delta",
+            payload={"model_call_id": "model_1", "text": "ok"},
+        )
+    )
+
+    assert controller.drain_stream_events() == 2
+    assert view.events[0].kind == "error_message"
+    assert view.events[1] == ReplViewEvent(
+        kind="model_text_delta",
+        payload={"model_call_id": "model_1", "text": "ok"},
+    )
+
+    controller.on_turn_finished(runtime.result)
+
+    assert view.turn_statuses[-1][1] == "completed"
+    assert view.input_enabled[-1] is True
+
+
+def test_streaming_fallback_warning_is_shown_once_and_uses_final_result_rendering() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_turn_finished(
+        _result(
+            "completed",
+            assistant_output="fallback answer",
+            metadata={"streaming_fallback": True},
+        )
+    )
+
+    assert view.events == [
+        ReplViewEvent(
+            kind="system_message",
+            payload={
+                "message": "streaming unavailable for this model; using non-streaming response."
+            },
+        ),
+        ReplViewEvent(
+            kind="model_markdown_final",
+            payload={"text": "fallback answer"},
+        ),
+    ]
+
+
+def test_streamed_turn_finalization_does_not_duplicate_assistant_output() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_text_delta",
+            payload={"model_call_id": "model_1", "text": "answer"},
+        )
+    )
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_model_call_completed",
+            payload={
+                "model_call_id": "model_1",
+                "is_final": True,
+                "usage": {},
+                "duration_ms": 1,
+            },
+        )
+    )
+    controller.drain_stream_events()
+
+    controller.on_turn_finished(_result("completed", assistant_output="answer"))
+
+    assert [
+        event.kind for event in view.events if event.kind == "model_markdown_final"
+    ] == ["model_markdown_final"]
 
 
 def test_timer_updates_running_turn_elapsed_seconds() -> None:

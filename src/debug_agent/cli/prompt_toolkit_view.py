@@ -64,9 +64,13 @@ class PromptToolkitReplView:
             while getattr(controller, "is_executing", False):
                 if hasattr(controller, "update_running_turn_status"):
                     controller.update_running_turn_status()
+                if hasattr(controller, "drain_stream_events"):
+                    controller.drain_stream_events()
                 if hasattr(controller, "drain_completed_turns"):
                     controller.drain_completed_turns()
                 sleep(0.1)
+            if hasattr(controller, "drain_stream_events"):
+                controller.drain_stream_events()
             if hasattr(controller, "drain_completed_turns"):
                 controller.drain_completed_turns()
         return getattr(controller, "exit_code", 0)

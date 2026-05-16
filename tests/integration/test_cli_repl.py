@@ -33,8 +33,12 @@ fake_response = "{response}"
     )
 
 
-def _fake_config_snapshot(response: str = "integration repl answer") -> dict[str, object]:
-    return {
+def _fake_config_snapshot(
+    response: str = "integration repl answer",
+    *,
+    stream_chunks: list[str] | None = None,
+) -> dict[str, object]:
+    snapshot: dict[str, object] = {
         "provider": "fake",
         "model": "fake-model",
         "fake_response": response,
@@ -46,6 +50,9 @@ def _fake_config_snapshot(response: str = "integration repl answer") -> dict[str
             "and use only tools exposed by the runtime."
         ),
     }
+    if stream_chunks is not None:
+        snapshot["fake_stream_chunks"] = stream_chunks
+    return snapshot
 
 
 class FakeControllerView:
@@ -162,6 +169,95 @@ def test_non_streaming_repl_controller_completes_fake_model_turn(tmp_path) -> No
             ).fetchone()[0]
             == 1
         )
+
+
+def test_streaming_repl_controller_renders_fake_model_deltas(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    view = FakeControllerView()
+    controller = ReplController.start(
+        config_snapshot=_fake_config_snapshot(
+            "unused",
+            stream_chunks=["hel", "lo"],
+        ),
+        workspace_root=workspace,
+        view=view,
+    )
+
+    try:
+        controller.on_submit("hello")
+        controller.wait_for_active_turn(timeout=2)
+        controller.drain_stream_events()
+        assert controller.drain_completed_turns() == 1
+    finally:
+        controller.close()
+
+    assert ReplViewEvent(
+        kind="model_text_delta",
+        payload={"model_call_id": "model_call_1", "text": "hel"},
+    ) in view.events
+    assert ReplViewEvent(
+        kind="model_text_delta",
+        payload={"model_call_id": "model_call_1", "text": "lo"},
+    ) in view.events
+    assert ReplViewEvent(
+        kind="model_markdown_final",
+        payload={"model_call_id": "model_call_1", "text": "hello"},
+    ) in view.events
+    assert view.turn_statuses[-1][1] == "completed"
+
+
+def test_streaming_repl_controller_warns_on_non_streaming_fallback(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    view = FakeControllerView()
+    controller = ReplController.start(
+        config_snapshot=_fake_config_snapshot("fallback answer"),
+        workspace_root=workspace,
+        view=view,
+    )
+
+    try:
+        controller.on_submit("hello")
+        controller.wait_for_active_turn(timeout=2)
+        controller.drain_stream_events()
+        assert controller.drain_completed_turns() == 1
+    finally:
+        controller.close()
+
+    assert ReplViewEvent(
+        kind="system_message",
+        payload={
+            "message": "streaming unavailable for this model; using non-streaming response."
+        },
+    ) in view.events
+    assert ReplViewEvent(
+        kind="model_markdown_final",
+        payload={"text": "fallback answer"},
+    ) in view.events
+
+
+def test_streaming_repl_controller_rejects_active_prompt(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    view = FakeControllerView()
+    controller = ReplController.start(
+        config_snapshot=_fake_config_snapshot(
+            "unused",
+            stream_chunks=["slow answer"],
+        ),
+        workspace_root=workspace,
+        view=view,
+    )
+
+    try:
+        controller.is_executing = True
+        controller.on_submit("second")
+    finally:
+        controller.close()
+
+    assert view.events[-1].kind == "system_message"
+    assert "already executing" in view.events[-1].payload["message"]
 
 
 def test_injected_io_repl_uses_plain_repl_view(tmp_path, monkeypatch) -> None:
