@@ -196,17 +196,27 @@ Runnable state: Milestone A is usable without streaming.
 
 ## Milestone 6: Milestone A Acceptance Gate
 
-- [ ] Run `uv run pytest tests/unit -v`.
-- [ ] Run `uv run pytest tests/integration -v`.
-- [ ] Run one-shot smoke with fake model.
-- [ ] Run non-TTY fallback smoke.
-- [ ] Run TTY TUI smoke with fake model.
-- [ ] Confirm runtime turn execution does not block the prompt_toolkit event loop.
-- [ ] Confirm running turn status updates elapsed seconds once per second.
-- [ ] Confirm no `AgentLoopAdapter.stream(...)` implementation is required for Milestone A.
-- [ ] Confirm all prompt turns still use `AgentLoopAdapter.run(...)`.
-- [ ] Confirm no Phase 1+ feature is exposed or required.
-- [ ] Record review evidence before beginning Milestone 7.
+- [x] Run `uv run pytest tests/unit -v`.
+- [x] Run `uv run pytest tests/integration -v`.
+- [x] Run one-shot smoke with fake model.
+- [x] Run non-TTY fallback smoke.
+- [x] Run TTY TUI smoke with fake model.
+- [x] Confirm runtime turn execution does not block the prompt_toolkit event loop.
+- [x] Confirm running turn status updates elapsed seconds once per second.
+- [x] Confirm no `AgentLoopAdapter.stream(...)` implementation is required for Milestone A.
+- [x] Confirm all prompt turns still use `AgentLoopAdapter.run(...)`.
+- [x] Confirm no Phase 1+ feature is exposed or required.
+- [x] Record review evidence before beginning Milestone 7.
+
+Review evidence:
+
+- `uv run pytest tests/unit -v`: 120 passed.
+- `uv run pytest tests/integration -v`: 23 passed.
+- one-shot fake-model smoke returned `one-shot smoke answer`.
+- non-TTY fallback smoke returned `fallback smoke answer` and plain `/status` fields.
+- TTY TUI smoke rendered welcome, `assistant: tty acceptance answer`, `/status`, and `session ... closed.`.
+- Static source search found no `AgentLoopAdapter.stream(...)`, `AgentStreamEvent`, or `agent_stream_callback` implementation in `src` or tests.
+- Existing Phase 0 acceptance tests continue to cover reserved Phase 1+ command non-exposure.
 
 Modified boundaries: none; this is a stabilization checkpoint.
 
