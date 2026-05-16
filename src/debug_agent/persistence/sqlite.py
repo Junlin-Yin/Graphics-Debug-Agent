@@ -97,7 +97,7 @@ class RuntimeDatabase:
         try:
             sessions_root.mkdir(parents=True, exist_ok=True)
             db_path = sessions_root / "runtime.db"
-            connection = sqlite3.connect(db_path)
+            connection = sqlite3.connect(db_path, check_same_thread=False)
             connection.execute("PRAGMA foreign_keys = ON")
             connection.executescript(SCHEMA)
             connection.commit()

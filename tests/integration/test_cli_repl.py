@@ -9,6 +9,8 @@ from pathlib import Path
 
 import debug_agent.cli.repl as repl_module
 from debug_agent.cli.main import main
+from debug_agent.cli.repl_controller import ReplController
+from debug_agent.cli.repl_view import ReplViewEvent
 from debug_agent.cli.repl import run_repl
 from debug_agent.cli.plain_repl_view import PlainReplView
 
@@ -46,6 +48,46 @@ def _fake_config_snapshot(response: str = "integration repl answer") -> dict[str
     }
 
 
+class FakeControllerView:
+    def __init__(self) -> None:
+        self.user_messages: list[str] = []
+        self.input_enabled: list[bool] = []
+        self.events: list[ReplViewEvent] = []
+        self.turn_statuses: list[tuple[int, str, int]] = []
+        self.status_bars: list[object] = []
+        self.closed_summaries: list[object] = []
+        self.errors: list[str] = []
+
+    def run(self, controller: object) -> int:
+        return 0
+
+    def show_welcome(self, snapshot: object) -> None:
+        pass
+
+    def set_input_enabled(self, enabled: bool) -> None:
+        self.input_enabled.append(enabled)
+
+    def append_user_message(self, message: str) -> None:
+        self.user_messages.append(message)
+
+    def append_view_event(self, event: ReplViewEvent) -> None:
+        self.events.append(event)
+
+    def set_turn_status(
+        self, turn_id: int, status: str, elapsed_seconds: int
+    ) -> None:
+        self.turn_statuses.append((turn_id, status, elapsed_seconds))
+
+    def update_status_bar(self, snapshot: object) -> None:
+        self.status_bars.append(snapshot)
+
+    def show_session_closed(self, summary: object) -> None:
+        self.closed_summaries.append(summary)
+
+    def show_error(self, message: str) -> None:
+        self.errors.append(message)
+
+
 def test_debug_agent_repl_accepts_two_turns_status_and_exit(tmp_path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
@@ -81,6 +123,40 @@ def test_debug_agent_repl_accepts_two_turns_status_and_exit(tmp_path) -> None:
             row[0] for row in conn.execute("SELECT kind FROM checkpoints ORDER BY rowid")
         ]
     assert checkpoint_kinds == ["turn", "turn", "terminal"]
+
+
+def test_non_streaming_repl_controller_completes_fake_model_turn(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    view = FakeControllerView()
+    controller = ReplController.start(
+        config_snapshot=_fake_config_snapshot("controller answer"),
+        workspace_root=workspace,
+        view=view,
+    )
+
+    try:
+        controller.on_submit("hello")
+        controller.wait_for_active_turn(timeout=2)
+        assert controller.drain_completed_turns() == 1
+    finally:
+        controller.close()
+
+    assert view.user_messages == ["hello"]
+    assert view.input_enabled == [False, True]
+    assert ReplViewEvent(
+        kind="model_markdown_final",
+        payload={"text": "controller answer"},
+    ) in view.events
+    assert view.turn_statuses[-1][1] == "completed"
+    assert view.status_bars[-1].model == "fake-model"
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM run_events WHERE kind = 'assistant_message'"
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_injected_io_repl_uses_plain_repl_view(tmp_path, monkeypatch) -> None:

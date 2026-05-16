@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -82,108 +83,114 @@ class ReplRuntime:
         self.turn_counter = 0
         self.conversation: list[dict[str, Any]] = []
         self.closed = False
+        self._lock = threading.RLock()
 
     def run_turn(self, user_input: str) -> AgentRunResult:
-        self.turn_counter += 1
-        session = self.sessions.get(self.session_id)
-        run = self.runs.get(self.run_id)
-        result = self.executor.run_turn(
-            session=session,
-            run=run,
-            user_input=user_input,
-            workspace_root=str(self.workspace_root),
-            conversation=self.conversation,
-            prompt_turn_counter=self.turn_counter,
-        )
-        if result.status == "completed":
-            self.conversation.append({"role": "user", "content": user_input})
-            self.conversation.append(
-                {"role": "assistant", "content": result.assistant_output or ""}
+        with self._lock:
+            self.turn_counter += 1
+            session = self.sessions.get(self.session_id)
+            run = self.runs.get(self.run_id)
+            result = self.executor.run_turn(
+                session=session,
+                run=run,
+                user_input=user_input,
+                workspace_root=str(self.workspace_root),
+                conversation=self.conversation,
+                prompt_turn_counter=self.turn_counter,
             )
-        return result
+            if result.status == "completed":
+                self.conversation.append({"role": "user", "content": user_input})
+                self.conversation.append(
+                    {"role": "assistant", "content": result.assistant_output or ""}
+                )
+            return result
 
     def status_lines(self) -> list[str]:
-        session = self.sessions.get(self.session_id)
-        latest_run = self.runs.latest_for_session(self.session_id)
-        fields = {
-            "session_id": session.session_id,
-            "workspace_root": session.workspace_root,
-            "session_status": session.status,
-            "approval_mode": session.approval_mode,
-            "active_run_id": session.active_run_id,
-            "latest_run_id": latest_run.run_id if latest_run else None,
-            "latest_run_status": latest_run.status if latest_run else None,
-            "latest_checkpoint_id": session.latest_checkpoint_id,
-            "created_at": session.created_at,
-            "updated_at": session.updated_at,
-            "error_summary": session.error_summary,
-        }
-        return [f"{key}: {value or ''}" for key, value in fields.items()]
+        with self._lock:
+            session = self.sessions.get(self.session_id)
+            latest_run = self.runs.latest_for_session(self.session_id)
+            fields = {
+                "session_id": session.session_id,
+                "workspace_root": session.workspace_root,
+                "session_status": session.status,
+                "approval_mode": session.approval_mode,
+                "active_run_id": session.active_run_id,
+                "latest_run_id": latest_run.run_id if latest_run else None,
+                "latest_run_status": latest_run.status if latest_run else None,
+                "latest_checkpoint_id": session.latest_checkpoint_id,
+                "created_at": session.created_at,
+                "updated_at": session.updated_at,
+                "error_summary": session.error_summary,
+            }
+            return [f"{key}: {value or ''}" for key, value in fields.items()]
 
     def complete(self) -> None:
-        if self.closed:
-            return
-        session = self.sessions.get(self.session_id)
-        run = self.runs.get(self.run_id)
-        checkpoint = self.checkpoints.save(
-            Checkpoint(
-                checkpoint_id=f"chk_{uuid4().hex}",
-                session_id=session.session_id,
-                run_id=run.run_id,
-                kind="terminal",
-                state={
-                    "session_status": "completed",
-                    "run_status": "completed",
-                    "prompt_turn_counter": self.turn_counter,
-                    "latest_model_response_metadata": {},
-                    "latest_artifact_ids": [],
-                    "latest_error_summary": None,
-                },
-                summary="REPL exited through /exit.",
-                created_at=utc_now_iso(),
+        with self._lock:
+            if self.closed:
+                return
+            session = self.sessions.get(self.session_id)
+            run = self.runs.get(self.run_id)
+            checkpoint = self.checkpoints.save(
+                Checkpoint(
+                    checkpoint_id=f"chk_{uuid4().hex}",
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    kind="terminal",
+                    state={
+                        "session_status": "completed",
+                        "run_status": "completed",
+                        "prompt_turn_counter": self.turn_counter,
+                        "latest_model_response_metadata": {},
+                        "latest_artifact_ids": [],
+                        "latest_error_summary": None,
+                    },
+                    summary="REPL exited through /exit.",
+                    created_at=utc_now_iso(),
+                )
             )
-        )
-        _append_event(
-            self.events,
-            session.session_id,
-            run.run_id,
-            "checkpoint_written",
-            {"checkpoint_id": checkpoint.checkpoint_id, "kind": checkpoint.kind},
-        )
-        run = self.runs.mark_completed(
-            run.run_id, latest_checkpoint_id=checkpoint.checkpoint_id
-        )
-        session = self.sessions.mark_completed(
-            session.session_id, latest_checkpoint_id=checkpoint.checkpoint_id
-        )
-        _append_event(self.events, session.session_id, run.run_id, "run_completed", {})
-        _append_event(
-            self.events, session.session_id, run.run_id, "session_completed", {}
-        )
-        TraceWriter(self.db.connection, self.db.path.parent).refresh_if_stale(
-            session.session_id
-        )
-        self.close()
+            _append_event(
+                self.events,
+                session.session_id,
+                run.run_id,
+                "checkpoint_written",
+                {"checkpoint_id": checkpoint.checkpoint_id, "kind": checkpoint.kind},
+            )
+            run = self.runs.mark_completed(
+                run.run_id, latest_checkpoint_id=checkpoint.checkpoint_id
+            )
+            session = self.sessions.mark_completed(
+                session.session_id, latest_checkpoint_id=checkpoint.checkpoint_id
+            )
+            _append_event(self.events, session.session_id, run.run_id, "run_completed", {})
+            _append_event(
+                self.events, session.session_id, run.run_id, "session_completed", {}
+            )
+            TraceWriter(self.db.connection, self.db.path.parent).refresh_if_stale(
+                session.session_id
+            )
+            self.close()
 
     def fail(self, result: AgentRunResult) -> None:
-        if self.closed:
-            return
-        _mark_failed_terminal(
-            sessions=self.sessions,
-            runs=self.runs,
-            events=self.events,
-            checkpoints=self.checkpoints,
-            trace_writer=TraceWriter(self.db.connection, self.db.path.parent),
-            session_id=self.session_id,
-            run_id=self.run_id,
-            agent_result=result,
-        )
-        self.close()
+        with self._lock:
+            if self.closed:
+                return
+            _mark_failed_terminal(
+                sessions=self.sessions,
+                runs=self.runs,
+                events=self.events,
+                checkpoints=self.checkpoints,
+                trace_writer=TraceWriter(self.db.connection, self.db.path.parent),
+                session_id=self.session_id,
+                run_id=self.run_id,
+                agent_result=result,
+            )
+            self.close()
 
     def close(self) -> None:
-        if not self.closed:
-            self.db.close()
-            self.closed = True
+        with self._lock:
+            if not self.closed:
+                self.db.close()
+                self.closed = True
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,331 @@
+from __future__ import annotations
+
+import threading
+from typing import Any
+
+from debug_agent.cli.repl_view import ReplViewEvent
+from debug_agent.runtime.contracts import AgentRunResult
+
+
+class FakeView:
+    def __init__(self) -> None:
+        self.user_messages: list[str] = []
+        self.input_enabled: list[bool] = []
+        self.events: list[ReplViewEvent] = []
+        self.turn_statuses: list[tuple[int, str, int]] = []
+        self.status_bars: list[Any] = []
+        self.closed_summaries: list[Any] = []
+        self.errors: list[str] = []
+
+    def run(self, controller: object) -> int:
+        return 0
+
+    def show_welcome(self, snapshot: object) -> None:
+        pass
+
+    def set_input_enabled(self, enabled: bool) -> None:
+        self.input_enabled.append(enabled)
+
+    def append_user_message(self, message: str) -> None:
+        self.user_messages.append(message)
+
+    def append_view_event(self, event: ReplViewEvent) -> None:
+        self.events.append(event)
+
+    def set_turn_status(
+        self, turn_id: int, status: str, elapsed_seconds: int
+    ) -> None:
+        self.turn_statuses.append((turn_id, status, elapsed_seconds))
+
+    def update_status_bar(self, snapshot: object) -> None:
+        self.status_bars.append(snapshot)
+
+    def show_session_closed(self, summary: object) -> None:
+        self.closed_summaries.append(summary)
+
+    def show_error(self, message: str) -> None:
+        self.errors.append(message)
+
+
+class FakeRuntime:
+    def __init__(self, result: AgentRunResult | None = None) -> None:
+        self.result = result or _result("completed", assistant_output="answer")
+        self.run_inputs: list[str] = []
+        self.status = ["session_id: sess_1", "approval_mode: normal"]
+        self.completed = False
+        self.closed = False
+        self.failed_results: list[AgentRunResult] = []
+        self.session_id = "sess_123456789"
+        self.run_id = "run_1"
+        self.workspace_root = "/repo"
+        self.approval_mode = "normal"
+        self.config_snapshot = {"model": "fake-model"}
+        self.block_turn = False
+        self.turn_started = threading.Event()
+        self.release_turn = threading.Event()
+
+    def run_turn(self, user_input: str) -> AgentRunResult:
+        self.run_inputs.append(user_input)
+        self.turn_started.set()
+        if self.block_turn:
+            self.release_turn.wait(timeout=2)
+        return self.result
+
+    def status_lines(self) -> list[str]:
+        return self.status
+
+    def complete(self) -> None:
+        self.completed = True
+
+    def fail(self, result: AgentRunResult) -> None:
+        self.failed_results.append(result)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _result(
+    status: str,
+    *,
+    assistant_output: str | None = None,
+    usage: dict[str, Any] | None = None,
+    tool_results: list[dict[str, Any]] | None = None,
+    error: dict[str, Any] | None = None,
+) -> AgentRunResult:
+    return AgentRunResult(
+        status=status,
+        assistant_output=assistant_output,
+        tool_results=tool_results or [],
+        usage=usage or {},
+        error=error,
+        metadata={},
+    )
+
+
+def test_submit_runs_turn_in_background_and_finalizes_on_ui_side() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime(
+        _result(
+            "completed",
+            assistant_output="final answer",
+            usage={"input_tokens": 3, "output_tokens": 5, "total_tokens": 8},
+        )
+    )
+    runtime.block_turn = True
+    wakeups: list[str] = []
+    controller = ReplController(
+        runtime=runtime,
+        view=view,
+        wakeup_callback=lambda: wakeups.append("ready"),
+        time_fn=lambda: 100.0,
+    )
+
+    controller.on_submit("hello")
+
+    assert runtime.turn_started.wait(timeout=2)
+    assert view.user_messages == ["hello"]
+    assert view.input_enabled == [False]
+    assert view.turn_statuses == [(1, "running", 0)]
+    assert view.events == []
+
+    runtime.release_turn.set()
+    controller.wait_for_active_turn(timeout=2)
+
+    assert wakeups == ["ready"]
+    assert controller.drain_completed_turns() == 1
+    assert view.events == [
+        ReplViewEvent(kind="model_markdown_final", payload={"text": "final answer"})
+    ]
+    assert view.turn_statuses[-1] == (1, "completed", 0)
+    assert view.input_enabled == [False, True]
+    assert view.status_bars[-1].input_tokens == 3
+    assert view.status_bars[-1].output_tokens == 5
+    assert view.status_bars[-1].total_tokens == 8
+    assert runtime.run_inputs == ["hello"]
+
+
+def test_background_runtime_does_not_call_view_before_ui_drain() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime(_result("completed", assistant_output="answer"))
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_submit("hello")
+    controller.wait_for_active_turn(timeout=2)
+
+    assert view.events == []
+    assert view.input_enabled == [False]
+    assert controller.drain_completed_turns() == 1
+    assert view.events
+    assert view.input_enabled == [False, True]
+
+
+def test_timer_updates_running_turn_elapsed_seconds() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    now = 10.0
+    view = FakeView()
+    runtime = FakeRuntime()
+    runtime.block_turn = True
+    controller = ReplController(runtime=runtime, view=view, time_fn=lambda: now)
+
+    controller.on_submit("hello")
+    assert runtime.turn_started.wait(timeout=2)
+
+    now = 11.2
+    controller.update_running_turn_status()
+    now = 12.0
+    controller.update_running_turn_status()
+
+    runtime.release_turn.set()
+    controller.wait_for_active_turn(timeout=2)
+
+    assert (1, "running", 1) in view.turn_statuses
+    assert (1, "running", 2) in view.turn_statuses
+    controller.drain_completed_turns()
+
+
+def test_active_prompt_is_rejected_without_runtime_call() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    runtime.block_turn = True
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_submit("first")
+    assert runtime.turn_started.wait(timeout=2)
+    controller.on_submit("second")
+
+    runtime.release_turn.set()
+    controller.wait_for_active_turn(timeout=2)
+
+    assert runtime.run_inputs == ["first"]
+    assert view.events[-1].kind == "system_message"
+    assert "already executing" in view.events[-1].payload["message"]
+    controller.drain_completed_turns()
+
+
+def test_status_slash_command_appends_system_message() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_slash_command("/status")
+
+    assert view.events == [
+        ReplViewEvent(
+            kind="system_message",
+            payload={"message": "session_id: sess_1\napproval_mode: normal"},
+        )
+    ]
+
+
+def test_exit_slash_command_completes_runtime_and_shows_summary() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    should_continue = controller.on_slash_command("/exit")
+
+    assert should_continue is False
+    assert runtime.completed is True
+    assert view.closed_summaries[-1].session_id == "sess_123456789"
+    assert view.closed_summaries[-1].status == "closed"
+
+
+def test_completed_turn_adapts_tool_results_into_tool_blocks() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_turn_finished(
+        _result(
+            "completed",
+            assistant_output=None,
+            tool_results=[
+                {
+                    "status": "ok",
+                    "output": "one\ntwo",
+                    "error": None,
+                    "artifacts": ["art_1"],
+                    "metadata": {"tool_name": "read_file"},
+                    "redacted_output": None,
+                }
+            ],
+        )
+    )
+
+    assert view.events[-1].kind == "tool_block"
+    assert view.events[-1].payload["status"] == "ok"
+    assert view.events[-1].payload["metadata"] == {"tool_name": "read_file"}
+    assert view.events[-1].payload["preview"].text == "> one\n> two"
+    assert view.events[-1].payload["preview"].artifact_ids == ["art_1"]
+
+
+def test_usage_preserves_last_known_counts_when_result_omits_usage() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_turn_finished(
+        _result(
+            "completed",
+            assistant_output="one",
+            usage={"input_tokens": 2, "output_tokens": 4, "total_tokens": 6},
+        )
+    )
+    controller.on_turn_finished(_result("completed", assistant_output="two", usage={}))
+
+    assert view.status_bars[-1].input_tokens == 2
+    assert view.status_bars[-1].output_tokens == 4
+    assert view.status_bars[-1].total_tokens == 6
+
+
+def test_final_status_maps_cancelled_and_timeout_display_statuses() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_turn_finished(
+        _result(
+            "failed",
+            error={
+                "error_class": "cancelled",
+                "message": "cancelled",
+                "source": "model",
+                "recoverable": False,
+            },
+        )
+    )
+    controller.on_turn_finished(
+        _result(
+            "failed",
+            error={
+                "error_class": "timeout",
+                "message": "timeout",
+                "source": "model",
+                "recoverable": True,
+            },
+        )
+    )
+
+    assert view.turn_statuses[-2][1] == "cancelled"
+    assert view.turn_statuses[-1][1] == "timeout"
+    assert [result.error["error_class"] for result in runtime.failed_results] == [
+        "cancelled",
+        "timeout",
+    ]

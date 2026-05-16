@@ -129,28 +129,28 @@ Runnable state: non-TTY and injected-I/O sessions keep working through the `Repl
 
 ## Milestone 4: Non-streaming ReplController
 
-- [ ] Implement `ReplController.on_submit`.
-- [ ] Implement `ReplController.on_slash_command`.
-- [ ] Implement `ReplController.on_interrupt`.
-- [ ] Implement `ReplController.on_turn_finished`.
-- [ ] Add background runtime turn thread for non-streaming TUI execution through `AgentLoopAdapter.run(...)`.
-- [ ] Ensure runtime background work never calls view methods directly.
-- [ ] Add controller-owned timer loop or callback for active turns.
-- [ ] Call `view.set_turn_status(turn_id, "running", elapsed_seconds)` once per second while a turn is active.
-- [ ] Add thread-safe completion wakeup so final result handling runs on the UI event-loop side.
-- [ ] Adapt final `AgentRunResult` into model, tool, status, and status bar view updates.
-- [ ] Disable input while a turn is running and reenable it after final result handling.
-- [ ] Reject ordinary prompts during active execution with a system or error message.
-- [ ] Append `/status` output as a system message.
-- [ ] Own best-effort token usage aggregation in the controller.
-- [ ] Preserve last known cumulative token usage when a completed model response omits usage.
-- [ ] Update the status bar snapshot after each completed model response.
-- [ ] Keep `/exit` on the existing runtime safe-boundary behavior.
-- [ ] Map display `cancelled` to persisted `failed + error_class=cancelled`.
-- [ ] Map display `timeout` to persisted `failed + error_class=timeout`.
-- [ ] Add unit tests with fake view and fake runtime for submit lifecycle, background completion wakeup, timer status updates, active prompt rejection, `/status`, status mapping, and usage aggregation.
-- [ ] Add integration test with fake model through `AgentLoopAdapter.run(...)`.
-- [ ] Verify with `uv run pytest tests/unit/cli tests/integration -v`.
+- [x] Implement `ReplController.on_submit`.
+- [x] Implement `ReplController.on_slash_command`.
+- [x] Implement `ReplController.on_interrupt`.
+- [x] Implement `ReplController.on_turn_finished`.
+- [x] Add background runtime turn thread for non-streaming TUI execution through `AgentLoopAdapter.run(...)`.
+- [x] Ensure runtime background work never calls view methods directly.
+- [x] Add controller-owned timer loop or callback for active turns.
+- [x] Call `view.set_turn_status(turn_id, "running", elapsed_seconds)` once per second while a turn is active.
+- [x] Add thread-safe completion wakeup so final result handling runs on the UI event-loop side.
+- [x] Adapt final `AgentRunResult` into model, tool, status, and status bar view updates.
+- [x] Disable input while a turn is running and reenable it after final result handling.
+- [x] Reject ordinary prompts during active execution with a system or error message.
+- [x] Append `/status` output as a system message.
+- [x] Own best-effort token usage aggregation in the controller.
+- [x] Preserve last known cumulative token usage when a completed model response omits usage.
+- [x] Update the status bar snapshot after each completed model response.
+- [x] Keep `/exit` on the existing runtime safe-boundary behavior.
+- [x] Map display `cancelled` to persisted `failed + error_class=cancelled`.
+- [x] Map display `timeout` to persisted `failed + error_class=timeout`.
+- [x] Add unit tests with fake view and fake runtime for submit lifecycle, background completion wakeup, timer status updates, active prompt rejection, `/status`, status mapping, and usage aggregation.
+- [x] Add integration test with fake model through `AgentLoopAdapter.run(...)`.
+- [x] Verify with `uv run pytest tests/unit/cli tests/integration -v`.
 
 Modified boundaries: CLI/REPL controller and an optional UI-facing runtime facade if needed.
 
