@@ -20,6 +20,22 @@ RUNTIME_SAFETY_PREFIX = (
 MAX_TOOL_CALL_ITERATIONS = 8
 
 
+class _StreamModelResponse:
+    def __init__(
+        self,
+        *,
+        content: str,
+        tool_calls: list[dict[str, Any]],
+        usage: dict[str, Any],
+        duration_seconds: float,
+    ) -> None:
+        self.content = content
+        self.text = content
+        self.tool_calls = tool_calls
+        self.usage = usage
+        self.duration_seconds = duration_seconds
+
+
 class LangChainAgentLoopAdapter:
     def __init__(self, *, model: object, tool_broker: object | None = None) -> None:
         self.model = model
@@ -70,15 +86,77 @@ class LangChainAgentLoopAdapter:
         context: RunContext,
         on_event: Callable[[AgentStreamEvent], None],
     ) -> AgentRunResult:
-        result = self.run(request, context)
-        return AgentRunResult(
-            status=result.status,
-            assistant_output=result.assistant_output,
-            tool_results=result.tool_results,
-            usage=result.usage,
-            error=result.error,
-            metadata={**result.metadata, "streaming_fallback": True},
-        )
+        if request.run_id in self._cancelled_runs:
+            return _error_result("cancelled", "cancelled", "Run was cancelled.")
+        model = self.model
+        if request.tools and hasattr(model, "bind_tools"):
+            model = model.bind_tools(
+                _langchain_tools(request, context, tool_broker=self.tool_broker)
+            )
+        if not _supports_native_stream(model):
+            return _streaming_fallback(self.run(request, context))
+
+        messages = _compose_messages(request)
+        tool_results: list[dict[str, Any]] = []
+        try:
+            for model_call_index in range(MAX_TOOL_CALL_ITERATIONS):
+                model_call_id = f"model_call_{model_call_index + 1}"
+                response = _stream_model_call(
+                    model=model,
+                    messages=messages,
+                    request=request,
+                    context=context,
+                    model_call_id=model_call_id,
+                    on_event=on_event,
+                )
+                tool_calls = _normalized_stream_tool_calls(
+                    _tool_calls(response),
+                    model_call_id=model_call_id,
+                )
+                response.tool_calls = tool_calls
+                is_final = not tool_calls
+                _emit_stream_model_call_completed(
+                    response=response,
+                    model_call_id=model_call_id,
+                    is_final=is_final,
+                    duration_seconds=response.duration_seconds,
+                    on_event=on_event,
+                )
+                _record_stream_model_completion(
+                    context=context,
+                    response=response,
+                    duration_seconds=response.duration_seconds,
+                )
+                if is_final:
+                    return AgentRunResult(
+                        status="completed",
+                        assistant_output=response.text,
+                        tool_results=tool_results,
+                        usage=response.usage,
+                        error=None,
+                        metadata={},
+                    )
+                invoked_results = self._invoke_stream_tool_calls(
+                    request=request,
+                    context=context,
+                    tool_calls=tool_calls,
+                    on_event=on_event,
+                )
+                tool_results.extend(result.to_dict() for _, result in invoked_results)
+                messages.extend(_tool_loop_messages(response, invoked_results))
+            return _error_result(
+                "failed",
+                "internal_error",
+                "Tool call loop exceeded Phase 0 iteration limit.",
+            )
+        except NotImplementedError:
+            return _streaming_fallback(self.run(request, context))
+        except TimeoutError as exc:
+            return _error_result("timeout", "timeout", str(exc), source="model")
+        except KeyboardInterrupt as exc:
+            return _error_result("cancelled", "cancelled", str(exc), source="model")
+        except Exception as exc:
+            return _error_result("failed", "model_error", str(exc), source="model")
 
     def cancel(self, run_id: str) -> None:
         self._cancelled_runs.add(run_id)
@@ -102,6 +180,68 @@ class LangChainAgentLoopAdapter:
                 call["name"],
                 call.get("args", {}),
                 context_dict,
+            )
+            results.append((call, result))
+        return results
+
+    def _invoke_stream_tool_calls(
+        self,
+        *,
+        request: AgentRunRequest,
+        context: RunContext,
+        tool_calls: list[dict[str, Any]],
+        on_event: Callable[[AgentStreamEvent], None],
+    ) -> list[tuple[dict[str, Any], Any]]:
+        if not tool_calls:
+            return []
+        if self.tool_broker is None:
+            raise RuntimeError("Tool calls require ToolBroker")
+        context_dict = _tool_context(request, context)
+        results = []
+        for call in tool_calls:
+            started_at = monotonic()
+            on_event(
+                AgentStreamEvent(
+                    kind="stream_tool_call_started",
+                    payload={
+                        "tool_call_id": call["id"],
+                        "model_call_id": call["model_call_id"],
+                        "name": call["name"],
+                        "args": call.get("args", {}),
+                    },
+                )
+            )
+            result = self.tool_broker.invoke(
+                request.session_id,
+                request.run_id,
+                call["name"],
+                call.get("args", {}),
+                context_dict,
+            )
+            duration_ms = _tool_duration_ms(result.to_dict(), started_at)
+            on_event(
+                AgentStreamEvent(
+                    kind="stream_tool_call_completed",
+                    payload={
+                        "tool_call_id": call["id"],
+                        "model_call_id": call["model_call_id"],
+                        "name": call["name"],
+                        "status": result.status,
+                        "duration_ms": duration_ms,
+                    },
+                )
+            )
+            on_event(
+                AgentStreamEvent(
+                    kind="stream_tool_result",
+                    payload={
+                        "tool_call_id": call["id"],
+                        "model_call_id": call["model_call_id"],
+                        "output": result.output,
+                        "redacted_output": result.redacted_output,
+                        "artifact_ids": list(result.artifacts),
+                    },
+                )
             )
             results.append((call, result))
         return results
@@ -159,6 +299,14 @@ def _tool_context(request: AgentRunRequest, context: RunContext) -> dict[str, An
     }
 
 
+def _supports_native_stream(model: object) -> bool:
+    if not callable(getattr(model, "stream", None)):
+        return False
+    if getattr(model, "stream_chunks", object()) is None:
+        return False
+    return True
+
+
 def _compose_messages(request: AgentRunRequest) -> list[dict[str, str]]:
     return [
         {
@@ -211,6 +359,114 @@ def _invoke_model(
             },
         )
     return response
+
+
+def _stream_model_call(
+    *,
+    model: object,
+    messages: list[object],
+    request: AgentRunRequest,
+    context: RunContext,
+    model_call_id: str,
+    on_event: Callable[[AgentStreamEvent], None],
+) -> _StreamModelResponse:
+    recorder = context.model_event_recorder
+    if recorder is not None:
+        recorder(
+            "model_call_started",
+            {
+                "provider": request.model_config.get("provider"),
+                "model": request.model_config.get("model"),
+            },
+        )
+    on_event(
+        AgentStreamEvent(
+            kind="stream_model_call_started",
+            payload={"model_call_id": model_call_id},
+        )
+    )
+    started_at = monotonic()
+    text_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    usage: dict[str, Any] = {}
+    try:
+        for chunk in model.stream(messages):
+            chunk_text = _displayable_chunk_text(chunk)
+            if chunk_text:
+                text_parts.append(chunk_text)
+                on_event(
+                    AgentStreamEvent(
+                        kind="stream_text_delta",
+                        payload={"model_call_id": model_call_id, "text": chunk_text},
+                    )
+                )
+            chunk_tool_calls = _tool_calls(chunk)
+            if chunk_tool_calls:
+                tool_calls.extend(chunk_tool_calls)
+            chunk_usage = getattr(chunk, "usage", {}) or {}
+            if chunk_usage:
+                usage = dict(chunk_usage)
+    except TimeoutError as exc:
+        _record_model_failure(recorder, "timeout", str(exc), started_at)
+        raise
+    except KeyboardInterrupt as exc:
+        _record_model_failure(recorder, "cancelled", str(exc), started_at)
+        raise
+    except Exception as exc:
+        if isinstance(exc, NotImplementedError):
+            raise
+        _record_model_failure(recorder, "model_error", str(exc), started_at)
+        raise
+    return _StreamModelResponse(
+        content="".join(text_parts),
+        tool_calls=tool_calls,
+        usage=usage,
+        duration_seconds=monotonic() - started_at,
+    )
+
+
+def _emit_stream_model_call_completed(
+    *,
+    response: _StreamModelResponse,
+    model_call_id: str,
+    is_final: bool,
+    duration_seconds: float,
+    on_event: Callable[[AgentStreamEvent], None],
+) -> None:
+    on_event(
+        AgentStreamEvent(
+            kind="stream_model_call_completed",
+            payload={
+                "model_call_id": model_call_id,
+                "is_final": is_final,
+                "usage": response.usage,
+                "duration_ms": int(duration_seconds * 1000),
+            },
+        )
+    )
+
+
+def _record_stream_model_completion(
+    *,
+    context: RunContext,
+    response: _StreamModelResponse,
+    duration_seconds: float,
+) -> None:
+    recorder = context.model_event_recorder
+    if recorder is None:
+        return
+    recorder(
+        "model_call_completed",
+        {
+            "usage": response.usage,
+            "metadata": {},
+            "duration": duration_seconds,
+            "content": response.text,
+            "tool_calls": _normalized_tool_calls(_tool_calls(response)),
+            "artifact_ids": [],
+            "redacted_output": None,
+        },
+    )
 
 
 def _invoke_with_timeout(
@@ -285,6 +541,22 @@ def _normalized_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, A
     return normalized
 
 
+def _normalized_stream_tool_calls(
+    tool_calls: list[dict[str, Any]], *, model_call_id: str
+) -> list[dict[str, Any]]:
+    normalized = []
+    for index, call in enumerate(tool_calls):
+        normalized.append(
+            {
+                "name": call["name"],
+                "args": call.get("args", {}),
+                "id": str(call.get("id") or f"{model_call_id}_tool_{index + 1}"),
+                "model_call_id": model_call_id,
+            }
+        )
+    return normalized
+
+
 def _tool_loop_messages(
     response: object, invoked_results: list[tuple[dict[str, Any], Any]]
 ) -> list[object]:
@@ -317,11 +589,43 @@ def _tool_message_content(result: dict[str, Any]) -> str:
     return json.dumps(result, sort_keys=True)
 
 
+def _displayable_chunk_text(chunk: object) -> str:
+    content = getattr(chunk, "content", "")
+    if not isinstance(content, str) or not content:
+        return ""
+    if _tool_calls(chunk):
+        return content
+    if getattr(chunk, "tool_call_chunks", None):
+        return ""
+    additional_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
+    if isinstance(additional_kwargs, dict) and additional_kwargs.get("function_call"):
+        return ""
+    return content
+
+
 def _response_content(response: object) -> str:
     content = getattr(response, "content", response)
     if isinstance(content, str):
         return content
     return str(content)
+
+
+def _streaming_fallback(result: AgentRunResult) -> AgentRunResult:
+    return AgentRunResult(
+        status=result.status,
+        assistant_output=result.assistant_output,
+        tool_results=result.tool_results,
+        usage=result.usage,
+        error=result.error,
+        metadata={**result.metadata, "streaming_fallback": True},
+    )
+
+
+def _tool_duration_ms(result: dict[str, Any], started_at: float) -> int:
+    duration_ms = result.get("metadata", {}).get("duration_ms")
+    if isinstance(duration_ms, int):
+        return duration_ms
+    return int((monotonic() - started_at) * 1000)
 
 
 def _error_result(

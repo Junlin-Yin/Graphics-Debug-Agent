@@ -254,30 +254,30 @@ Runnable state: streaming contracts exist and are testable without prompt_toolki
 
 ## Milestone 8: LangChain Streaming Implementation
 
-- [ ] Implement `LangChainAgentLoopAdapter.stream(...)`.
-- [ ] Use native `model.stream()` when available.
-- [ ] Fall back to existing `invoke()` when streaming is unsupported.
-- [ ] Do not simulate streaming.
-- [ ] Emit model call start/completion observations.
-- [ ] Emit text delta observations for displayable model text.
-- [ ] Emit tool call start/completion/result observations.
-- [ ] Prefer provider-returned `tool_call_id` when available.
-- [ ] Generate a turn-local `tool_call_id` when the provider omits one.
-- [ ] Correlate tool start, completion, and result events by `tool_call_id`, not by tool name.
-- [ ] Do not render tool-call-only chunks, function-call-only chunks, partial tool args, or internal planning data as model text.
-- [ ] Ensure final assistant model-call deltas concatenate to `AgentRunResult.assistant_output`.
-- [ ] Keep intermediate model-call text display-only.
-- [ ] Add fake streaming provider tests for deltas and model lifecycle.
-- [ ] Add tests proving model calls without text deltas do not create model output blocks.
-- [ ] Add tests proving intermediate model-call text renders but does not participate in final assistant output equality.
-- [ ] Add tests proving function-call-only chunks do not render as model text.
-- [ ] Add tests proving partial tool argument chunks do not render as model text.
-- [ ] Add fake tool call tests for tool lifecycle observations.
-- [ ] Add provider-missing-tool-id tests proving generated `tool_call_id` links start, completion, and result.
-- [ ] Add duplicate-tool-name tests proving repeated tool names in the same turn correlate by distinct `tool_call_id` values.
-- [ ] Add final assistant delta equality tests.
-- [ ] Add non-streaming provider fallback tests.
-- [ ] Verify with `uv run pytest tests/unit/adapters tests/unit/runtime -v`.
+- [x] Implement `LangChainAgentLoopAdapter.stream(...)`.
+- [x] Use native `model.stream()` when available.
+- [x] Fall back to existing `invoke()` when streaming is unsupported.
+- [x] Do not simulate streaming.
+- [x] Emit model call start/completion observations.
+- [x] Emit text delta observations for displayable model text.
+- [x] Emit tool call start/completion/result observations.
+- [x] Prefer provider-returned `tool_call_id` when available.
+- [x] Generate a turn-local `tool_call_id` when the provider omits one.
+- [x] Correlate tool start, completion, and result events by `tool_call_id`, not by tool name.
+- [x] Do not render tool-call-only chunks, function-call-only chunks, partial tool args, or internal planning data as model text.
+- [x] Ensure final assistant model-call deltas concatenate to `AgentRunResult.assistant_output`.
+- [x] Keep intermediate model-call text display-only.
+- [x] Add fake streaming provider tests for deltas and model lifecycle.
+- [x] Add tests proving model calls without text deltas do not create model output blocks.
+- [x] Add tests proving intermediate model-call text renders but does not participate in final assistant output equality.
+- [x] Add tests proving function-call-only chunks do not render as model text.
+- [x] Add tests proving partial tool argument chunks do not render as model text.
+- [x] Add fake tool call tests for tool lifecycle observations.
+- [x] Add provider-missing-tool-id tests proving generated `tool_call_id` links start, completion, and result.
+- [x] Add duplicate-tool-name tests proving repeated tool names in the same turn correlate by distinct `tool_call_id` values.
+- [x] Add final assistant delta equality tests.
+- [x] Add non-streaming provider fallback tests.
+- [x] Verify with `uv run pytest tests/unit/adapters tests/unit/runtime -v`.
 
 Modified boundaries: LangChain adapter only.
 

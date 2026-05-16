@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 from debug_agent.adapters.langchain_adapter import (
     LangChainAgentLoopAdapter,
@@ -19,6 +20,7 @@ from debug_agent.runtime.contracts import (
     RunContext,
     ToolResult,
 )
+from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
 def _request() -> AgentRunRequest:
@@ -48,6 +50,10 @@ def _context() -> RunContext:
         cancellation_token=None,
         metadata={},
     )
+
+
+def _event_payloads(events: list[AgentStreamEvent], kind: str) -> list[dict[str, Any]]:
+    return [event.payload for event in events if event.kind == kind]
 
 
 def test_langchain_adapter_maps_model_success() -> None:
@@ -99,6 +105,278 @@ def test_langchain_adapter_stream_preserves_existing_result_metadata_on_fallback
     )
 
     assert result.metadata == {"provider": "fake", "streaming_fallback": True}
+
+
+def test_langchain_adapter_stream_emits_model_lifecycle_and_text_deltas() -> None:
+    events = []
+    model = FakeChatModel(
+        response="unused",
+        stream_chunks=["hel", "lo"],
+        usage={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+    )
+
+    result = LangChainAgentLoopAdapter(model=model).stream(
+        _request(),
+        _context(),
+        events.append,
+    )
+
+    assert result.status == "completed"
+    assert result.assistant_output == "hello"
+    assert result.usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+    assert "streaming_fallback" not in result.metadata
+    assert [event.kind for event in events] == [
+        "stream_model_call_started",
+        "stream_text_delta",
+        "stream_text_delta",
+        "stream_model_call_completed",
+    ]
+    model_call_id = events[0].payload["model_call_id"]
+    assert _event_payloads(events, "stream_text_delta") == [
+        {"model_call_id": model_call_id, "text": "hel"},
+        {"model_call_id": model_call_id, "text": "lo"},
+    ]
+    assert events[-1].payload == {
+        "model_call_id": model_call_id,
+        "is_final": True,
+        "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+        "duration_ms": events[-1].payload["duration_ms"],
+    }
+    assert events[-1].payload["duration_ms"] >= 0
+
+
+def test_langchain_adapter_stream_keeps_intermediate_text_out_of_final_answer() -> None:
+    events = []
+
+    class ToolStreamingModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stream(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                yield type(
+                    "Chunk",
+                    (),
+                    {
+                        "content": "checking file",
+                        "tool_calls": [
+                            {
+                                "id": "tool_1",
+                                "name": "read_file",
+                                "args": {"path": "notes.txt"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+                return
+            yield type(
+                "Chunk",
+                (),
+                {"content": "final answer", "tool_calls": [], "usage": {}},
+            )()
+
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="ok",
+                output="file text",
+                error=None,
+                artifacts=[],
+                metadata={"duration_ms": 4},
+                redacted_output=None,
+            )
+
+    result = LangChainAgentLoopAdapter(
+        model=ToolStreamingModel(),
+        tool_broker=RecordingBroker(),
+    ).stream(_request(), _context(), events.append)
+
+    assert result.status == "completed"
+    assert result.assistant_output == "final answer"
+    assert [payload["text"] for payload in _event_payloads(events, "stream_text_delta")] == [
+        "checking file",
+        "final answer",
+    ]
+    completed_payloads = _event_payloads(events, "stream_model_call_completed")
+    assert completed_payloads[0]["is_final"] is False
+    assert completed_payloads[1]["is_final"] is True
+
+
+def test_langchain_adapter_stream_filters_non_displayable_chunks() -> None:
+    events = []
+
+    class NonDisplayStreamingModel:
+        def stream(self, messages):
+            yield type(
+                "Chunk",
+                (),
+                {"content": "", "tool_calls": [], "usage": {}, "tool_call_chunks": [{"name": "read_file"}]},
+            )()
+            yield type(
+                "Chunk",
+                (),
+                {"content": "", "tool_calls": [], "usage": {}, "additional_kwargs": {"function_call": {"name": "read_file"}}},
+            )()
+            yield type(
+                "Chunk",
+                (),
+                {"content": "answer", "tool_calls": [], "usage": {}},
+            )()
+
+    result = LangChainAgentLoopAdapter(model=NonDisplayStreamingModel()).stream(
+        _request(),
+        _context(),
+        events.append,
+    )
+
+    assert result.assistant_output == "answer"
+    assert _event_payloads(events, "stream_text_delta") == [
+        {"model_call_id": events[0].payload["model_call_id"], "text": "answer"}
+    ]
+
+
+def test_langchain_adapter_stream_emits_tool_events_with_provider_tool_id() -> None:
+    events = []
+
+    class ToolStreamingModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stream(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                yield type(
+                    "Chunk",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "provider_tool_1",
+                                "name": "read_file",
+                                "args": {"path": "notes.txt"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+                return
+            yield type(
+                "Chunk",
+                (),
+                {"content": "used tool", "tool_calls": [], "usage": {}},
+            )()
+
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="ok",
+                output={"text": "hello"},
+                error=None,
+                artifacts=["art_1"],
+                metadata={"duration_ms": 12},
+                redacted_output="hello",
+            )
+
+    result = LangChainAgentLoopAdapter(
+        model=ToolStreamingModel(),
+        tool_broker=RecordingBroker(),
+    ).stream(_request(), _context(), events.append)
+
+    assert result.status == "completed"
+    assert result.tool_results[0]["output"] == {"text": "hello"}
+    assert _event_payloads(events, "stream_tool_call_started") == [
+        {
+            "tool_call_id": "provider_tool_1",
+            "model_call_id": _event_payloads(events, "stream_model_call_started")[0]["model_call_id"],
+            "name": "read_file",
+            "args": {"path": "notes.txt"},
+        }
+    ]
+    assert _event_payloads(events, "stream_tool_call_completed") == [
+        {
+            "tool_call_id": "provider_tool_1",
+            "model_call_id": _event_payloads(events, "stream_model_call_started")[0]["model_call_id"],
+            "name": "read_file",
+            "status": "ok",
+            "duration_ms": 12,
+        }
+    ]
+    assert _event_payloads(events, "stream_tool_result") == [
+        {
+            "tool_call_id": "provider_tool_1",
+            "model_call_id": _event_payloads(events, "stream_model_call_started")[0]["model_call_id"],
+            "output": {"text": "hello"},
+            "redacted_output": "hello",
+            "artifact_ids": ["art_1"],
+        }
+    ]
+
+
+def test_langchain_adapter_stream_generates_distinct_tool_ids_for_duplicate_names() -> None:
+    events = []
+
+    class DuplicateToolStreamingModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stream(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                yield type(
+                    "Chunk",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {"name": "read_file", "args": {"path": "a.txt"}},
+                            {"name": "read_file", "args": {"path": "b.txt"}},
+                        ],
+                        "usage": {},
+                    },
+                )()
+                return
+            yield type(
+                "Chunk",
+                (),
+                {"content": "done", "tool_calls": [], "usage": {}},
+            )()
+
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="ok",
+                output=arguments["path"],
+                error=None,
+                artifacts=[],
+                metadata={},
+                redacted_output=None,
+            )
+
+    result = LangChainAgentLoopAdapter(
+        model=DuplicateToolStreamingModel(),
+        tool_broker=RecordingBroker(),
+    ).stream(_request(), _context(), events.append)
+
+    started_ids = [
+        payload["tool_call_id"]
+        for payload in _event_payloads(events, "stream_tool_call_started")
+    ]
+    completed_ids = [
+        payload["tool_call_id"]
+        for payload in _event_payloads(events, "stream_tool_call_completed")
+    ]
+    result_ids = [
+        payload["tool_call_id"]
+        for payload in _event_payloads(events, "stream_tool_result")
+    ]
+    assert result.status == "completed"
+    assert len(started_ids) == 2
+    assert len(set(started_ids)) == 2
+    assert completed_ids == started_ids
+    assert result_ids == started_ids
 
 
 def test_langchain_adapter_maps_model_failure_timeout_and_cancellation() -> None:
