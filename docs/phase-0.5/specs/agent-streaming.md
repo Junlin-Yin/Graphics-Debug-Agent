@@ -84,6 +84,10 @@ Phase 0.5 supports only these event kinds.
 
 `stream_tool_result` is based on the current tool invocation result, not on a lookup from persisted `run_events`.
 
+The controller must correlate `stream_tool_call_started`, `stream_tool_call_completed`, and `stream_tool_result` by `tool_call_id`, but `stream_tool_call_started` is presentation-silent. The TUI appends a visible tool call block only when `stream_tool_call_completed` arrives, then appends a separate preview-only result block when `stream_tool_result` arrives. The result preview block must not repeat the already displayed tool name or status. `stream_tool_result` intentionally does not include `name`; UI mapping must use the name already observed for that `tool_call_id` and must not append `tool: unknown`.
+
+Provider tool-call observations with a missing or empty tool name are incomplete observations. The adapter must not emit tool lifecycle stream events for them and must not invoke ToolBroker with an empty tool name.
+
 ## ReplViewEvent
 
 The controller maps `AgentStreamEvent` into rendering-layer events, snapshots, or direct view method calls.

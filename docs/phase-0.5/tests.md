@@ -21,6 +21,11 @@
 - Markdown rendering falls back to plain text when rendering fails.
 - Markdown rendering is attempted for completed model text below the render threshold.
 - model text above `max_markdown_render_chars` remains plain text.
+- streaming model deltas update one assistant block for the same `model_call_id`.
+- reused turn-local `model_call_id` values in later turns create a new assistant block after the later user message.
+- TTY model text deltas are coalesced before visible terminal writes.
+- final Markdown rendering replaces the streamed assistant block for that `model_call_id`.
+- final Markdown rendering updates the user-visible TTY output, not only the view's internal message cache.
 - `AgentStreamEvent` maps to `ReplViewEvent`, snapshots, or direct view method calls.
 - `ReplView` does not directly consume `AgentStreamEvent`.
 - `AgentStreamEvent.kind` values use the `stream_` prefix.
@@ -31,10 +36,25 @@
 - partial tool args do not render as model text.
 - tool args produce only redacted or short preview output when displayed.
 - duplicate tool names correlate by `tool_call_id`.
+- streamed tool call start does not append a visible message block.
+- streamed tool call completion appends one visible tool call block.
+- streamed tool result appends a separate preview-only result block without repeating the completed tool block's `tool` and `status` lines.
+- streamed tool results reuse the correlated tool name and do not render as `tool: unknown`.
+- streamed tool completion may use the correlated start name for display when the name is already known.
+- final Markdown replacement does not print terminal control sequences as visible message text.
+- terminal replacement clears the full previous streamed block before printing the replacement block.
+- provider tool calls with missing or empty names are not emitted as stream tool events and are not invoked through ToolBroker.
 - status bar snapshot formatting handles known usage.
 - status bar snapshot formatting handles unavailable usage.
 - status bar token formatting uses raw integers below `1000`.
 - status bar token formatting uses one decimal `k` for values of `1000` or greater.
+- TTY turn status updates do not append message-list entries.
+- repeated TTY turn status updates replace the same bottom status region in place.
+- TTY bottom input/status region remains visible while input submission is disabled during a running turn.
+- TTY streaming assistant text flushes request bottom toolbar redraw after visible text writes without writing bottom status text into normal terminal output.
+- TTY streaming assistant text flushes write only newly accumulated delta text and do not redraw the full accumulated assistant block.
+- TTY model text deltas do not trigger bottom status bar invalidation when the rendered status text is unchanged.
+- truncated tool previews always include the `[truncated: ...]` detail line, not only a bare `> ...` marker.
 - session cumulative token usage aggregates best-effort provider usage.
 - session close summary formats known token usage.
 - session close summary formats unavailable token usage.
@@ -64,6 +84,7 @@
 - cancellation displays as `cancelled` while persisted state remains `failed` with `error_class=cancelled`.
 - `/status` during active execution appends a system message.
 - ordinary prompt during active execution is rejected and shown clearly.
+- TTY REPL `Ctrl+C` records terminal `failed/cancelled` state and releases workspace ownership.
 - `/exit` displays session closed and token summary.
 - active execution `/exit` does not introduce mid-call cancel propagation.
 - one-shot mode does not start TUI and keeps plain stdout.

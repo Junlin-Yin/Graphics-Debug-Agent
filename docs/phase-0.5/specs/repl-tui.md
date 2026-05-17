@@ -103,8 +103,9 @@ Minimum behavior:
 - `Enter` submits.
 - up/down navigates current-session prompt history.
 - submitted user input is appended to the message list.
-- input is disabled while a prompt turn is running.
+- input submission is disabled while a prompt turn is running.
 - the input area is visually distinct from normal output.
+- in TTY TUI mode, disabling input submission must not remove the bottom input/status region; the bottom status bar remains visible while the turn is running and continues to update in place.
 
 History rules:
 
@@ -134,20 +135,25 @@ The message list displays:
 
 - user prompts.
 - model output.
-- tool call start and completion blocks.
+- completed tool call blocks.
 - tool result preview blocks.
 - slash command results.
 - system, error, interrupt, and completion status messages.
 
 Model output rules:
 
-- during streaming, text deltas append to a plain-text model block.
-- when a model call completes and accumulated text is at or below `max_markdown_render_chars`, the view must attempt to replace that block with rich Markdown rendering.
+- during streaming, text deltas append to the existing plain-text model block for that `model_call_id`; the view must not render each delta as a separate assistant message.
+- `model_call_id` is turn-local. A new submitted user message starts a new visible turn, so the view must not use a reused `model_call_id` from a previous turn to replace or append to that previous turn's assistant block.
+- TTY views may coalesce text deltas into bounded-rate visible flushes to keep the bottom status region stable; coalescing must not change the accumulated model text or final `model_call_id` block replacement.
+- when a model call completes and accumulated text is at or below `max_markdown_render_chars`, the view must attempt to replace that same user-visible model block with rich Markdown rendering. Updating only an internal cache is insufficient.
 - if Markdown rendering fails, keep plain text.
 - tables are not an acceptance capability.
 - if accumulated text for a model call exceeds `max_markdown_render_chars = 50_000`, keep plain text and do not run Markdown rendering.
 - if a model call has no `stream_text_delta`, do not create an empty model output block.
 - tool blocks must remain separate from model Markdown text.
+- `stream_tool_call_started` is not rendered as a visible message block. The controller may store its `tool_call_id`, `model_call_id`, and `name` for later correlation only.
+- `stream_tool_call_completed` appends the visible tool call block with tool name, final status, and duration.
+- `stream_tool_result` appends a separate tool result preview block. Because the preceding completion block already displayed the tool name and status, the streamed result preview block must not repeat `tool: ...` or `status: ...`. It may keep `tool_call_id`, `model_call_id`, and correlated tool name in rendering metadata for tests or diagnostics. Tool rendering in Phase 0.5 does not perform in-place updates.
 
 ## Tool Result Preview
 
@@ -169,6 +175,8 @@ Tool result preview renders as quoted text with truncation:
 > ...
 > [truncated: showing 10 of 325 lines, full output saved as artifact art_xxx]
 ```
+
+When preview truncation happens, the `[truncated: ...]` line is mandatory. A bare `> ...` marker without the following truncation detail is incomplete UI output.
 
 Default preview limits:
 
@@ -213,9 +221,17 @@ Preview truncation affects display only. It must not create artifacts and must n
 
 If a `ToolResult` includes artifacts, the view displays artifact ids. If not, the view may state that full output follows the existing persistence rules.
 
+For streamed tools, the controller correlates tool display state by `tool_call_id`. The tool name comes from `stream_tool_call_started.name` or, as a defensive fallback, `stream_tool_call_completed.name`; `stream_tool_result` is not required to carry a name and must not render as `tool: unknown` when a prior lifecycle event supplied the name.
+
 ## Turn Status
 
 Every submitted user prompt has a turn status.
+
+Turn status is stable UI state, not message-list content. In TTY TUI mode the view displays the current turn status in the bottom status region below the message list and above the input prompt. The bottom status region remains visible before submission, while a submitted turn is running, and after the turn completes. Repeated updates for the same turn replace the displayed status in place and must not append new message blocks.
+
+The bottom status region must remain visually stable while model text streams. Stream text deltas must not trigger bottom status bar redraws unless the rendered bottom status text changed.
+
+When a TTY view coalesces and flushes streamed assistant text directly to the terminal, it must write only the newly accumulated visible delta for that flush. It must not repeatedly redraw the full accumulated assistant block with terminal clearing sequences. After the visible text write, it must request a bottom-toolbar redraw from the active TTY application so the input/status area remains present. The view must not write the rendered bottom status text as normal terminal output, because that would leave `turn ...` or token/model text in the message list.
 
 The controller updates running turns once per second:
 
@@ -237,10 +253,13 @@ Persisted run/session statuses remain governed by runtime contracts. `cancelled`
 
 During active execution, ordinary user prompts are rejected and shown as system or error messages. `/status` appends a system message and must not open a modal or replace the status bar.
 
+`Ctrl+C` in a TTY REPL exits the current session as a terminal cancellation using the Phase 0 runtime rule: persist `failed` with `error_class=cancelled`, write an error checkpoint when session/run state exists, release workspace ownership, and return a non-zero exit code. Phase 0.5 does not add mid-call cancellation propagation; if the interrupt is observed while a turn is active, terminal marking happens through the existing safe-boundary runtime path.
+
 ## Status Bar
 
 The status bar displays:
 
+- current turn status and elapsed seconds when a turn is active or has just completed.
 - token usage, best effort.
 - current approval mode from persisted session state.
 - current model.
@@ -267,6 +286,7 @@ Update timing:
 
 - initialize the status bar after REPL startup.
 - update token usage after each completed model response.
+- redraw the TTY bottom status bar only when its rendered text changes; model text deltas alone do not count as a status bar change.
 - for turns with multiple model calls, the controller maintains cumulative best-effort usage.
 - if a model response omits usage, keep the last known cumulative value; if no usage has ever been observed, display `unavailable`.
 

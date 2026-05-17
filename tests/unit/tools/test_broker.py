@@ -59,6 +59,39 @@ def test_unknown_tool_returns_denied_and_writes_audit_event(tmp_path) -> None:
     db.close()
 
 
+def test_empty_tool_name_returns_denied_before_lookup_or_execution(tmp_path) -> None:
+    workspace, db, broker, session, run = _runtime(tmp_path)
+    executed = []
+
+    def handler(_workspace: Path, _arguments: dict):
+        executed.append(True)
+        return "should not run"
+
+    broker._tool_handlers["git_status"] = handler
+
+    empty_result = _invoke(broker, session, run, "", {}, workspace)
+    whitespace_result = _invoke(broker, session, run, "   ", {}, workspace)
+
+    events = EventWriter(db.connection, db.path.parent).list_for_run(run.run_id)
+    assert empty_result.status == "denied"
+    assert whitespace_result.status == "denied"
+    assert empty_result.error["error_class"] == "policy_denied"
+    assert whitespace_result.error["error_class"] == "policy_denied"
+    assert empty_result.error["message"] == "Invalid tool name."
+    assert whitespace_result.error["message"] == "Invalid tool name."
+    assert executed == []
+    assert [event.kind for event in events] == [
+        "tool_call_denied",
+        "tool_call_denied",
+    ]
+    assert [event.payload["tool_name"] for event in events] == ["", "   "]
+    assert [event.payload["message"] for event in events] == [
+        "Invalid tool name.",
+        "Invalid tool name.",
+    ]
+    db.close()
+
+
 def test_path_outside_workspace_and_write_intent_are_denied(tmp_path) -> None:
     workspace, db, broker, session, run = _runtime(tmp_path)
     outside = tmp_path / "outside.txt"

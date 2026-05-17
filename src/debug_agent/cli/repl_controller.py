@@ -42,6 +42,7 @@ class ReplController:
     _completion_queue: queue.Queue[AgentRunResult] = field(default_factory=queue.Queue)
     _stream_event_queue: queue.Queue[AgentStreamEvent] = field(default_factory=queue.Queue)
     _streamed_model_text: dict[str, str] = field(default_factory=dict)
+    _streamed_tool_blocks: dict[str, dict[str, Any]] = field(default_factory=dict)
     _streamed_output_seen: bool = False
     _usage_input_tokens: int | None = None
     _usage_output_tokens: int | None = None
@@ -132,7 +133,19 @@ class ReplController:
         return True
 
     def on_interrupt(self) -> None:
-        self._append_system_message("Interrupt requested; active turn continues to the next safe boundary.")
+        result = _error_result(
+            "cancelled",
+            "cancelled",
+            "REPL interrupted by Ctrl+C.",
+        )
+        self.runtime.fail(result)
+        self.exit_code = 1
+        self.is_executing = False
+        if self.view is not None:
+            self.view.set_input_enabled(False)
+            self.view.show_session_closed(
+                self._session_close_summary("cancelled", "cancelled")
+            )
 
     def welcome_snapshot(self) -> WelcomeSnapshot:
         session = self.runtime.sessions.get(self.runtime.session_id)
@@ -202,6 +215,7 @@ class ReplController:
         self._active_turn_id = None
         self._active_turn_started_at = None
         self._streamed_model_text.clear()
+        self._streamed_tool_blocks.clear()
         self._streamed_output_seen = False
 
     def update_running_turn_status(self) -> None:
@@ -268,10 +282,10 @@ class ReplController:
                         )
                 return
             if event.kind == "stream_tool_call_started":
-                self._append_stream_tool_status(event, "running")
+                self._record_stream_tool_started(event)
                 return
             if event.kind == "stream_tool_call_completed":
-                self._append_stream_tool_status(event, event.payload.get("status"))
+                self._append_stream_tool_completed(event)
                 return
             if event.kind == "stream_tool_result":
                 self._append_stream_tool_result(event)
@@ -283,24 +297,33 @@ class ReplController:
                 )
             )
 
-    def _append_stream_tool_status(
-        self, event: AgentStreamEvent, status: object
-    ) -> None:
+    def _record_stream_tool_started(self, event: AgentStreamEvent) -> None:
+        tool_call_id = _required_str(event.payload, "tool_call_id")
+        model_call_id = _required_str(event.payload, "model_call_id")
+        state = self._streamed_tool_state(tool_call_id, model_call_id)
+        state["name"] = _required_str(event.payload, "name")
+
+    def _append_stream_tool_completed(self, event: AgentStreamEvent) -> None:
         if self.view is None:
             return
+        tool_call_id = _required_str(event.payload, "tool_call_id")
+        model_call_id = _required_str(event.payload, "model_call_id")
+        state = self._streamed_tool_state(tool_call_id, model_call_id)
+        name = event.payload.get("name")
+        if isinstance(name, str) and name:
+            state["name"] = name
+        tool_name = _required_str(state, "name")
+        state["status"] = str(event.payload.get("status") or "unknown")
+        duration_ms = event.payload.get("duration_ms")
+        if isinstance(duration_ms, int):
+            state["duration_ms"] = duration_ms
         self._streamed_output_seen = True
-        self.view.append_view_event(
-            ReplViewEvent(
-                kind="tool_block",
-                payload={
-                    "name": _required_str(event.payload, "name"),
-                    "status": str(status or "unknown"),
-                    "metadata": {
-                        "tool_call_id": _required_str(event.payload, "tool_call_id"),
-                        "model_call_id": _required_str(event.payload, "model_call_id"),
-                    },
-                },
-            )
+        self._emit_stream_tool_block(
+            tool_call_id,
+            model_call_id,
+            tool_name,
+            state,
+            include_duration=True,
         )
 
     def _append_stream_tool_result(self, event: AgentStreamEvent) -> None:
@@ -308,23 +331,66 @@ class ReplController:
             return
         tool_call_id = _required_str(event.payload, "tool_call_id")
         model_call_id = _required_str(event.payload, "model_call_id")
+        state = self._streamed_tool_state(tool_call_id, model_call_id)
+        tool_name = _required_str(state, "name")
         preview = ToolResultPreviewFormatter().format(
             output=event.payload.get("output"),
             redacted_output=event.payload.get("redacted_output"),
             artifact_ids=list(event.payload.get("artifact_ids", [])),
         )
+        state["preview"] = preview
         self._streamed_output_seen = True
+        result_state = {**state, "status": "result"}
+        self._emit_stream_tool_block(
+            tool_call_id,
+            model_call_id,
+            tool_name,
+            result_state,
+            include_duration=False,
+        )
+
+    def _streamed_tool_state(
+        self, tool_call_id: str, model_call_id: str
+    ) -> dict[str, Any]:
+        return self._streamed_tool_blocks.setdefault(
+            tool_call_id,
+            {
+                "status": "unknown",
+                "model_call_id": model_call_id,
+            },
+        )
+
+    def _emit_stream_tool_block(
+        self,
+        tool_call_id: str,
+        model_call_id: str,
+        tool_name: str,
+        state: dict[str, Any],
+        *,
+        include_duration: bool,
+    ) -> None:
+        if self.view is None:
+            return
+        metadata: dict[str, Any] = {
+            "tool_call_id": tool_call_id,
+            "model_call_id": model_call_id,
+            "tool_name": tool_name,
+        }
+        duration_ms = state.get("duration_ms")
+        if include_duration and isinstance(duration_ms, int):
+            metadata["duration_ms"] = duration_ms
+        payload: dict[str, Any] = {
+            "name": tool_name,
+            "status": state.get("status", "unknown"),
+            "metadata": metadata,
+        }
+        preview = state.get("preview")
+        if preview is not None:
+            payload["preview"] = preview
         self.view.append_view_event(
             ReplViewEvent(
                 kind="tool_block",
-                payload={
-                    "status": "result",
-                    "metadata": {
-                        "tool_call_id": tool_call_id,
-                        "model_call_id": model_call_id,
-                    },
-                    "preview": preview,
-                },
+                payload=payload,
             )
         )
 
@@ -402,14 +468,16 @@ class ReplController:
             model=self._model_name(),
         )
 
-    def _session_close_summary(self, status: str) -> SessionCloseSummary:
+    def _session_close_summary(
+        self, status: str, error_type: str | None = None
+    ) -> SessionCloseSummary:
         return SessionCloseSummary(
             session_id=str(getattr(self.runtime, "session_id", "")),
             status=status,  # type: ignore[arg-type]
             input_tokens=self._usage_input_tokens,
             output_tokens=self._usage_output_tokens,
             total_tokens=self._usage_total_tokens,
-            error_type=None,
+            error_type=error_type,
         )
 
     def _approval_mode(self) -> str:

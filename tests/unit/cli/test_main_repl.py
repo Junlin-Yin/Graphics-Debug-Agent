@@ -12,6 +12,11 @@ from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
 
 
+class TtyStringIO(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
 def _write_fake_config(
     home, response: str = "repl answer", *, error: str | None = None
 ) -> None:
@@ -276,3 +281,72 @@ def test_main_ctrl_c_fallback_marks_active_session_failed_and_releases_ownership
     assert session_error == "Interrupted by Ctrl+C."
     assert run_error == "Interrupted by Ctrl+C."
     assert failed_error_class == "cancelled"
+
+
+def test_tty_repl_ctrl_c_marks_failed_and_releases_ownership(
+    tmp_path, monkeypatch
+) -> None:
+    from debug_agent.cli import repl as repl_module
+
+    class InterruptingPromptToolkitView:
+        def run(self, controller) -> int:
+            controller.on_interrupt()
+            return controller.exit_code
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_snapshot = {
+        "provider": "fake",
+        "model": "fake-model",
+        "fake_response": "unused",
+        "temperature": 0.2,
+        "max_tokens": 8192,
+        "timeout_seconds": 120,
+        "system_prompt": (
+            "You are debug-agent, a local debugging assistant. Answer concisely "
+            "and use only tools exposed by the runtime."
+        ),
+    }
+    monkeypatch.setattr(
+        repl_module, "PromptToolkitReplView", InterruptingPromptToolkitView
+    )
+    monkeypatch.setattr("sys.stdin", TtyStringIO(""))
+    monkeypatch.setattr("sys.stdout", TtyStringIO())
+
+    exit_code = run_repl(
+        config_snapshot,
+        error_stream=io.StringIO(),
+        workspace_root=workspace,
+    )
+
+    assert exit_code == 1
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        session_status, active_run_id, session_error = conn.execute(
+            "SELECT status, active_run_id, error_summary FROM sessions"
+        ).fetchone()
+        run_status, run_error = conn.execute(
+            "SELECT status, error_summary FROM runs"
+        ).fetchone()
+        failed_error_class = conn.execute(
+            """
+            SELECT json_extract(payload_json, '$.error_class')
+            FROM run_events
+            WHERE kind = 'session_failed'
+            ORDER BY rowid DESC
+            LIMIT 1
+            """
+        ).fetchone()[0]
+
+    assert (session_status, active_run_id, run_status) == ("failed", None, "failed")
+    assert session_error == "REPL interrupted by Ctrl+C."
+    assert run_error == "REPL interrupted by Ctrl+C."
+    assert failed_error_class == "cancelled"
+
+    second_exit = run_repl(
+        config_snapshot,
+        input_stream=io.StringIO("/exit\n"),
+        output_stream=io.StringIO(),
+        error_stream=io.StringIO(),
+        workspace_root=workspace,
+    )
+    assert second_exit == 0

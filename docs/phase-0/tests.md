@@ -13,6 +13,7 @@
 - `CheckpointStore` accepts Phase 0 checkpoint kinds `turn`, `terminal`, and `error`.
 - `ArtifactStore` creates session roots, writes text artifacts, registers existing files, resolves artifact ids.
 - `ToolBroker` denies unknown tools.
+- `ToolBroker` denies empty or whitespace-only tool names before lookup or execution.
 - `ToolBroker` denies paths outside workspace root.
 - `ToolBroker` denies write intent in Phase 0.
 - `ToolBroker` returns standardized `ToolResult`.
@@ -56,6 +57,7 @@
 - model provider failure
 - model timeout
 - ToolBroker denied path traversal
+- ToolBroker invalid tool name
 - ToolBroker unknown tool
 - artifact path missing during trace rendering
 - SQLite unavailable or migration failure

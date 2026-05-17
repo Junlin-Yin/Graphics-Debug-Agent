@@ -320,17 +320,32 @@ Runnable state: TUI turns can render streaming observations or deterministic fal
 
 ## Milestone 10: Milestone B Acceptance Gate
 
-- [ ] Run `uv run pytest tests/unit -v`.
-- [ ] Run `uv run pytest tests/integration -v`.
-- [ ] Run `uv run pytest -v`.
-- [ ] Run one-shot smoke with fake model.
-- [ ] Run non-TTY fallback smoke.
-- [ ] Run TTY TUI smoke with fake streaming model.
-- [ ] Confirm `AgentStreamEvent` is never persisted to `run_events`.
-- [ ] Confirm no one-shot, non-TTY, or injected-I/O regression.
-- [ ] Confirm `run(...)` remains valid and covered.
-- [ ] Confirm `stream(...)` is used only where TUI needs observations.
+- [x] Run `uv run pytest tests/unit -v`.
+- [x] Run `uv run pytest tests/integration -v`.
+- [x] Run `uv run pytest -v`.
+- [x] Run one-shot smoke with fake model.
+- [x] Run non-TTY fallback smoke.
+- [x] Run TTY TUI smoke with fake streaming model.
+- [x] Confirm `AgentStreamEvent` is never persisted to `run_events`.
+- [x] Confirm no one-shot, non-TTY, or injected-I/O regression.
+- [x] Confirm `run(...)` remains valid and covered.
+- [x] Confirm `stream(...)` is used only where TUI needs observations.
 - [ ] Run manual macOS Terminal or iTerm2 check for multiline input, history, long Markdown output, and long tool result preview.
+
+Review evidence:
+
+- `uv run pytest tests/unit -v`: 139 passed.
+- `uv run pytest tests/integration -v`: 26 passed.
+- `uv run pytest -v`: 165 passed.
+- one-shot fake-model smoke returned `one-shot acceptance answer` from an isolated temporary workspace.
+- non-TTY fallback smoke returned `fallback acceptance answer` and plain `/status` fields from redirected input.
+- PTY TUI smoke with fake streaming model rendered welcome, streamed assistant deltas, final assistant text, `/status`, and `session ... closed.`.
+- SQLite inspection of one-shot, fallback, TTY, and TTY-stream smoke workspaces found `stream_event_rows=0`; persisted event kinds remained Phase 0 runtime events such as `model_call_started`, `model_call_completed`, `assistant_message`, checkpoints, run lifecycle, and session lifecycle events.
+- Integration coverage includes one-shot preservation, non-TTY fallback, injected-I/O fallback, TTY selection, prompt_toolkit initialization fallback, streaming turns, and non-streaming fallback warning.
+- Static source search shows `agent_stream_callback` is supplied by `ReplController` for TUI observation delivery; `PromptAgentExecutor` uses `adapter.run(...)` when no callback is supplied and `adapter.stream(...)` when a callback is supplied.
+- Static dependency search confirms `prompt_toolkit` and `rich` are declared in `pyproject.toml`, resolved in `uv.lock`, and imported only by CLI/TUI modules.
+- Static Phase 1+ search found no runtime exposure of skill registry, subagent, workflow, MCP, plugin, or reserved slash commands beyond contract docs and negative tests.
+- Native macOS Terminal/iTerm2 manual behavior for multiline input, history, long Markdown output, and long tool result preview was not run in this pass; available PTY smoke coverage is recorded above.
 
 Modified boundaries: none; this is a stabilization checkpoint.
 
@@ -382,16 +397,26 @@ Manual verification is required for terminal behavior that automated tests canno
 
 ## Strict Phase 0.5 Acceptance Pass
 
-- [ ] Run `uv run pytest tests/unit -v`.
-- [ ] Run `uv run pytest tests/integration -v`.
-- [ ] Run `uv run pytest -v`.
-- [ ] Run one-shot smoke with fake model config: `debug-agent -p "hello"`.
-- [ ] Run non-TTY fallback smoke with injected or redirected input.
-- [ ] Run TTY TUI smoke with fake model config: `hello`, `/status`, `/exit`.
-- [ ] Run TTY TUI smoke with fake streaming model config.
-- [ ] Confirm `.sessions/runtime.db` contains no `AgentStreamEvent` rows.
-- [ ] Confirm baseline session/run/event/checkpoint behavior remains compatible with Phase 0.
-- [ ] Confirm no Phase 1+ feature is required for Phase 0.5 acceptance.
-- [ ] Confirm dependency declarations and lockfile include Phase 0.5 runtime dependencies.
+- [x] Run `uv run pytest tests/unit -v`.
+- [x] Run `uv run pytest tests/integration -v`.
+- [x] Run `uv run pytest -v`.
+- [x] Run one-shot smoke with fake model config: `debug-agent -p "hello"`.
+- [x] Run non-TTY fallback smoke with injected or redirected input.
+- [x] Run TTY TUI smoke with fake model config: `hello`, `/status`, `/exit`.
+- [x] Run TTY TUI smoke with fake streaming model config.
+- [x] Confirm `.sessions/runtime.db` contains no `AgentStreamEvent` rows.
+- [x] Confirm baseline session/run/event/checkpoint behavior remains compatible with Phase 0.
+- [x] Confirm no Phase 1+ feature is required for Phase 0.5 acceptance.
+- [x] Confirm dependency declarations and lockfile include Phase 0.5 runtime dependencies.
+
+Strict acceptance evidence:
+
+- Canonical verification commands passed: unit 139 passed, integration 26 passed, full suite 165 passed.
+- Fake-model one-shot, redirected-input fallback, TTY fake-model, and TTY fake-streaming smokes completed from isolated temporary workspaces.
+- Direct SQLite inspection found no persisted `AgentStreamEvent` or `stream_*` rows in smoke `run_events`.
+- Smoke databases showed completed sessions and runs with persisted user, model, assistant, checkpoint, run lifecycle, and session lifecycle events.
+- Phase 0 compatibility is covered by the full suite, including Phase 0 acceptance tests, status/trace tests, and one-shot/REPL persistence tests.
+- Phase 1+ capability non-exposure is covered by negative reserved-command tests and static source search.
+- `pyproject.toml` includes `prompt_toolkit>=3.0.0` and `rich>=13.0.0`; `uv.lock` resolves `prompt_toolkit` and `rich`.
 
 Runnable state: Phase 0.5 satisfies the project contract, `docs/phase-0.5/*`, ADR 0007, ADR 0008, and preserves Phase 0 compatibility.

@@ -158,6 +158,8 @@ class ToolBroker:
     def _validate(
         self, tool_name: str, arguments: dict[str, Any], workspace_root: Path
     ) -> str | None:
+        if not tool_name.strip():
+            return "Invalid tool name."
         if tool_name not in self._tool_handlers:
             return f"Unknown tool: {tool_name}"
         if arguments.get("write") is True or arguments.get("intent") == "write":

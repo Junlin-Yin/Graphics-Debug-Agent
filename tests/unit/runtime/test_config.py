@@ -130,6 +130,30 @@ fake_response = "hello"
     }
 
 
+def test_config_snapshot_preserves_fake_stream_chunks_for_tui_smoke(
+    tmp_path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    config_dir = home / ".debug-agent"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.toml").write_text(
+        """
+[defaults]
+provider = "fake"
+model = "fake-model"
+fake_response = "unused"
+fake_stream_chunks = ["stream", " answer"]
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    result = load_config_snapshot()
+
+    assert result.error is None
+    assert result.snapshot["fake_stream_chunks"] == ["stream", " answer"]
+
+
 def test_unsupported_provider_returns_config_error(tmp_path, monkeypatch) -> None:
     home = tmp_path / "home"
     config_dir = home / ".debug-agent"

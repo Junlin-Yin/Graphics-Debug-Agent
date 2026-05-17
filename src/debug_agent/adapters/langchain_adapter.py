@@ -531,11 +531,14 @@ def _tool_calls(response: object) -> list[dict[str, Any]]:
 def _normalized_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized = []
     for index, call in enumerate(tool_calls):
+        name = call.get("name")
+        if not isinstance(name, str) or not name:
+            continue
         normalized.append(
             {
-                "name": call["name"],
+                "name": name,
                 "args": call.get("args", {}),
-                "id": str(call.get("id") or f"{call['name']}_{index}"),
+                "id": str(call.get("id") or f"{name}_{index}"),
             }
         )
     return normalized
@@ -546,9 +549,12 @@ def _normalized_stream_tool_calls(
 ) -> list[dict[str, Any]]:
     normalized = []
     for index, call in enumerate(tool_calls):
+        name = call.get("name")
+        if not isinstance(name, str) or not name:
+            continue
         normalized.append(
             {
-                "name": call["name"],
+                "name": name,
                 "args": call.get("args", {}),
                 "id": str(call.get("id") or f"{model_call_id}_tool_{index + 1}"),
                 "model_call_id": model_call_id,
@@ -591,23 +597,46 @@ def _tool_message_content(result: dict[str, Any]) -> str:
 
 def _displayable_chunk_text(chunk: object) -> str:
     content = getattr(chunk, "content", "")
-    if not isinstance(content, str) or not content:
+    if not content:
         return ""
     if _tool_calls(chunk):
-        return content
+        return _message_text(chunk)
     if getattr(chunk, "tool_call_chunks", None):
         return ""
     additional_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
     if isinstance(additional_kwargs, dict) and additional_kwargs.get("function_call"):
         return ""
-    return content
+    return _message_text(chunk)
 
 
 def _response_content(response: object) -> str:
     content = getattr(response, "content", response)
     if isinstance(content, str):
         return content
+    text = _message_text(response)
+    if text:
+        return text
     return str(content)
+
+
+def _message_text(message: object) -> str:
+    text = getattr(message, "text", None)
+    if isinstance(text, str):
+        return text
+    if callable(text):
+        return str(text())
+    content = getattr(message, "content", "")
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                value = block.get("text")
+                if isinstance(value, str):
+                    parts.append(value)
+        return "".join(parts)
+    if isinstance(content, str):
+        return content
+    return ""
 
 
 def _streaming_fallback(result: AgentRunResult) -> AgentRunResult:

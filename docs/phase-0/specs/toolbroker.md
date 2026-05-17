@@ -68,6 +68,7 @@ Every invocation must:
 
 ## Allow And Deny Rules
 
+- Missing, empty, or whitespace-only tool names return `denied` before lookup or execution.
 - Unknown tool returns `denied`.
 - Any write intent returns `denied`.
 - Any path outside `workspace_root` returns `denied`.
@@ -107,6 +108,9 @@ Audit payload includes:
 - artifact ids
 - standardized `ToolResult` payload for completed tool calls
 - error class if any
+
+For invalid tool-name denials, audit payload preserves the received `tool_name`
+value for debugging and uses `error_class=policy_denied`.
 
 For `tool_call_completed`, the payload must include the complete standardized
 `ToolResult` as `result`. Inline `result.output` is allowed only when it is at or

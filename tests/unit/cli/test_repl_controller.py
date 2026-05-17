@@ -340,6 +340,88 @@ def test_streamed_turn_finalization_does_not_duplicate_assistant_output() -> Non
     ] == ["model_markdown_final"]
 
 
+def test_streamed_tool_started_is_silent_and_completed_then_result_append_blocks() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_call_started",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "name": "git_status",
+                "args": {},
+            },
+        )
+    )
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_call_completed",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "status": "ok",
+                "duration_ms": 12,
+            },
+        )
+    )
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_result",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "output": "M file.py",
+                "redacted_output": None,
+                "artifact_ids": [],
+            },
+        )
+    )
+
+    assert controller.drain_stream_events() == 3
+    assert [event.kind for event in view.events] == [
+        "tool_block",
+        "tool_block",
+    ]
+    assert view.events[0].payload["name"] == "git_status"
+    assert view.events[0].payload["status"] == "ok"
+    assert view.events[0].payload["metadata"] == {
+        "tool_call_id": "tool_1",
+        "model_call_id": "model_1",
+        "tool_name": "git_status",
+        "duration_ms": 12,
+    }
+    assert view.events[0].payload.get("preview") is None
+    assert view.events[1].payload["name"] == "git_status"
+    assert view.events[1].payload["status"] == "result"
+    assert view.events[1].payload["metadata"] == {
+        "tool_call_id": "tool_1",
+        "model_call_id": "model_1",
+        "tool_name": "git_status",
+    }
+    assert view.events[-1].payload["preview"].text == "> M file.py"
+
+
+def test_interrupt_marks_runtime_cancelled_and_shows_cancel_summary() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_interrupt()
+
+    assert controller.exit_code == 1
+    assert runtime.failed_results[-1].status == "cancelled"
+    assert runtime.failed_results[-1].error["error_class"] == "cancelled"
+    assert view.closed_summaries[-1].status == "cancelled"
+    assert view.input_enabled[-1] is False
+
+
 def test_timer_updates_running_turn_elapsed_seconds() -> None:
     from debug_agent.cli.repl_controller import ReplController
 

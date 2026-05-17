@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from langchain_core.messages import AIMessage, AIMessageChunk
+
 from debug_agent.adapters.langchain_adapter import (
     LangChainAgentLoopAdapter,
     MAX_TOOL_CALL_ITERATIONS,
@@ -237,6 +239,44 @@ def test_langchain_adapter_stream_filters_non_displayable_chunks() -> None:
     ]
 
 
+def test_langchain_adapter_stream_extracts_structured_text_chunks() -> None:
+    events = []
+
+    class StructuredTextStreamingModel:
+        def stream(self, messages):
+            yield AIMessageChunk(content=[])
+            yield AIMessageChunk(content=[{"type": "text", "text": "structured "}])
+            yield AIMessageChunk(content=[{"type": "text", "text": "answer"}])
+            yield AIMessageChunk(content=[])
+
+    result = LangChainAgentLoopAdapter(model=StructuredTextStreamingModel()).stream(
+        _request(),
+        _context(),
+        events.append,
+    )
+
+    assert result.status == "completed"
+    assert result.assistant_output == "structured answer"
+    assert _event_payloads(events, "stream_text_delta") == [
+        {"model_call_id": events[0].payload["model_call_id"], "text": "structured "},
+        {"model_call_id": events[0].payload["model_call_id"], "text": "answer"},
+    ]
+
+
+def test_langchain_adapter_run_extracts_structured_response_text() -> None:
+    class StructuredTextModel:
+        def invoke(self, messages):
+            return AIMessage(content=[{"type": "text", "text": "structured answer"}])
+
+    result = LangChainAgentLoopAdapter(model=StructuredTextModel()).run(
+        _request(),
+        _context(),
+    )
+
+    assert result.status == "completed"
+    assert result.assistant_output == "structured answer"
+
+
 def test_langchain_adapter_stream_emits_tool_events_with_provider_tool_id() -> None:
     events = []
 
@@ -313,6 +353,74 @@ def test_langchain_adapter_stream_emits_tool_events_with_provider_tool_id() -> N
             "artifact_ids": ["art_1"],
         }
     ]
+
+
+def test_langchain_adapter_stream_ignores_empty_name_tool_calls() -> None:
+    events = []
+    broker_calls = []
+
+    class EmptyNameToolStreamingModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stream(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                yield type(
+                    "Chunk",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "valid_tool",
+                                "name": "read_file",
+                                "args": {"path": "notes.txt"},
+                            },
+                            {"id": "empty_tool", "name": "", "args": {}},
+                        ],
+                        "usage": {},
+                    },
+                )()
+                return
+            yield type(
+                "Chunk",
+                (),
+                {"content": "done", "tool_calls": [], "usage": {}},
+            )()
+
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            broker_calls.append((tool_name, arguments))
+            return ToolResult(
+                status="ok",
+                output="file text",
+                error=None,
+                artifacts=[],
+                metadata={},
+                redacted_output=None,
+            )
+
+    result = LangChainAgentLoopAdapter(
+        model=EmptyNameToolStreamingModel(),
+        tool_broker=RecordingBroker(),
+    ).stream(_request(), _context(), events.append)
+
+    assert result.status == "completed"
+    assert broker_calls == [("read_file", {"path": "notes.txt"})]
+    assert _event_payloads(events, "stream_tool_call_started") == [
+        {
+            "tool_call_id": "valid_tool",
+            "model_call_id": _event_payloads(events, "stream_model_call_started")[0]["model_call_id"],
+            "name": "read_file",
+            "args": {"path": "notes.txt"},
+        }
+    ]
+    assert all(
+        payload.get("name") != ""
+        for kind in ("stream_tool_call_started", "stream_tool_call_completed")
+        for payload in _event_payloads(events, kind)
+    )
 
 
 def test_langchain_adapter_stream_generates_distinct_tool_ids_for_duplicate_names() -> None:
