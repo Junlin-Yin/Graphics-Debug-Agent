@@ -29,6 +29,7 @@ Phase 0.5 is a `CLI Entrypoint / REPL UI` enhancement. It must not introduce a n
   - welcome panel.
   - user message blocks.
   - streaming model text blocks.
+  - strict TTY region isolation between message list, active assistant block, prompt input, turn/status display, and bottom status bar.
   - basic Markdown final rendering for completed model text.
   - tool call and tool result blocks.
   - slash command result messages.
@@ -137,6 +138,7 @@ Phase 0.5 is complete when all of these pass:
 
 - REPL startup shows the welcome panel.
 - user input and model output do not visually mix.
+- streaming model output updates only the active assistant block and does not overwrite prompt input, bottom status, turn status, or prior message blocks.
 - prompt history works with up/down navigation.
 - `Ctrl+J` multiline input works.
 - `Shift+Enter` multiline input is best-effort.

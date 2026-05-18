@@ -16,6 +16,7 @@
 - tool result preview truncation does not create artifacts.
 - `WelcomeSnapshot` uses `unknown` when version lookup fails.
 - `WelcomeSnapshot` uses `unknown` when model is missing from the config snapshot.
+- `WelcomeSnapshot.session_id_short` formats as `sess-<short-id>` from runtime contract `Session.session_id`; for `sess_<timestamp>-0abc`, it displays `sess-0abc`, not `session: sess`.
 - `StatusBarSnapshot` includes model for every render.
 - `SessionCloseSummary` uses the full session id.
 - Markdown rendering falls back to plain text when rendering fails.
@@ -23,9 +24,12 @@
 - model text above `max_markdown_render_chars` remains plain text.
 - streaming model deltas update one assistant block for the same `model_call_id`.
 - reused turn-local `model_call_id` values in later turns create a new assistant block after the later user message.
-- TTY model text deltas are coalesced before visible terminal writes.
+- TTY model text deltas update the active assistant block in the prompt_toolkit application layout.
+- TTY model text deltas do not write visible streamed text through stdout, stderr, `write_raw`, or other linear terminal transcript paths while the prompt application is active.
+- TTY model text deltas may coalesce application redraws without changing accumulated assistant text.
 - final Markdown rendering replaces the streamed assistant block for that `model_call_id`.
 - final Markdown rendering updates the user-visible TTY output, not only the view's internal message cache.
+- final Markdown replacement in TTY mode updates only the active assistant block and does not emit terminal clearing sequences against the active prompt display.
 - `AgentStreamEvent` maps to `ReplViewEvent`, snapshots, or direct view method calls.
 - `ReplView` does not directly consume `AgentStreamEvent`.
 - `AgentStreamEvent.kind` values use the `stream_` prefix.
@@ -34,6 +38,7 @@
 - intermediate model-call text renders but does not participate in final assistant output equality.
 - function-call-only chunks do not render as model text.
 - partial tool args do not render as model text.
+- LangChain streaming tool-call chunks are reconstructed into complete tool arguments before ToolBroker invocation.
 - tool args produce only redacted or short preview output when displayed.
 - duplicate tool names correlate by `tool_call_id`.
 - streamed tool call start does not append a visible message block.
@@ -51,15 +56,19 @@
 - TTY turn status updates do not append message-list entries.
 - repeated TTY turn status updates replace the same bottom status region in place.
 - TTY bottom input/status region remains visible while input submission is disabled during a running turn.
-- TTY streaming assistant text flushes request bottom toolbar redraw after visible text writes without writing bottom status text into normal terminal output.
-- TTY streaming assistant text flushes write only newly accumulated delta text and do not redraw the full accumulated assistant block.
-- TTY model text deltas do not trigger bottom status bar invalidation when the rendered status text is unchanged.
+- TTY prompt input buffer is non-editable while input submission is disabled during a running turn.
+- TTY up/down keys replace the active prompt input buffer from current-session history and place the cursor at the end.
+- TTY down navigation past the newest history entry clears the active prompt input buffer.
+- TTY streaming assistant text redraws do not mutate prompt input buffer text or cursor position.
+- TTY streaming assistant text redraws do not change bottom status text unless the status snapshot or turn status changed.
+- TTY streaming assistant text redraws do not rewrite prior user, assistant, tool, system, or error blocks.
 - truncated tool previews always include the `[truncated: ...]` detail line, not only a bare `> ...` marker.
 - session cumulative token usage aggregates best-effort provider usage.
 - session close summary formats known token usage.
 - session close summary formats unavailable token usage.
 - `agent_stream_callback` sends events to the controller queue.
 - controller queue draining maps events in order.
+- recoverable one-turn adapter failures display turn `failed`, keep the REPL session database open, and allow a later prompt in the same session.
 - final assistant model-call deltas concatenate to `AgentRunResult.assistant_output`.
 - non-streaming provider fallback uses `invoke()`.
 - non-streaming provider fallback sets `AgentRunResult.metadata["streaming_fallback"] = True`.

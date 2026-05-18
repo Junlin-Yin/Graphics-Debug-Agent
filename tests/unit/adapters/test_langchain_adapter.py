@@ -277,6 +277,91 @@ def test_langchain_adapter_run_extracts_structured_response_text() -> None:
     assert result.assistant_output == "structured answer"
 
 
+def test_langchain_adapter_stream_reconstructs_tool_call_chunks_before_invocation() -> None:
+    events = []
+    broker_calls = []
+
+    class ToolChunkStreamingModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stream(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                yield type(
+                    "Chunk",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [],
+                        "tool_call_chunks": [
+                            {
+                                "id": "read_file_0",
+                                "index": 0,
+                                "name": "read_file",
+                                "args": '{"path":',
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+                yield type(
+                    "Chunk",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [],
+                        "tool_call_chunks": [
+                            {
+                                "id": "read_file_0",
+                                "index": 0,
+                                "name": None,
+                                "args": '"docs/prompt-templates/planning.md"}',
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+                return
+            yield type(
+                "Chunk",
+                (),
+                {"content": "done", "tool_calls": [], "usage": {}},
+            )()
+
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            broker_calls.append((tool_name, arguments))
+            return ToolResult(
+                status="ok",
+                output="file text",
+                error=None,
+                artifacts=[],
+                metadata={},
+                redacted_output=None,
+            )
+
+    result = LangChainAgentLoopAdapter(
+        model=ToolChunkStreamingModel(),
+        tool_broker=RecordingBroker(),
+    ).stream(_request(), _context(), events.append)
+
+    assert result.status == "completed"
+    assert broker_calls == [
+        ("read_file", {"path": "docs/prompt-templates/planning.md"})
+    ]
+    assert _event_payloads(events, "stream_tool_call_started") == [
+        {
+            "tool_call_id": "read_file_0",
+            "model_call_id": _event_payloads(events, "stream_model_call_started")[0][
+                "model_call_id"
+            ],
+            "name": "read_file",
+            "args": {"path": "docs/prompt-templates/planning.md"},
+        }
+    ]
+
+
 def test_langchain_adapter_stream_emits_tool_events_with_provider_tool_id() -> None:
     events = []
 
@@ -784,6 +869,7 @@ def test_langchain_adapter_stops_after_phase_0_tool_call_iteration_limit() -> No
     assert result.status == "failed"
     assert result.error["error_class"] == "internal_error"
     assert "iteration limit" in result.error["message"]
+    assert result.metadata == {"failure_scope": "turn"}
 
 
 def test_langchain_adapter_converts_runtime_tool_schemas_to_structured_tools() -> None:

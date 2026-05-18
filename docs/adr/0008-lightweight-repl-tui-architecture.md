@@ -43,6 +43,15 @@ Use:
   loop.
 - `rich` for Markdown rendering, panels, colors, and status display.
 
+`PromptToolkitReplView` uses a prompt_toolkit `Application` layout, not a
+linear `PromptSession.prompt()` transcript as the primary TTY architecture once
+streaming is enabled. The application owns separate regions for the message
+list, current turn/status display, prompt input buffer, and bottom status bar.
+Streaming observations update the view's in-memory message model and invalidate
+the application. They do not write visible streamed text directly to stdout,
+stderr, `write_raw`, or ANSI-cleared terminal transcript output while the
+application is active.
+
 `PromptToolkitReplView` is selected only when stdin and stdout are TTYs and no
 input/output streams are injected. one-shot mode always keeps plain stdout
 behavior.
@@ -88,3 +97,5 @@ injected-I/O tests. Plain fallback is required to preserve Phase 0 behavior.
   mapping, input history, multiline input, and status rendering.
 - The UI layer must keep formatting and preview thresholds out of runtime and
   adapter contracts.
+- The TTY implementation must test prompt input, history, status, and streaming
+  redraw behavior as layout state, not as direct terminal transcript writes.

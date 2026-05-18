@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+
 from debug_agent.cli.repl_view import (
     ReplViewEvent,
     SessionCloseSummary,
@@ -464,6 +468,38 @@ def test_prompt_toolkit_view_streaming_flush_restores_bottom_status_region(
     ]
 
 
+def test_prompt_toolkit_view_streaming_flush_can_run_inside_prompt_application(
+    monkeypatch,
+) -> None:
+    import debug_agent.cli.prompt_toolkit_view as prompt_toolkit_view
+    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+
+    calls: list[tuple[bool, bool]] = []
+
+    async def fake_run_in_terminal(func, *, render_cli_done, in_executor=False):
+        calls.append((render_cli_done, in_executor))
+        return func()
+
+    monkeypatch.setattr(
+        prompt_toolkit_view,
+        "run_in_terminal",
+        fake_run_in_terminal,
+    )
+    monkeypatch.setattr(prompt_toolkit_view, "_write_terminal_text", lambda value: None)
+    view = PromptToolkitReplView()
+    view.append_view_event(
+        ReplViewEvent(
+            kind="model_text_delta",
+            payload={"model_call_id": "model_1", "text": "hello"},
+        )
+    )
+
+    flushed = asyncio.run(view.flush_pending_model_output_in_terminal())
+
+    assert flushed is True
+    assert calls == [(False, False)]
+
+
 def test_prompt_toolkit_view_streaming_flush_writes_only_new_delta(
     monkeypatch,
 ) -> None:
@@ -505,6 +541,24 @@ def test_prompt_toolkit_view_streaming_flush_writes_only_new_delta(
         "lo",
     ]
     assert control_writes == []
+
+
+def test_prompt_toolkit_view_disables_prompt_buffer_edits_while_turn_runs() -> None:
+    from prompt_toolkit.buffer import EditReadOnlyBuffer
+
+    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+
+    view = PromptToolkitReplView()
+
+    view.set_input_enabled(False)
+
+    assert view._session.default_buffer.read_only() is True
+    with pytest.raises(EditReadOnlyBuffer):
+        view._session.default_buffer.insert_text("new prompt")
+
+    view.set_input_enabled(True)
+
+    assert view._session.default_buffer.read_only() is False
 
 
 def test_prompt_toolkit_view_streaming_flush_reports_when_redraw_is_needed(

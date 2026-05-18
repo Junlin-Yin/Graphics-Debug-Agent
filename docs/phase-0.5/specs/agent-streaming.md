@@ -113,6 +113,7 @@ The view consumes `ReplViewEvent`, not `AgentStreamEvent`.
 - A model call that produces user-visible text emits `stream_text_delta`.
 - Provider-visible content before a tool call may also emit `stream_text_delta`.
 - Tool-call chunks, function-call-only chunks, partial tool args, and internal planning data must not render as model text.
+- LangChain streaming tool-call chunks must be accumulated into complete tool call observations before ToolBroker invocation. If a provider streams tool arguments across `tool_call_chunks`, the adapter must reconstruct the final `args` dictionary instead of invoking ToolBroker with `{}`.
 - If an intermediate model call has no displayable text, no empty model output block is rendered.
 - The authoritative assistant message is the final `AgentRunResult` persisted by `PromptAgentExecutor`.
 - The final assistant model call's `stream_text_delta` sequence must concatenate exactly to `AgentRunResult.assistant_output`.

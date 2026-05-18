@@ -7,8 +7,9 @@ from time import monotonic, sleep
 from typing import Any, Callable
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.application import get_app
+from prompt_toolkit.application import get_app, run_in_terminal
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.shortcuts import print_formatted_text
 from rich.console import Console
@@ -56,6 +57,9 @@ class PromptToolkitReplView:
             key_bindings=_key_bindings(self._handle_prompt_enter_event),
             bottom_toolbar=self._bottom_toolbar,
         )
+        self._session.default_buffer.read_only = Condition(
+            lambda: not self._input_enabled
+        )
 
     def run(self, controller: object) -> int:
         setattr(controller, "view", self)
@@ -97,6 +101,8 @@ class PromptToolkitReplView:
 
     def set_input_enabled(self, enabled: bool) -> None:
         self._input_enabled = enabled
+        if not enabled:
+            self._session.default_buffer.reset()
 
     def append_user_message(self, message: str) -> None:
         self._reset_turn_local_model_state()
@@ -226,6 +232,14 @@ class PromptToolkitReplView:
         self._pending_model_output.clear()
         return True
 
+    async def flush_pending_model_output_in_terminal(self) -> bool:
+        if not self._pending_model_output:
+            return False
+        return await run_in_terminal(
+            lambda: self.flush_pending_model_output(force=True),
+            render_cli_done=False,
+        )
+
     def _clear_stream_bottom_status(self) -> None:
         if not self._stream_bottom_status_visible:
             return
@@ -256,7 +270,7 @@ class PromptToolkitReplView:
     async def _drain_prompt_runtime(self, controller: object, app: object) -> None:
         while not self._closed:
             self._drain_once(controller)
-            stream_flushed = self.flush_pending_model_output()
+            stream_flushed = await self.flush_pending_model_output_in_terminal()
             if stream_flushed and hasattr(app, "invalidate"):
                 app.invalidate()
             self.invalidate_toolbar_if_changed(app)

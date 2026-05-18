@@ -20,6 +20,18 @@ Protocol boundary for REPL presentation. View implementations render controller-
 
 TUI implementation for interactive TTY sessions. It owns the prompt_toolkit event loop, key bindings, current-session history, input buffer, layout, and redraw scheduling.
 
+`PromptToolkitReplView` must use a prompt_toolkit `Application` layout with
+separate regions for the message list, turn/status display, prompt input
+buffer, and bottom status bar. It must not use a `PromptSession.prompt()` loop
+as the primary TTY architecture once streaming is enabled, because that model
+does not provide strict region ownership for concurrent message-list updates.
+
+The TTY view owns an in-memory render model for visible messages. Controller
+view calls update that model and invalidate the application. Streaming deltas
+update only the active assistant block in the message list region; they must not
+write directly to stdout/stderr, prompt_toolkit `write_raw`, or ANSI-cleared
+terminal transcript output while the application is active.
+
 ### PlainReplView
 
 Fallback implementation for non-TTY, injected I/O, tests, and prompt_toolkit initialization failure. It preserves the Phase 0 plain REPL behavior.
@@ -125,11 +137,13 @@ Plain fallback must preserve testability and automation behavior. It must not re
 UI thread
   prompt_toolkit Application.run()
     - keyboard input
+    - up/down history buffer replacement
     - layout rendering
     - timer callback
     - queue drain
     - AgentStreamEvent -> ReplViewEvent / snapshots / view method calls
-    - view redraw
+    - message-list view model update
+    - application redraw
 
 Runtime background thread
   PromptAgentExecutor.run_turn(..., agent_stream_callback=queue_callback)
@@ -141,6 +155,11 @@ Runtime background thread
 ```
 
 The background thread may call the controller-provided thread-safe wakeup hook after queueing an event. The hook only invalidates the application or schedules a drain. It must not inspect queue contents or mutate view state.
+
+TTY streaming rendering is layout-driven. The UI thread must update the active
+assistant message block and request an application redraw. It must not maintain
+the streamed assistant text by directly appending visible bytes to the terminal
+transcript and repairing the prompt/status regions afterward.
 
 ## Milestone Execution Model
 

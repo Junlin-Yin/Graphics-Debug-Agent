@@ -27,6 +27,20 @@ class ReplView:
 
 `append_view_event()` receives rendering-layer events only. The view must not depend on `AgentStreamEvent`.
 
+In TTY TUI mode, `PromptToolkitReplView` must be implemented as a
+prompt_toolkit `Application` with explicit, independently rendered UI regions:
+
+- message list region
+- current turn/status region
+- prompt input buffer region
+- bottom status bar region
+
+The TTY view must keep an in-memory view model for visible messages. Rendering
+updates mutate that view model and request an application redraw. Streaming
+model text, final Markdown replacement, tool blocks, system messages, and error
+messages must not be written directly to stdout, stderr, `write_raw`, or other
+linear terminal transcript paths while the prompt application is active.
+
 ```python
 class ReplController:
     def on_submit(self, text: str) -> None: ...
@@ -85,7 +99,8 @@ Minimum fields:
 - current model from the config snapshot
 - workspace root from the session
 - approval mode from the session
-- first eight characters of the session id
+- display session name `sess-<short-id>`, where `<short-id>` is the first four characters of the unique id segment in the runtime contract `Session.session_id`; for Phase 0 ids shaped like `sess_<timestamp>-<id>`, this uses the trailing `<id>` segment, not `sess`
+- the display session name must not be derived from the `.sessions` directory name or artifact path
 
 If version lookup fails in editable or development environments, the view displays `unknown` and continues startup.
 
@@ -105,7 +120,9 @@ Minimum behavior:
 - submitted user input is appended to the message list.
 - input submission is disabled while a prompt turn is running.
 - the input area is visually distinct from normal output.
+- in TTY TUI mode, disabling input submission must make the prompt input buffer non-editable for ordinary typing while a turn is running.
 - in TTY TUI mode, disabling input submission must not remove the bottom input/status region; the bottom status bar remains visible while the turn is running and continues to update in place.
+- in TTY TUI mode, up/down history navigation must be wired to the active prompt input buffer, replacing the buffer text with the selected current-session history item and placing the cursor at the end.
 
 History rules:
 
@@ -144,8 +161,10 @@ Model output rules:
 
 - during streaming, text deltas append to the existing plain-text model block for that `model_call_id`; the view must not render each delta as a separate assistant message.
 - `model_call_id` is turn-local. A new submitted user message starts a new visible turn, so the view must not use a reused `model_call_id` from a previous turn to replace or append to that previous turn's assistant block.
-- TTY views may coalesce text deltas into bounded-rate visible flushes to keep the bottom status region stable; coalescing must not change the accumulated model text or final `model_call_id` block replacement.
+- TTY views may coalesce text deltas into bounded-rate application redraws to keep rendering efficient; coalescing must not change the accumulated model text or final `model_call_id` block replacement.
+- TTY streaming updates must be scoped to the active assistant block in the message list region. They must not rewrite previous user messages, previous assistant/tool/system blocks, the prompt input buffer, the current turn/status region, or the bottom status bar region.
 - when a model call completes and accumulated text is at or below `max_markdown_render_chars`, the view must attempt to replace that same user-visible model block with rich Markdown rendering. Updating only an internal cache is insufficient.
+- final Markdown replacement in TTY mode must replace only the same assistant block in the message list region. It must not use terminal clearing sequences against the active prompt display and must not disturb prompt input or bottom status rendering.
 - if Markdown rendering fails, keep plain text.
 - tables are not an acceptance capability.
 - if accumulated text for a model call exceeds `max_markdown_render_chars = 50_000`, keep plain text and do not run Markdown rendering.
@@ -229,9 +248,17 @@ Every submitted user prompt has a turn status.
 
 Turn status is stable UI state, not message-list content. In TTY TUI mode the view displays the current turn status in the bottom status region below the message list and above the input prompt. The bottom status region remains visible before submission, while a submitted turn is running, and after the turn completes. Repeated updates for the same turn replace the displayed status in place and must not append new message blocks.
 
-The bottom status region must remain visually stable while model text streams. Stream text deltas must not trigger bottom status bar redraws unless the rendered bottom status text changed.
+The bottom status region must remain visually stable while model text streams. Stream text deltas must not change bottom status state or bottom status text. A full application redraw may occur for message-list changes, but it must preserve the bottom status region content unless the rendered bottom status text changed.
 
-When a TTY view coalesces and flushes streamed assistant text directly to the terminal, it must write only the newly accumulated visible delta for that flush. It must not repeatedly redraw the full accumulated assistant block with terminal clearing sequences. After the visible text write, it must request a bottom-toolbar redraw from the active TTY application so the input/status area remains present. The view must not write the rendered bottom status text as normal terminal output, because that would leave `turn ...` or token/model text in the message list.
+The prompt input buffer and bottom status toolbar are separate prompt_toolkit-controlled UI regions. Streaming model text and message-list updates must not render through those regions, and bottom status updates must not append to or rewrite the message list.
+
+While the prompt_toolkit application is active, the TTY view must not maintain
+streaming output by writing visible text directly to the terminal transcript,
+then repairing the prompt with bottom-toolbar redraws. Streaming and final
+replacement rendering must be ordinary application layout updates against the
+message list view model. Terminal transcript writes remain allowed only for
+plain fallback paths or for output emitted before the TTY application starts or
+after it exits.
 
 The controller updates running turns once per second:
 
@@ -252,6 +279,8 @@ Display statuses:
 Persisted run/session statuses remain governed by runtime contracts. `cancelled` maps to `failed` with `error_class=cancelled`. `timeout` maps to `failed` with `error_class=timeout`.
 
 During active execution, ordinary user prompts are rejected and shown as system or error messages. `/status` appends a system message and must not open a modal or replace the status bar.
+
+Recoverable adapter failures scoped to one prompt turn, such as the Phase 0 tool-call loop iteration limit, display the turn as `failed` and append an error message, but they must not terminalize the REPL session or prompt run. The controller must leave the session database open, keep workspace ownership active, re-enable input, and allow the next user prompt in the same session.
 
 `Ctrl+C` in a TTY REPL exits the current session as a terminal cancellation using the Phase 0 runtime rule: persist `failed` with `error_class=cancelled`, write an error checkpoint when session/run state exists, release workspace ownership, and return a non-zero exit code. Phase 0.5 does not add mid-call cancellation propagation; if the interrupt is observed while a turn is active, terminal marking happens through the existing safe-boundary runtime path.
 

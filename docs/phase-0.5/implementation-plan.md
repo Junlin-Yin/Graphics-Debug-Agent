@@ -357,6 +357,48 @@ Rollback: disable streaming controller routing first; if needed, route TUI turns
 
 Runnable state: Phase 0.5 satisfies `docs/phase-0.5/scope.md`, specs, ADR 0007, ADR 0008, and tests.
 
+## Milestone 11: Corrective TTY Layout Isolation
+
+This milestone supersedes the prior TTY streaming terminal-write approach for
+`PromptToolkitReplView`. It is required before Phase 0.5 can be treated as
+accepted after manual TTY verification.
+
+- [ ] Replace the active TTY view architecture with a prompt_toolkit `Application` layout.
+- [ ] Define separate layout regions for message list, current turn/status display, prompt input buffer, and bottom status bar.
+- [ ] Move visible message rendering behind an in-memory TTY view model owned by `PromptToolkitReplView`.
+- [ ] Ensure streaming text deltas update only the active assistant block in the message list view model.
+- [ ] Ensure final Markdown replacement updates only the same active assistant block.
+- [ ] Remove active-application streaming output paths that directly write visible text through stdout, stderr, prompt_toolkit `write_raw`, or ANSI-cleared terminal transcript output.
+- [ ] Preserve one-shot, non-TTY, and injected-I/O `PlainReplView` behavior.
+- [ ] Wire TTY up/down keys to current-session `PromptHistory` and replace the active prompt input buffer text.
+- [ ] Place the cursor at the end after history replacement.
+- [ ] Clear the input buffer when down navigation advances past the newest history item.
+- [ ] Ensure input remains non-editable while a turn is running.
+- [ ] Ensure streaming redraws preserve prompt input buffer text and cursor position.
+- [ ] Ensure streaming redraws preserve bottom status text unless status state changed.
+- [ ] Ensure streaming redraws do not rewrite prior user, assistant, tool, system, or error blocks.
+- [ ] Add or update unit tests for layout-backed message rendering, active assistant block updates, final Markdown block replacement, and history key binding behavior.
+- [ ] Add or update integration or PTY smoke coverage for streaming output isolation from prompt input and bottom status.
+- [ ] Run the narrow relevant Phase 0.5 verification commands from `docs/phase-0.5/operations.md`.
+- [ ] Run manual macOS Terminal or iTerm2 verification for streaming output, narrow wrapping, multiline input, and fast history navigation.
+
+Modified boundaries: `PromptToolkitReplView` and its tests only, unless a small
+controller hook adjustment is required to support application wakeups.
+
+Invariants: no Session, Run, Event, Checkpoint, Artifact, ToolBroker, Approval,
+Path Policy, one-shot, non-TTY, injected-I/O, adapter, or persistence semantics
+change. Runtime and adapter code must remain unaware of prompt_toolkit layout
+details.
+
+Freeze/review checkpoint: do not implement this milestone until the updated
+documentation contract has been reviewed and accepted.
+
+Rollback: disable TTY TUI selection and fall back to `PlainReplView` if layout
+isolation cannot be completed without destabilizing Phase 0 behavior.
+
+Runnable state: TTY streaming output is isolated to the active assistant block,
+prompt history works through up/down keys, and fallback paths remain unchanged.
+
 ## Migration And Rollback Rules
 
 - Use abstraction-first migration: protocols and pure helpers before routing changes.

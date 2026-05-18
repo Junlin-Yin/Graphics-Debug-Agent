@@ -77,7 +77,7 @@ def test_welcome_snapshot_uses_unknown_when_version_lookup_fails(monkeypatch) ->
         model="fake-model",
         workspace_root="/tmp/work",
         approval_mode="normal",
-        session_id_short="sess_123",
+        session_id_short="sess-1234",
     )
 
 
@@ -93,7 +93,35 @@ def test_welcome_snapshot_uses_unknown_when_model_is_missing(monkeypatch) -> Non
 
     assert snapshot.version == "1.2.3"
     assert snapshot.model == "unknown"
-    assert snapshot.session_id_short == "abcdefgh"
+    assert snapshot.session_id_short == "sess-abcd"
+
+
+def test_welcome_snapshot_uses_first_four_characters_of_contract_session_id(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(importlib.metadata, "version", lambda _package_name: "1.2.3")
+
+    snapshot = build_welcome_snapshot(
+        config_snapshot={"model": "fake-model"},
+        workspace_root="/tmp/work",
+        approval_mode="normal",
+        session_id="abcd_runtime_session",
+    )
+
+    assert snapshot.session_id_short == "sess-abcd"
+
+
+def test_welcome_snapshot_uses_phase_0_session_id_unique_suffix(monkeypatch) -> None:
+    monkeypatch.setattr(importlib.metadata, "version", lambda _package_name: "1.2.3")
+
+    snapshot = build_welcome_snapshot(
+        config_snapshot={"model": "fake-model"},
+        workspace_root="/tmp/work",
+        approval_mode="normal",
+        session_id="sess_2026-05-18-09-47-59-0abc",
+    )
+
+    assert snapshot.session_id_short == "sess-0abc"
 
 
 def test_status_bar_snapshot_includes_model_and_formats_tokens() -> None:

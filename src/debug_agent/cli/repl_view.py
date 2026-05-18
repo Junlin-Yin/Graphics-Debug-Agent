@@ -95,7 +95,7 @@ def build_welcome_snapshot(
         model=str(config_snapshot.get("model") or "unknown"),
         workspace_root=workspace_root,
         approval_mode=approval_mode,
-        session_id_short=session_id[:8],
+        session_id_short=_welcome_session_label(session_id),
     )
 
 
@@ -200,6 +200,12 @@ def _package_version() -> str:
         return importlib.metadata.version("debug-agent")
     except importlib.metadata.PackageNotFoundError:
         return "unknown"
+
+
+def _welcome_session_label(session_id: str) -> str:
+    candidate = session_id.removeprefix("sess_")
+    unique_segment = candidate.rsplit("-", 1)[-1] if "-" in candidate else candidate
+    return f"sess-{unique_segment[:4]}"
 
 
 def _preview_source(

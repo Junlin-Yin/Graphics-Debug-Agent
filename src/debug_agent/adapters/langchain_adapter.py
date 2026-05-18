@@ -72,6 +72,7 @@ class LangChainAgentLoopAdapter:
                 "failed",
                 "internal_error",
                 "Tool call loop exceeded Phase 0 iteration limit.",
+                metadata={"failure_scope": "turn"},
             )
         except TimeoutError as exc:
             return _error_result("timeout", "timeout", str(exc), source="model")
@@ -148,6 +149,7 @@ class LangChainAgentLoopAdapter:
                 "failed",
                 "internal_error",
                 "Tool call loop exceeded Phase 0 iteration limit.",
+                metadata={"failure_scope": "turn"},
             )
         except NotImplementedError:
             return _streaming_fallback(self.run(request, context))
@@ -388,6 +390,7 @@ def _stream_model_call(
     started_at = monotonic()
     text_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
+    tool_call_chunks: list[dict[str, Any]] = []
     usage: dict[str, Any] = {}
     try:
         for chunk in model.stream(messages):
@@ -403,6 +406,9 @@ def _stream_model_call(
             chunk_tool_calls = _tool_calls(chunk)
             if chunk_tool_calls:
                 tool_calls.extend(chunk_tool_calls)
+            chunk_tool_call_chunks = _tool_call_chunks(chunk)
+            if chunk_tool_call_chunks:
+                tool_call_chunks.extend(chunk_tool_call_chunks)
             chunk_usage = getattr(chunk, "usage", {}) or {}
             if chunk_usage:
                 usage = dict(chunk_usage)
@@ -419,7 +425,7 @@ def _stream_model_call(
         raise
     return _StreamModelResponse(
         content="".join(text_parts),
-        tool_calls=tool_calls,
+        tool_calls=_merge_stream_tool_calls(tool_calls, tool_call_chunks),
         usage=usage,
         duration_seconds=monotonic() - started_at,
     )
@@ -526,6 +532,122 @@ def _record_model_failure(
 
 def _tool_calls(response: object) -> list[dict[str, Any]]:
     return list(getattr(response, "tool_calls", []) or [])
+
+
+def _tool_call_chunks(response: object) -> list[dict[str, Any]]:
+    return list(getattr(response, "tool_call_chunks", []) or [])
+
+
+def _merge_stream_tool_calls(
+    tool_calls: list[dict[str, Any]], tool_call_chunks: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    chunk_calls = _tool_calls_from_chunks(tool_call_chunks)
+    if not chunk_calls:
+        return tool_calls
+    merged = list(tool_calls)
+    for chunk_call in chunk_calls:
+        match_index = _matching_tool_call_index(merged, chunk_call)
+        if match_index is None:
+            merged.append(chunk_call)
+            continue
+        existing = dict(merged[match_index])
+        if chunk_call.get("name"):
+            existing["name"] = chunk_call["name"]
+        if chunk_call.get("id"):
+            existing["id"] = chunk_call["id"]
+        chunk_args = chunk_call.get("args")
+        if _has_arguments(chunk_args) or not _has_arguments(existing.get("args")):
+            existing["args"] = chunk_args
+        merged[match_index] = existing
+    return merged
+
+
+def _tool_calls_from_chunks(tool_call_chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    states: dict[object, dict[str, Any]] = {}
+    order: list[object] = []
+    for position, chunk in enumerate(tool_call_chunks):
+        key = _tool_call_chunk_key(chunk, position)
+        if key not in states:
+            states[key] = {"args_text": "", "args": {}}
+            order.append(key)
+        state = states[key]
+        name = chunk.get("name")
+        if isinstance(name, str) and name:
+            state["name"] = name
+        tool_call_id = chunk.get("id")
+        if isinstance(tool_call_id, str) and tool_call_id:
+            state["id"] = tool_call_id
+        args = chunk.get("args")
+        if isinstance(args, str):
+            state["args_text"] = state.get("args_text", "") + args
+            state["saw_args"] = True
+        elif isinstance(args, dict):
+            state["args"] = {**state.get("args", {}), **args}
+            state["saw_args"] = True
+
+    calls: list[dict[str, Any]] = []
+    for key in order:
+        state = states[key]
+        name = state.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        if not state.get("saw_args"):
+            continue
+        args = _parse_tool_call_chunk_args(
+            str(state.get("args_text") or ""),
+            state.get("args", {}),
+        )
+        calls.append(
+            {
+                "name": name,
+                "args": args,
+                "id": str(state.get("id") or f"{name}_{len(calls)}"),
+            }
+        )
+    return calls
+
+
+def _tool_call_chunk_key(chunk: dict[str, Any], position: int) -> object:
+    index = chunk.get("index")
+    if isinstance(index, int):
+        return ("index", index)
+    tool_call_id = chunk.get("id")
+    if isinstance(tool_call_id, str) and tool_call_id:
+        return ("id", tool_call_id)
+    return ("position", position)
+
+
+def _parse_tool_call_chunk_args(args_text: str, args: object) -> dict[str, Any]:
+    if args_text:
+        try:
+            parsed = json.loads(args_text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+    if isinstance(args, dict):
+        return dict(args)
+    return {}
+
+
+def _matching_tool_call_index(
+    tool_calls: list[dict[str, Any]], chunk_call: dict[str, Any]
+) -> int | None:
+    chunk_id = chunk_call.get("id")
+    if isinstance(chunk_id, str) and chunk_id:
+        for index, call in enumerate(tool_calls):
+            if call.get("id") == chunk_id:
+                return index
+    chunk_name = chunk_call.get("name")
+    if isinstance(chunk_name, str) and chunk_name:
+        for index, call in enumerate(tool_calls):
+            if call.get("name") == chunk_name and not _has_arguments(call.get("args")):
+                return index
+    return None
+
+
+def _has_arguments(value: object) -> bool:
+    return isinstance(value, dict) and bool(value)
 
 
 def _normalized_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -663,6 +785,7 @@ def _error_result(
     message: str,
     *,
     source: str = "adapter",
+    metadata: dict[str, Any] | None = None,
 ) -> AgentRunResult:
     return AgentRunResult(
         status=status,
@@ -675,5 +798,5 @@ def _error_result(
             "source": source,
             "recoverable": True,
         },
-        metadata={},
+        metadata=metadata or {},
     )

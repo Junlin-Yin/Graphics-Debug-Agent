@@ -4,7 +4,7 @@ import threading
 from typing import Any
 
 from debug_agent.cli.repl_view import ReplViewEvent
-from debug_agent.runtime.contracts import AgentRunResult
+from debug_agent.runtime.contracts import AgentRunResult, Session
 from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
@@ -48,6 +48,15 @@ class FakeView:
         self.errors.append(message)
 
 
+class FakeSessions:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get(self, session_id: str) -> Session:
+        assert session_id == self.session.session_id
+        return self.session
+
+
 class FakeRuntime:
     def __init__(self, result: AgentRunResult | None = None) -> None:
         self.result = result or _result("completed", assistant_output="answer")
@@ -61,6 +70,21 @@ class FakeRuntime:
         self.workspace_root = "/repo"
         self.approval_mode = "normal"
         self.config_snapshot = {"model": "fake-model"}
+        self.sessions = FakeSessions(
+            Session(
+                session_id=self.session_id,
+                workspace_root=self.workspace_root,
+                status="running",
+                approval_mode=self.approval_mode,
+                active_run_id=self.run_id,
+                artifact_root="/repo/.sessions/different_directory_name/artifacts",
+                config_snapshot=self.config_snapshot,
+                latest_checkpoint_id=None,
+                created_at="2026-05-18T00:00:00Z",
+                updated_at="2026-05-18T00:00:00Z",
+                error_summary=None,
+            )
+        )
         self.block_turn = False
         self.turn_started = threading.Event()
         self.release_turn = threading.Event()
@@ -468,6 +492,35 @@ def test_active_prompt_is_rejected_without_runtime_call() -> None:
     controller.drain_completed_turns()
 
 
+def test_plain_repl_turn_scoped_failure_does_not_terminalize_runtime() -> None:
+    from io import StringIO
+
+    from debug_agent.cli.repl_controller import ReplController
+
+    runtime = FakeRuntime(
+        _result(
+            "failed",
+            error={
+                "error_class": "internal_error",
+                "message": "Tool call loop exceeded Phase 0 iteration limit.",
+                "source": "adapter",
+                "recoverable": True,
+            },
+            metadata={"failure_scope": "turn"},
+        )
+    )
+    controller = ReplController(runtime=runtime)
+    output = StringIO()
+
+    should_continue = controller.handle_line("hello", output)
+
+    assert should_continue is True
+    assert controller.exit_code == 0
+    assert runtime.failed_results == []
+    assert runtime.closed is False
+    assert "Tool call loop exceeded Phase 0 iteration limit." in output.getvalue()
+
+
 def test_status_slash_command_appends_system_message() -> None:
     from debug_agent.cli.repl_controller import ReplController
 
@@ -483,6 +536,33 @@ def test_status_slash_command_appends_system_message() -> None:
             payload={"message": "session_id: sess_1\napproval_mode: normal"},
         )
     ]
+
+
+def test_welcome_snapshot_uses_contract_session_id_not_artifact_directory() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    runtime = FakeRuntime()
+    runtime.session_id = "sess_2026-05-18-09-47-59-0abc"
+    runtime.sessions = FakeSessions(
+        Session(
+            session_id="sess_2026-05-18-09-47-59-0abc",
+            workspace_root="/repo",
+            status="running",
+            approval_mode="normal",
+            active_run_id="run_1",
+            artifact_root="/repo/.sessions/wxyz_directory_name/artifacts",
+            config_snapshot={"model": "fake-model"},
+            latest_checkpoint_id=None,
+            created_at="2026-05-18T00:00:00Z",
+            updated_at="2026-05-18T00:00:00Z",
+            error_summary=None,
+        )
+    )
+    controller = ReplController(runtime=runtime)
+
+    snapshot = controller.welcome_snapshot()
+
+    assert snapshot.session_id_short == "sess-0abc"
 
 
 def test_exit_slash_command_completes_runtime_and_shows_summary() -> None:
@@ -529,6 +609,46 @@ def test_completed_turn_adapts_tool_results_into_tool_blocks() -> None:
     assert view.events[-1].payload["metadata"] == {"tool_name": "read_file"}
     assert view.events[-1].payload["preview"].text == "> one\n> two"
     assert view.events[-1].payload["preview"].artifact_ids == ["art_1"]
+
+
+def test_recoverable_turn_failure_keeps_session_open_and_allows_next_prompt() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime(
+        _result(
+            "failed",
+            error={
+                "error_class": "internal_error",
+                "message": "Tool call loop exceeded Phase 0 iteration limit.",
+                "source": "adapter",
+                "recoverable": True,
+            },
+            metadata={"failure_scope": "turn"},
+        )
+    )
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_turn_finished(runtime.result)
+
+    assert runtime.failed_results == []
+    assert runtime.closed is False
+    assert controller.exit_code == 0
+    assert controller.is_executing is False
+    assert view.errors == ["Tool call loop exceeded Phase 0 iteration limit."]
+    assert view.turn_statuses[-1][1] == "failed"
+    assert view.input_enabled[-1] is True
+
+    runtime.result = _result("completed", assistant_output="next answer")
+    controller.on_submit("next")
+    controller.wait_for_active_turn(timeout=2)
+    controller.drain_completed_turns()
+
+    assert runtime.run_inputs == ["next"]
+    assert view.events[-1] == ReplViewEvent(
+        kind="model_markdown_final",
+        payload={"text": "next answer"},
+    )
 
 
 def test_usage_preserves_last_known_counts_when_result_omits_usage() -> None:

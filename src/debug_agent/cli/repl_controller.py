@@ -85,6 +85,10 @@ class ReplController:
         if result.status == "completed":
             print(result.assistant_output or "", file=output)
             return True
+        if _is_turn_scoped_failure(result):
+            message = result.error["message"] if result.error else "Prompt execution failed."
+            print(message, file=output)
+            return True
         self.runtime.fail(result)
         self.exit_code = 1
         message = result.error["message"] if result.error else "Prompt execution failed."
@@ -197,6 +201,10 @@ class ReplController:
                 self._append_result_events(result)
             elif not self._streamed_output_seen:
                 self._append_result_events(result)
+        elif _is_turn_scoped_failure(result):
+            message = result.error["message"] if result.error else "Prompt execution failed."
+            if self.view is not None:
+                self.view.show_error(message)
         else:
             self.runtime.fail(result)
             self.exit_code = 1
@@ -544,3 +552,7 @@ def _display_status(result: AgentRunResult) -> str:
         if error_class in {"cancelled", "timeout"}:
             return str(error_class)
     return result.status
+
+
+def _is_turn_scoped_failure(result: AgentRunResult) -> bool:
+    return result.status == "failed" and result.metadata.get("failure_scope") == "turn"
