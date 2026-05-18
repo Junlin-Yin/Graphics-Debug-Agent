@@ -516,3 +516,12 @@ trace: debug-agent trace <session_id>
 If prompt_toolkit initialization fails in a TTY environment, the controller selects `PlainReplView` and writes one concise warning.
 
 one-shot mode never starts TUI.
+
+Direct unit tests of `PromptToolkitReplView` are allowed to construct the TTY
+view class outside this CLI selection path. Such tests must not depend on the
+test process having a real terminal. The view constructor must support injecting
+prompt_toolkit input/output objects for tests, and tests should use
+prompt_toolkit's test-safe output, for example `DummyOutput`, when they only
+need to inspect layout state, rendered text, key handling, scrolling, or terminal
+summary behavior. Production TTY execution keeps prompt_toolkit's normal
+terminal input/output selection.

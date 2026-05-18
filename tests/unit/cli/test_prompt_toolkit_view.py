@@ -19,6 +19,14 @@ from debug_agent.cli.repl_view import (
 )
 
 
+def _prompt_toolkit_view(**kwargs):
+    from prompt_toolkit.output import DummyOutput
+
+    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+
+    return PromptToolkitReplView(output=DummyOutput(), **kwargs)
+
+
 class _FakePromptEvent:
     def __init__(self, text: str) -> None:
         self.current_buffer = self
@@ -96,7 +104,7 @@ def _render_message_viewport_lines(
 def test_prompt_toolkit_view_renders_welcome_messages_status_and_close_summary() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.show_welcome(
         WelcomeSnapshot(
@@ -162,7 +170,7 @@ def test_prompt_toolkit_view_normal_submit_keeps_prompt_active() -> None:
         def on_submit(self, text: str) -> None:
             self.submitted.append(text)
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
     controller = Controller()
     event = _FakePromptEvent("hello")
 
@@ -176,7 +184,7 @@ def test_prompt_toolkit_view_normal_submit_keeps_prompt_active() -> None:
 def test_prompt_toolkit_view_keeps_turn_status_out_of_message_list() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.append_user_message("hello")
     view.set_turn_status(2, "running", 1)
@@ -201,7 +209,7 @@ def test_prompt_toolkit_view_invalidates_toolbar_only_when_status_text_changes()
             self.invalidations += 1
 
     app = FakeApp()
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.set_turn_status(2, "running", 1)
     view.invalidate_toolbar_if_changed(app)
@@ -221,7 +229,7 @@ def test_prompt_toolkit_view_invalidates_toolbar_only_when_status_text_changes()
 def test_prompt_toolkit_view_renders_tool_blocks_separately() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.append_view_event(
         ReplViewEvent(
@@ -251,7 +259,7 @@ def test_prompt_toolkit_view_renders_tool_blocks_separately() -> None:
 def test_prompt_toolkit_view_appends_tool_completion_and_result_blocks() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.append_view_event(
         ReplViewEvent(
@@ -305,7 +313,7 @@ def test_prompt_toolkit_view_appends_tool_completion_and_result_blocks() -> None
 def test_prompt_toolkit_view_truncated_tool_result_includes_detail_line() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.append_view_event(
         ReplViewEvent(
@@ -333,7 +341,7 @@ def test_prompt_toolkit_view_truncated_tool_result_includes_detail_line() -> Non
 def test_prompt_toolkit_view_formats_multiline_user_message_like_shell_block() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.append_user_message("line 1\nline 2\nline 3")
 
@@ -344,7 +352,7 @@ def test_prompt_toolkit_view_formats_multiline_user_message_like_shell_block() -
 def test_prompt_toolkit_view_user_message_borders_cover_prompt_text_only() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.append_user_message("short\nmuch longer line")
 
@@ -361,7 +369,7 @@ def test_prompt_toolkit_view_user_message_border_uses_terminal_cell_width() -> N
 
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.append_user_message("你好，你能为我做什么？")
 
@@ -376,7 +384,7 @@ def test_prompt_toolkit_view_user_message_border_uses_terminal_cell_width() -> N
 def test_prompt_toolkit_view_formats_failed_tool_completion_with_red_indicator() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.append_view_event(
         ReplViewEvent(
@@ -400,7 +408,7 @@ def test_prompt_toolkit_view_formats_failed_tool_completion_with_red_indicator()
 def test_prompt_toolkit_view_formats_system_and_error_blocks_with_headers() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.append_view_event(
         ReplViewEvent(kind="system_message", payload={"message": "status ok"})
@@ -424,7 +432,7 @@ def test_prompt_toolkit_view_does_not_clear_or_replace_tool_blocks(
 ) -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.append_view_event(
         ReplViewEvent(
@@ -450,7 +458,7 @@ def test_prompt_toolkit_view_keeps_large_model_text_plain() -> None:
         max_markdown_render_chars,
     )
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
     large_text = "#" * (max_markdown_render_chars + 1)
 
     view.append_view_event(
@@ -463,7 +471,7 @@ def test_prompt_toolkit_view_keeps_large_model_text_plain() -> None:
 def test_prompt_toolkit_view_updates_one_model_block_for_streaming_deltas() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.append_view_event(
         ReplViewEvent(
@@ -493,7 +501,7 @@ def test_prompt_toolkit_view_updates_one_model_block_for_streaming_deltas() -> N
 def test_prompt_toolkit_view_reused_model_call_id_after_user_message_starts_new_block() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.append_user_message("first")
     view.append_view_event(
@@ -529,7 +537,7 @@ def test_prompt_toolkit_view_streaming_delta_updates_layout_message_model_only(
 ) -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.append_view_event(
         ReplViewEvent(
@@ -555,7 +563,7 @@ def test_prompt_toolkit_view_streaming_redraw_preserves_bottom_status_region(
 ) -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
     view.set_turn_status(1, "running", 2)
     view.update_status_bar(
         StatusBarSnapshot(
@@ -585,7 +593,7 @@ def test_prompt_toolkit_view_streaming_redraw_preserves_bottom_status_region(
 def test_prompt_toolkit_view_streaming_flush_invalidates_application() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
     invalidations = 0
 
     def invalidate() -> None:
@@ -611,7 +619,7 @@ def test_prompt_toolkit_view_streaming_redraw_does_not_emit_terminal_writes(
 ) -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.append_view_event(
         ReplViewEvent(
@@ -636,7 +644,7 @@ def test_prompt_toolkit_view_disables_prompt_buffer_edits_while_turn_runs() -> N
 
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.set_input_enabled(False)
 
@@ -654,7 +662,7 @@ def test_prompt_toolkit_view_streaming_flush_reports_when_redraw_is_needed(
 ) -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     assert view.flush_pending_model_output(force=True) is False
     view.append_view_event(
@@ -672,7 +680,7 @@ def test_prompt_toolkit_view_streaming_delta_keeps_literal_markdown_in_layout(
 ) -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.append_view_event(
         ReplViewEvent(
@@ -704,7 +712,7 @@ def test_prompt_toolkit_view_replaces_final_markdown_in_layout_without_terminal_
 ) -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.append_view_event(
         ReplViewEvent(
@@ -739,7 +747,7 @@ def test_prompt_toolkit_view_input_history_and_multiline_submission() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
     submitted: list[str] = []
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.submit_input("line 1\nline 2", lambda text: submitted.append(text))
     view.submit_input("   ", lambda text: submitted.append(text))
@@ -755,7 +763,7 @@ def test_prompt_toolkit_view_input_history_and_multiline_submission() -> None:
 def test_prompt_toolkit_view_history_navigation_replaces_input_buffer() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.submit_input("first", lambda text: None)
     view.submit_input("second", lambda text: None)
@@ -780,7 +788,7 @@ def test_prompt_toolkit_view_history_navigation_replaces_input_buffer() -> None:
 def test_prompt_toolkit_view_history_navigation_only_at_buffer_end() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
     view.submit_input("history item", lambda text: None)
     view._input_buffer.text = "line 1\nline 2"
     view._input_buffer.cursor_position = 0
@@ -800,7 +808,7 @@ def test_prompt_toolkit_view_history_navigation_only_at_buffer_end() -> None:
 def test_prompt_toolkit_view_down_moves_cursor_until_buffer_end_then_history() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
     view.submit_input("first", lambda text: None)
     view.submit_input("second", lambda text: None)
     view.apply_history_previous()
@@ -823,7 +831,7 @@ def test_prompt_toolkit_view_down_moves_cursor_until_buffer_end_then_history() -
 def test_prompt_toolkit_view_ctrl_j_expands_visible_input_region_to_five_lines() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     assert view._input_region_height() == 1
     for _ in range(6):
@@ -836,7 +844,7 @@ def test_prompt_toolkit_view_ctrl_j_expands_visible_input_region_to_five_lines()
 def test_prompt_toolkit_view_input_region_dimension_owns_current_height() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     assert view._input_region_dimension().min == 1
     assert view._input_region_dimension().preferred == 1
@@ -858,7 +866,7 @@ def test_prompt_toolkit_view_submit_resets_input_region_to_one_line() -> None:
         def on_submit(self, text: str) -> None:
             pass
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
     view.insert_input_newline()
     view.insert_input_newline()
 
@@ -875,7 +883,7 @@ def test_prompt_toolkit_view_submit_resets_input_region_to_one_line() -> None:
 def test_prompt_toolkit_view_input_borders_do_not_count_toward_buffer_height() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     assert view._input_region_height() == 1
     assert view._input_shell_height() == 3
@@ -890,7 +898,7 @@ def test_prompt_toolkit_view_input_borders_do_not_count_toward_buffer_height() -
 def test_prompt_toolkit_view_backspace_line_removal_shrinks_input_region() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
     view._input_buffer.text = "line 1\nline 2\nline 3"
     view._input_buffer.cursor_position = len(view._input_buffer.text)
 
@@ -905,7 +913,7 @@ def test_prompt_toolkit_view_backspace_line_removal_shrinks_input_region() -> No
 def test_prompt_toolkit_view_input_height_changes_keep_latest_message_visible() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
     for index in range(8):
         view.append_user_message(f"message {index}")
 
@@ -921,7 +929,7 @@ def test_prompt_toolkit_view_input_height_changes_keep_latest_message_visible() 
 def test_prompt_toolkit_view_appended_messages_follow_latest_until_user_scrolls_up() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
     for index in range(8):
         view.append_user_message(f"message {index}")
 
@@ -943,7 +951,7 @@ def test_prompt_toolkit_view_appended_messages_follow_latest_until_user_scrolls_
 def test_prompt_toolkit_view_scroll_down_from_history_does_not_jump_to_latest() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
     for index in range(20):
         view.append_user_message(f"message {index}")
 
@@ -965,7 +973,7 @@ def test_prompt_toolkit_view_scroll_down_from_history_does_not_jump_to_latest() 
 def test_prompt_toolkit_view_follow_latest_renders_existing_message_viewport() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.show_welcome(
         WelcomeSnapshot(
@@ -999,7 +1007,7 @@ def test_prompt_toolkit_view_mouse_scroll_events_scroll_message_region() -> None
         message_scroll_step_lines,
     )
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     assert view._message_region_scroll_offset() == 0
 
@@ -1022,7 +1030,7 @@ def test_prompt_toolkit_view_page_scroll_uses_larger_step_than_mouse_scroll() ->
         message_scroll_step_page,
     )
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     assert message_scroll_step_lines == 2
     assert message_scroll_step_page == 10
@@ -1037,7 +1045,7 @@ def test_prompt_toolkit_view_page_scroll_uses_larger_step_than_mouse_scroll() ->
 def test_prompt_toolkit_view_welcome_panel_uses_ascii_border() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     view.show_welcome(
         WelcomeSnapshot(
@@ -1060,7 +1068,7 @@ def test_prompt_toolkit_view_welcome_panel_uses_ascii_border() -> None:
 def test_prompt_toolkit_view_turn_status_has_spacer_above_region() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     assert view._turn_status_spacer_height() == 1
     view.set_turn_status(1, "running", 2)
@@ -1087,7 +1095,7 @@ def test_prompt_toolkit_view_exit_is_idempotent_after_slash_exit() -> None:
             )
             return False
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
     app = _RaisingExitApp()
     view._application = app
     event = _FakePromptEvent("/exit")
@@ -1113,7 +1121,7 @@ def test_prompt_toolkit_view_ctrl_c_invokes_existing_interrupt_path() -> None:
             self.interrupts += 1
 
     controller = Controller()
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
     view._active_controller = controller
     event = _FakeKeyEvent(view._input_buffer)
 
@@ -1126,7 +1134,7 @@ def test_prompt_toolkit_view_ctrl_c_invokes_existing_interrupt_path() -> None:
 def test_prompt_toolkit_view_streaming_redraw_preserves_prompt_buffer() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
     view._input_buffer.text = "draft prompt"
     view._input_buffer.cursor_position = len("draft")
 
@@ -1147,7 +1155,7 @@ def test_prompt_toolkit_view_has_application_layout_regions() -> None:
 
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     assert isinstance(view._application, Application)
     assert view._message_region_text() == ""
@@ -1165,7 +1173,7 @@ def test_prompt_toolkit_view_run_prints_terminal_summary_after_application_exit(
         exit_code = 0
 
     output = io.StringIO()
-    view = PromptToolkitReplView(output_stream=output)
+    view = _prompt_toolkit_view(output_stream=output)
 
     def close_session() -> None:
         view.show_session_closed(
@@ -1197,7 +1205,7 @@ def test_prompt_toolkit_view_run_prints_cancelled_terminal_summary() -> None:
         exit_code = 1
 
     output = io.StringIO()
-    view = PromptToolkitReplView(output_stream=output)
+    view = _prompt_toolkit_view(output_stream=output)
 
     def cancel_session() -> None:
         view.show_session_closed(
@@ -1225,7 +1233,7 @@ def test_prompt_toolkit_view_run_prints_cancelled_terminal_summary() -> None:
 def test_prompt_toolkit_view_page_keys_scroll_message_region() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
-    view = PromptToolkitReplView()
+    view = _prompt_toolkit_view()
 
     assert view._message_region_scroll_offset() == 0
 

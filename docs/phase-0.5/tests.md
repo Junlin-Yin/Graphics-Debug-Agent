@@ -26,6 +26,7 @@
 - reused turn-local `model_call_id` values in later turns create a new assistant block after the later user message.
 - TTY model text deltas update the active assistant block in the prompt_toolkit application layout.
 - TTY model text deltas do not write visible streamed text through stdout, stderr, `write_raw`, or other linear terminal transcript paths while the prompt application is active.
+- direct `PromptToolkitReplView` unit tests inject prompt_toolkit test-safe output, such as `DummyOutput`, instead of relying on the pytest process having a real terminal or Windows console screen buffer.
 - TTY mode uses the terminal alternate screen and does not depend on terminal-native scrollback for in-session message history.
 - TTY message-list scrolling controls operate on the application message list region while the prompt application is active.
 - TTY message-list mouse wheel and macOS trackpad scroll events operate on the application message list region while the prompt application is active.

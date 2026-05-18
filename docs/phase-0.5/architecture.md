@@ -31,6 +31,15 @@ application. While active, terminal-native scrollback is not the message history
 surface; the message list region owns in-session scrolling and history
 visibility.
 
+The production REPL selection path must let prompt_toolkit use its normal
+terminal input and output only after the CLI has selected TTY TUI mode. Direct
+unit tests of `PromptToolkitReplView` may construct the view without going
+through CLI view selection; those tests must be able to inject prompt_toolkit
+test-safe input/output objects such as `DummyOutput` so they do not require a
+real terminal or Windows console screen buffer. This injection is a testing and
+construction boundary only; it must not change TTY selection, plain fallback, or
+terminal summary output behavior.
+
 The TTY view owns an in-memory render model for visible messages. Controller
 view calls update that model and invalidate the application. Streaming deltas
 update only the active assistant block in the message list region; they must not

@@ -10,12 +10,14 @@ from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.input.base import Input
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import BufferControl, FormattedTextControl, HSplit, VSplit, Window
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.layout import Layout
 from prompt_toolkit.layout.scrollable_pane import ScrollablePane
 from prompt_toolkit.mouse_events import MouseEventType
+from prompt_toolkit.output.base import Output
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.markdown import Markdown
@@ -88,9 +90,17 @@ class _MessageScrollablePane(ScrollablePane):
 
 
 class PromptToolkitReplView:
-    def __init__(self, *, output_stream: TextIO | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        output_stream: TextIO | None = None,
+        input: Input | None = None,
+        output: Output | None = None,
+    ) -> None:
         self._history = PromptHistory()
         self._output_stream = output_stream or sys.stdout
+        self._prompt_toolkit_input = input
+        self._prompt_toolkit_output = output
         self._messages: list[str] = []
         self._model_message_indexes: dict[str, int] = {}
         self._turn_status: str | None = None
@@ -360,6 +370,8 @@ class PromptToolkitReplView:
             ),
             full_screen=True,
             mouse_support=True,
+            input=self._prompt_toolkit_input,
+            output=self._prompt_toolkit_output,
         )
 
     def _dispatch(self, controller: object, text: str) -> None:
