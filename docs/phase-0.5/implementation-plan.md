@@ -380,7 +380,7 @@ accepted after manual TTY verification.
 - [x] Add or update unit tests for layout-backed message rendering, active assistant block updates, final Markdown block replacement, and history key binding behavior.
 - [x] Add or update integration or PTY smoke coverage for streaming output isolation from prompt input and bottom status.
 - [x] Run the narrow relevant Phase 0.5 verification commands from `docs/phase-0.5/operations.md`.
-- [ ] Run manual macOS Terminal or iTerm2 verification for streaming output, narrow wrapping, multiline input, and fast history navigation.
+- [x] Run manual macOS Terminal or iTerm2 verification for streaming output, narrow wrapping, multiline input, and fast history navigation.
 - [x] Ensure the TTY message list can scroll or otherwise keep older message history reachable after the visible region is full.
 - [x] Ensure `/exit` uses an idempotent application shutdown path and does not raise duplicate `Application.exit(...)` return-value errors.
 - [x] Bind TTY `Ctrl+C` to the existing interrupt path without changing Phase 0.5 persisted interrupt semantics.
@@ -445,7 +445,7 @@ can be treated as accepted after manual TTY verification.
   output remain visible while following newest content.
 - [x] Run the narrow relevant Phase 0.5 verification commands from
   `docs/phase-0.5/operations.md`.
-- [ ] Run manual macOS Terminal or iTerm2 verification for trackpad scrolling,
+- [x] Run manual macOS Terminal or iTerm2 verification for trackpad scrolling,
   multiline prompt growth/reset, long message-list growth, and newest-message
   visibility.
 
@@ -505,6 +505,101 @@ Runnable state: TTY message-list scrolling works with keyboard and macOS
 trackpad input, prompt input remains bounded at 1-5 visible lines, prompt
 submission resets input height, and newest message visibility remains stable
 across message-list and input-height changes.
+
+## Manual TUI Polish Adjustment
+
+Goal: incorporate human validation feedback for Phase 0.5 TTY presentation
+without changing runtime, persistence, streaming, plain fallback, or one-shot
+semantics.
+
+Scope:
+
+- `src/debug_agent/cli/prompt_toolkit_view.py`: message-list scroll step
+  constants, prompt input visual borders and height recalculation, turn/status
+  spacer, and welcome panel border formatting.
+- `tests/unit/cli/test_prompt_toolkit_view.py`: focused layout and behavior
+  coverage for the adjusted TTY view behavior.
+- `docs/phase-0.5/specs/repl-tui.md` and `docs/phase-0.5/tests.md`:
+  contract and test-plan updates only.
+
+Tasks:
+
+- [x] Split message-list scroll increments into
+  `message_scroll_step_lines = 2` for mouse wheel or trackpad events and
+  `message_scroll_step_page = 10` for PageUp/PageDown.
+- [x] Render one-line `-` borders above and below the prompt input buffer.
+  These border rows must adapt to terminal resize and must not count toward
+  the prompt input buffer's 1-to-5 visible line limit.
+- [x] Recalculate prompt input visible height on buffer text changes so
+  backspacing over newline characters can shrink the prompt input region.
+- [x] Add one blank spacer row above the turn/status region.
+- [x] Render the welcome panel inside a lightweight rectangular ASCII border.
+- [x] Add or update tests for scroll-step separation, prompt border height
+  accounting, backspace-driven shrink, turn/status spacer separation, and
+  welcome border rendering.
+- [x] Run the relevant checks from `docs/phase-0.5/operations.md` before
+  claiming completion.
+
+Invariants: no Session, Run, Event, Checkpoint, Artifact, ToolBroker, Approval,
+Path Policy, one-shot, non-TTY, injected-I/O, adapter, or persistence semantics
+change. Pointer support remains limited to message-list scrolling.
+
+Freeze/review checkpoint: do not implement this adjustment until the updated
+documentation contract has been reviewed and accepted.
+
+Rollback: revert the TTY presentation changes in `PromptToolkitReplView` while
+preserving the existing `PlainReplView`, one-shot, non-TTY, and injected-I/O
+paths.
+
+## Manual Message Rendering Adjustment
+
+Goal: incorporate human validation feedback for Phase 0.5 TTY message-list
+readability without changing controller events, streaming contracts, runtime,
+persistence, plain fallback, injected-I/O, or one-shot behavior.
+
+Scope:
+
+- `src/debug_agent/cli/prompt_toolkit_view.py`: TTY message block formatting
+  for user, assistant, tool, system, and error messages.
+- `tests/unit/cli/test_prompt_toolkit_view.py`: focused rendering coverage for
+  the adjusted message-list formats.
+- `docs/phase-0.5/specs/repl-tui.md` and `docs/phase-0.5/tests.md`: contract
+  and test-plan updates only.
+
+Tasks:
+
+- [x] Render submitted user message blocks with a leading blank line, top and
+  bottom `-` borders, and shell-style `> ` prefix on the first line only.
+  The borders use the smallest terminal cell width that fully covers the
+  rendered prompt text in that block, including Chinese text. Multiline
+  continuation lines align under the prompt text with two leading spaces.
+- [x] Render assistant message blocks with a leading blank line, top `-`
+  border, `🔮 Assistant` header, one blank line, and assistant body text.
+  Streaming deltas update only the assistant body inside the same block.
+- [x] Render system message blocks with a leading blank line, top `-` border,
+  `🤖 System` header, one blank line, and message body.
+- [x] Render error message blocks with a leading blank line, top `-` border,
+  `❌ Error` header, one blank line, and message body.
+- [x] Render tool completion blocks as a leading blank line followed by one
+  emoji-prefixed line: `🟢 <tool_name> (<duration>)` for success and
+  `🔴 <tool_name> (<duration>)` for non-success.
+- [x] Render tool result preview blocks with each preview line indented by four
+  spaces and without repeating the completed tool block's tool name or status.
+- [x] Add or update tests for user multiline alignment, assistant streaming
+  body-only updates, system/error headers, tool success/failure summary lines,
+  and four-space tool result indentation.
+- [x] Run the relevant checks from `docs/phase-0.5/operations.md` before
+  claiming completion.
+
+Invariants: no Session, Run, Event, Checkpoint, Artifact, ToolBroker, Approval,
+Path Policy, one-shot, non-TTY, injected-I/O, adapter, controller event, or
+persistence semantics change. The change is TTY presentation only.
+
+Freeze/review checkpoint: do not implement this adjustment until the updated
+documentation contract has been reviewed and accepted.
+
+Rollback: revert the TTY message block formatting in `PromptToolkitReplView`
+while preserving existing event mapping and fallback paths.
 
 ## Migration And Rollback Rules
 

@@ -58,6 +58,15 @@ Phase 0.5 supports these pointer events only for message-list scrolling; it does
 not add general mouse interaction such as clickable panes, selection behavior,
 or message folding.
 
+Mouse wheel and trackpad scroll events use a small line-oriented step so
+fine-grained scrolling remains controllable. PageUp/PageDown use a larger
+page-oriented step. The default steps are:
+
+```text
+message_scroll_step_lines = 2
+message_scroll_step_page = 10
+```
+
 ```python
 class ReplController:
     def on_submit(self, text: str) -> None: ...
@@ -123,6 +132,11 @@ If version lookup fails in editable or development environments, the view displa
 
 The welcome panel must not affect one-shot output.
 
+In TTY TUI mode, the welcome panel is rendered inside a lightweight rectangular
+ASCII border so the startup title area is visually distinct from normal
+messages. The border is presentation-only and must be derived from the rendered
+welcome fields, not from runtime state beyond `WelcomeSnapshot`.
+
 ## Input Behavior
 
 The input area uses a shell-style prompt beginning with `>`.
@@ -137,12 +151,20 @@ Minimum behavior:
   reaches the 5-line maximum.
 - submitting a prompt resets the prompt input region to the initial 1 visible
   line state.
+- deleting text, including backspacing over newline characters, must recalculate
+  the prompt input region height so the region can shrink back toward 1 visible
+  line when the buffer no longer needs additional lines.
 - `Shift+Enter` inserts a newline on terminals where prompt_toolkit can detect it.
 - `Enter` submits.
 - up/down navigates current-session prompt history.
 - submitted user input is appended to the message list.
 - input submission is disabled while a prompt turn is running.
 - the input area is visually distinct from normal output.
+- in TTY TUI mode, the input area has a one-line top border and a one-line
+  bottom border made from `-` characters. These border rows do not count toward
+  the prompt input buffer's 1-to-5 visible line limit. The border rows must
+  render to the current prompt region width and adapt when the terminal is
+  resized; they must not be hard-coded to a stale terminal width.
 - in TTY TUI mode, disabling input submission must make the prompt input buffer non-editable for ordinary typing while a turn is running.
 - in TTY TUI mode, disabling input submission must not remove the bottom input/status region; the bottom status bar remains visible while the turn is running and continues to update in place.
 - in TTY TUI mode, the prompt input region owns its current visible height.
@@ -190,6 +212,12 @@ The message list displays:
 - slash command results.
 - system, error, interrupt, and completion status messages.
 
+TTY message blocks use lightweight visual separation. Each user, model, tool,
+system, and error block starts with one blank line before its visible content.
+The welcome panel keeps its own startup border format and is not part of this
+per-message block format. Session close summaries remain post-TUI terminal
+output, not message-list content.
+
 Message list rules:
 
 - TTY message history must remain reachable after it exceeds the terminal
@@ -209,12 +237,33 @@ Message list rules:
   by the TUI message list. Terminal-native scrollback is not an acceptance path
   for viewing in-session message history.
 
+User prompt blocks render with a top and bottom `-` border and a shell-style
+prompt marker. The user prompt block border length is the smallest length that
+fully covers the rendered prompt text in that block by terminal cell width,
+including the `> ` prefix on the first line, two-space indentation on
+continuation lines, and double-width characters such as Chinese text. For
+multiline prompts, only the first line uses `> ` and following lines are
+indented by two spaces so prompt text remains aligned:
+
+```text
+
+--------------
+> line 1
+  line 2
+  line 3
+--------------
+```
+
 Model output rules:
 
 - during streaming, text deltas append to the existing plain-text model block for that `model_call_id`; the view must not render each delta as a separate assistant message.
 - `model_call_id` is turn-local. A new submitted user message starts a new visible turn, so the view must not use a reused `model_call_id` from a previous turn to replace or append to that previous turn's assistant block.
 - TTY views may coalesce text deltas into bounded-rate application redraws to keep rendering efficient; coalescing must not change the accumulated model text or final `model_call_id` block replacement.
 - TTY streaming updates must be scoped to the active assistant block in the message list region. They must not rewrite previous user messages, previous assistant/tool/system blocks, the prompt input buffer, the current turn/status region, or the bottom status bar region.
+- TTY assistant blocks render a top `-` border, a `🔮 Assistant` header, one
+  blank line, and the current assistant text. Streaming deltas update only the
+  assistant text body within the same assistant block; they do not duplicate or
+  rewrite the header.
 - when a model call completes and accumulated text is at or below `max_markdown_render_chars`, the view must attempt to replace that same user-visible model block with rich Markdown rendering. Updating only an internal cache is insufficient.
 - final Markdown replacement in TTY mode must replace only the same assistant block in the message list region. It must not use terminal clearing sequences against the active prompt display and must not disturb prompt input or bottom status rendering.
 - if Markdown rendering fails, keep plain text.
@@ -225,26 +274,38 @@ Model output rules:
 - `stream_tool_call_started` is not rendered as a visible message block. The controller may store its `tool_call_id`, `model_call_id`, and `name` for later correlation only.
 - `stream_tool_call_completed` appends the visible tool call block with tool name, final status, and duration.
 - `stream_tool_result` appends a separate tool result preview block. Because the preceding completion block already displayed the tool name and status, the streamed result preview block must not repeat `tool: ...` or `status: ...`. It may keep `tool_call_id`, `model_call_id`, and correlated tool name in rendering metadata for tests or diagnostics. Tool rendering in Phase 0.5 does not perform in-place updates.
+- TTY system message blocks render a top `-` border, a `🤖 System` header, one
+  blank line, and the system message body. This includes `/status`, busy
+  messages, unsupported slash command messages, and streaming fallback
+  warnings.
+- TTY error message blocks render a top `-` border, a `❌ Error` header, one
+  blank line, and the error message body. This applies to both
+  `error_message` view events and direct `show_error(...)` calls.
 
 ## Tool Result Preview
 
 Tool calls render as independent blocks.
 
+TTY tool completion blocks render the tool name, duration, and success/failure
+state on one line. Successful `ok` or `completed` states use `🟢`; failed,
+timeout, cancelled, error, or otherwise non-success states use `🔴`.
+
 Example:
 
 ```text
-tool: read_file
-status: ok
-duration: 1.2s
+
+🟢 read_file (1.2s)
 ```
 
-Tool result preview renders as quoted text with truncation:
+Tool result preview renders as quoted text with truncation. In TTY mode, every
+preview line is indented by four spaces and the preview block does not repeat
+the already displayed tool name or status:
 
 ```text
-> line 1
-> line 2
-> ...
-> [truncated: showing 10 of 325 lines, full output saved as artifact art_xxx]
+    > line 1
+    > line 2
+    > ...
+    > [truncated: showing 10 of 325 lines, full output saved as artifact art_xxx]
 ```
 
 When preview truncation happens, the `[truncated: ...]` line is mandatory. A bare `> ...` marker without the following truncation detail is incomplete UI output.
@@ -298,7 +359,7 @@ For streamed tools, the controller correlates tool display state by `tool_call_i
 
 Every submitted user prompt has a turn status.
 
-Turn status is stable UI state, not message-list content. In TTY TUI mode the view displays the current turn status in the bottom status region below the message list and above the input prompt. The bottom status region remains visible before submission, while a submitted turn is running, and after the turn completes. Repeated updates for the same turn replace the displayed status in place and must not append new message blocks.
+Turn status is stable UI state, not message-list content. In TTY TUI mode the view displays the current turn status in the bottom status region below the message list and above the input prompt. The bottom status region must have one blank spacer row above it so turn/status text is visually separated from the message list. The bottom status region remains visible before submission, while a submitted turn is running, and after the turn completes. Repeated updates for the same turn replace the displayed status in place and must not append new message blocks.
 
 The bottom status region must remain visually stable while model text streams. Stream text deltas must not change bottom status state or bottom status text. A full application redraw may occur for message-list changes, but it must preserve the bottom status region content unless the rendered bottom status text changed.
 

@@ -87,6 +87,12 @@ def _render_message_viewport(view: object, *, width: int = 80, height: int = 5) 
     )
 
 
+def _render_message_viewport_lines(
+    view: object, *, width: int = 80, height: int = 5
+) -> list[str]:
+    return _render_message_viewport(view, width=width, height=height).splitlines()
+
+
 def test_prompt_toolkit_view_renders_welcome_messages_status_and_close_summary() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
@@ -135,10 +141,10 @@ def test_prompt_toolkit_view_renders_welcome_messages_status_and_close_summary()
     assert "debug-agent 1.2.3" in rendered
     assert "model: fake-model" in rendered
     assert "workspace: /repo" in rendered
-    assert "you: hello" in rendered
+    assert "\n-------\n> hello\n-------" in rendered
     assert "answer" in rendered
-    assert "system: status ok" in rendered
-    assert "error: failed" in rendered
+    assert "🤖 System\n\nstatus ok" in rendered
+    assert "❌ Error\n\nfailed" in rendered
     assert "turn 1: completed 2s" in rendered
     assert "tokens: 999 input, 1.0k output, unavailable total" in rendered
     assert "session sess_full" not in rendered
@@ -235,9 +241,10 @@ def test_prompt_toolkit_view_renders_tool_blocks_separately() -> None:
     )
 
     rendered = view.rendered_text()
-    assert "tool: read_file" in rendered
-    assert "status: ok" in rendered
-    assert "> line 1" in rendered
+    assert "🟢 read_file" in rendered
+    assert "tool: read_file" not in rendered
+    assert "status: ok" not in rendered
+    assert "    > line 1" in rendered
     assert "artifacts: art_1" in rendered
 
 
@@ -285,13 +292,14 @@ def test_prompt_toolkit_view_appends_tool_completion_and_result_blocks() -> None
     )
 
     rendered = view.rendered_text()
-    assert rendered.count("tool: git_status") == 1
+    assert rendered.count("🟢 git_status (1.2s)") == 1
+    assert "tool: git_status" not in rendered
     assert "tool: unknown" not in rendered
     assert "status: running" not in rendered
-    assert "status: ok" in rendered
+    assert "status: ok" not in rendered
     assert "status: result" not in rendered
-    assert "duration: 1.2s" in rendered
-    assert "> M file.py" in rendered
+    assert "duration: 1.2s" not in rendered
+    assert "    > M file.py" in rendered
 
 
 def test_prompt_toolkit_view_truncated_tool_result_includes_detail_line() -> None:
@@ -318,8 +326,97 @@ def test_prompt_toolkit_view_truncated_tool_result_includes_detail_line() -> Non
     )
 
     rendered = view.rendered_text()
-    assert "> ..." in rendered
-    assert "> [truncated: showing 2 of 5 lines]" in rendered
+    assert "    > ..." in rendered
+    assert "    > [truncated: showing 2 of 5 lines]" in rendered
+
+
+def test_prompt_toolkit_view_formats_multiline_user_message_like_shell_block() -> None:
+    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+
+    view = PromptToolkitReplView()
+
+    view.append_user_message("line 1\nline 2\nline 3")
+
+    rendered = view._message_region_text()
+    assert "\n--------\n> line 1\n  line 2\n  line 3\n--------" in rendered
+
+
+def test_prompt_toolkit_view_user_message_borders_cover_prompt_text_only() -> None:
+    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+
+    view = PromptToolkitReplView()
+
+    view.append_user_message("short\nmuch longer line")
+
+    rendered = view._message_region_text().splitlines()
+
+    assert rendered[1] == "-" * len("  much longer line")
+    assert rendered[2] == "> short"
+    assert rendered[3] == "  much longer line"
+    assert rendered[4] == "-" * len("  much longer line")
+
+
+def test_prompt_toolkit_view_user_message_border_uses_terminal_cell_width() -> None:
+    from prompt_toolkit.utils import get_cwidth
+
+    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+
+    view = PromptToolkitReplView()
+
+    view.append_user_message("你好，你能为我做什么？")
+
+    rendered = view._message_region_text().splitlines()
+    expected_width = get_cwidth("> 你好，你能为我做什么？")
+
+    assert rendered[1] == "-" * expected_width
+    assert rendered[2] == "> 你好，你能为我做什么？"
+    assert rendered[3] == "-" * expected_width
+
+
+def test_prompt_toolkit_view_formats_failed_tool_completion_with_red_indicator() -> None:
+    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+
+    view = PromptToolkitReplView()
+
+    view.append_view_event(
+        ReplViewEvent(
+            kind="tool_block",
+            payload={
+                "name": "run_tests",
+                "status": "failed",
+                "metadata": {
+                    "tool_name": "run_tests",
+                    "duration_ms": 100,
+                },
+            },
+        )
+    )
+
+    rendered = view.rendered_text()
+    assert "🔴 run_tests (0.1s)" in rendered
+    assert "status: failed" not in rendered
+
+
+def test_prompt_toolkit_view_formats_system_and_error_blocks_with_headers() -> None:
+    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+
+    view = PromptToolkitReplView()
+
+    view.append_view_event(
+        ReplViewEvent(kind="system_message", payload={"message": "status ok"})
+    )
+    view.append_view_event(
+        ReplViewEvent(kind="error_message", payload={"message": "bad stream"})
+    )
+    view.show_error("failed")
+
+    rendered = view.rendered_text()
+    assert "🤖 System\n\nstatus ok" in rendered
+    assert rendered.count("❌ Error") == 2
+    assert "❌ Error\n\nbad stream" in rendered
+    assert "❌ Error\n\nfailed" in rendered
+    assert "system: status ok" not in rendered
+    assert "error: failed" not in rendered
 
 
 def test_prompt_toolkit_view_does_not_clear_or_replace_tool_blocks(
@@ -344,7 +441,7 @@ def test_prompt_toolkit_view_does_not_clear_or_replace_tool_blocks(
         )
     )
 
-    assert "tool: git_status\nstatus: ok\nduration: 1.2s" in view.rendered_text()
+    assert "🟢 git_status (1.2s)" in view.rendered_text()
 
 
 def test_prompt_toolkit_view_keeps_large_model_text_plain() -> None:
@@ -388,7 +485,7 @@ def test_prompt_toolkit_view_updates_one_model_block_for_streaming_deltas() -> N
     )
 
     rendered = view.rendered_text()
-    assert rendered.count("assistant:") == 1
+    assert rendered.count("🔮 Assistant") == 1
     assert "partial text" not in rendered
     assert "final answer" in rendered
 
@@ -420,11 +517,11 @@ def test_prompt_toolkit_view_reused_model_call_id_after_user_message_starts_new_
     )
 
     rendered = view.rendered_text()
-    assert "you: first" in rendered
-    assert "assistant: one" in rendered
-    assert "you: second" in rendered
-    assert "assistant: two" in rendered
-    assert rendered.index("you: second") < rendered.index("assistant: two")
+    assert "> first" in rendered
+    assert "one" in rendered
+    assert "> second" in rendered
+    assert "two" in rendered
+    assert rendered.index("> second") < rendered.rindex("🔮 Assistant")
 
 
 def test_prompt_toolkit_view_streaming_delta_updates_layout_message_model_only(
@@ -449,8 +546,8 @@ def test_prompt_toolkit_view_streaming_delta_updates_layout_message_model_only(
 
     view.flush_pending_model_output(force=True)
 
-    assert "assistant: hello" in view.rendered_text()
-    assert view._message_region_text().count("assistant:") == 1
+    assert "hello" in view.rendered_text()
+    assert view._message_region_text().count("🔮 Assistant") == 1
 
 
 def test_prompt_toolkit_view_streaming_redraw_preserves_bottom_status_region(
@@ -531,7 +628,7 @@ def test_prompt_toolkit_view_streaming_redraw_does_not_emit_terminal_writes(
     )
     view.flush_pending_model_output(force=True)
 
-    assert "assistant: hello" in view.rendered_text()
+    assert "hello" in view.rendered_text()
 
 
 def test_prompt_toolkit_view_disables_prompt_buffer_edits_while_turn_runs() -> None:
@@ -595,7 +692,7 @@ def test_prompt_toolkit_view_streaming_delta_keeps_literal_markdown_in_layout(
     view.flush_pending_model_output(force=True)
 
     assert view._message_region_text().splitlines()[-4:] == [
-        "assistant: | 文件 | 状态 |",
+        "| 文件 | 状态 |",
         "| --- | --- |",
         "- `a.py`",
         "- `b.py`",
@@ -635,7 +732,7 @@ def test_prompt_toolkit_view_replaces_final_markdown_in_layout_without_terminal_
         )
     )
 
-    assert "assistant: final" in view.rendered_text()
+    assert "🔮 Assistant\n\nfinal" in view.rendered_text()
 
 
 def test_prompt_toolkit_view_input_history_and_multiline_submission() -> None:
@@ -775,6 +872,36 @@ def test_prompt_toolkit_view_submit_resets_input_region_to_one_line() -> None:
     assert view._input_region_dimension().max == 1
 
 
+def test_prompt_toolkit_view_input_borders_do_not_count_toward_buffer_height() -> None:
+    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+
+    view = PromptToolkitReplView()
+
+    assert view._input_region_height() == 1
+    assert view._input_shell_height() == 3
+
+    view.insert_input_newline()
+    view.insert_input_newline()
+
+    assert view._input_region_height() == 3
+    assert view._input_shell_height() == 5
+
+
+def test_prompt_toolkit_view_backspace_line_removal_shrinks_input_region() -> None:
+    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+
+    view = PromptToolkitReplView()
+    view._input_buffer.text = "line 1\nline 2\nline 3"
+    view._input_buffer.cursor_position = len(view._input_buffer.text)
+
+    assert view._input_region_height() == 3
+
+    view._input_buffer.text = "line 1"
+    view._input_buffer.cursor_position = len(view._input_buffer.text)
+
+    assert view._input_region_height() == 1
+
+
 def test_prompt_toolkit_view_input_height_changes_keep_latest_message_visible() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
@@ -858,15 +985,19 @@ def test_prompt_toolkit_view_follow_latest_renders_existing_message_viewport() -
         )
     )
 
-    rendered = _render_message_viewport(view, height=8)
+    rendered = _render_message_viewport(view, height=16)
 
     assert "debug-agent 1.2.3" in rendered
-    assert "you: hello" in rendered
-    assert "assistant: answer" in rendered
+    assert "> hello" in rendered
+    assert "🔮 Assistant" in rendered
+    assert "answer" in rendered
 
 
 def test_prompt_toolkit_view_mouse_scroll_events_scroll_message_region() -> None:
-    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+    from debug_agent.cli.prompt_toolkit_view import (
+        PromptToolkitReplView,
+        message_scroll_step_lines,
+    )
 
     view = PromptToolkitReplView()
 
@@ -877,11 +1008,63 @@ def test_prompt_toolkit_view_mouse_scroll_events_scroll_message_region() -> None
     )
 
     assert handled is None
-    assert view._message_region_scroll_offset() > 0
+    assert view._message_region_scroll_offset() == message_scroll_step_lines
 
     view.handle_message_region_mouse_event(_FakeMouseEvent(MouseEventType.SCROLL_UP))
 
     assert view._message_region_scroll_offset() == 0
+
+
+def test_prompt_toolkit_view_page_scroll_uses_larger_step_than_mouse_scroll() -> None:
+    from debug_agent.cli.prompt_toolkit_view import (
+        PromptToolkitReplView,
+        message_scroll_step_lines,
+        message_scroll_step_page,
+    )
+
+    view = PromptToolkitReplView()
+
+    assert message_scroll_step_lines == 2
+    assert message_scroll_step_page == 10
+
+    view.handle_message_region_mouse_event(_FakeMouseEvent(MouseEventType.SCROLL_DOWN))
+    assert view._message_region_scroll_offset() == 2
+
+    view.scroll_message_region_down()
+    assert view._message_region_scroll_offset() == 12
+
+
+def test_prompt_toolkit_view_welcome_panel_uses_ascii_border() -> None:
+    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+
+    view = PromptToolkitReplView()
+
+    view.show_welcome(
+        WelcomeSnapshot(
+            tool_name="debug-agent",
+            version="1.2.3",
+            model="fake-model",
+            workspace_root="/repo",
+            approval_mode="normal",
+            session_id_short="sess_123",
+        )
+    )
+
+    lines = view._message_region_text().splitlines()
+    assert lines[0].startswith("+")
+    assert set(lines[0]) <= {"+", "-"}
+    assert lines[-1] == lines[0]
+    assert "| debug-agent 1.2.3" in lines[1]
+
+
+def test_prompt_toolkit_view_turn_status_has_spacer_above_region() -> None:
+    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+
+    view = PromptToolkitReplView()
+
+    assert view._turn_status_spacer_height() == 1
+    view.set_turn_status(1, "running", 2)
+    assert "\n\nturn 1: running 2s" not in view.rendered_text()
 
 
 def test_prompt_toolkit_view_exit_is_idempotent_after_slash_exit() -> None:

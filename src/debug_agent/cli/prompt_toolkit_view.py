@@ -16,6 +16,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.layout import Layout
 from prompt_toolkit.layout.scrollable_pane import ScrollablePane
 from prompt_toolkit.mouse_events import MouseEventType
+from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.markdown import Markdown
 
@@ -31,6 +32,8 @@ from debug_agent.cli.repl_view import (
 
 max_markdown_render_chars = 50_000
 stream_flush_interval_seconds = 0.25
+message_scroll_step_lines = 2
+message_scroll_step_page = 10
 
 
 class _MessageScrollablePane(ScrollablePane):
@@ -115,6 +118,7 @@ class PromptToolkitReplView:
             multiline=True,
             read_only=Condition(lambda: not self._input_enabled),
         )
+        self._input_buffer.on_text_changed += self._handle_input_text_changed
         self._application = self._build_application()
 
     def run(self, controller: object) -> int:
@@ -141,17 +145,7 @@ class PromptToolkitReplView:
         return exit_code
 
     def show_welcome(self, snapshot: WelcomeSnapshot) -> None:
-        self._append(
-            "\n".join(
-                [
-                    f"{snapshot.tool_name} {snapshot.version}",
-                    f"model: {snapshot.model}",
-                    f"workspace: {snapshot.workspace_root}",
-                    f"approval: {snapshot.approval_mode}",
-                    f"session: {snapshot.session_id_short}",
-                ]
-            )
-        )
+        self._append(_format_welcome_panel(snapshot))
 
     def set_input_enabled(self, enabled: bool) -> None:
         self._input_enabled = enabled
@@ -159,7 +153,7 @@ class PromptToolkitReplView:
 
     def append_user_message(self, message: str) -> None:
         self._reset_turn_local_model_state()
-        self._append(f"you: {message}")
+        self._append(_format_user_message(message))
 
     def append_view_event(self, event: ReplViewEvent) -> None:
         if event.kind == "model_text_delta":
@@ -179,10 +173,14 @@ class PromptToolkitReplView:
             self._append_or_replace_tool_block(event.payload)
             return
         if event.kind == "system_message":
-            self._append(f"system: {event.payload.get('message', '')}")
+            self._append(
+                _format_labeled_message("🤖 System", event.payload.get("message", ""))
+            )
             return
         if event.kind == "error_message":
-            self._append(f"error: {event.payload.get('message', '')}")
+            self._append(
+                _format_labeled_message("❌ Error", event.payload.get("message", ""))
+            )
 
     def set_turn_status(
         self, turn_id: int, status: str, elapsed_seconds: int
@@ -200,7 +198,7 @@ class PromptToolkitReplView:
         self._exit_application()
 
     def show_error(self, message: str) -> None:
-        self._append(f"error: {message}")
+        self._append(_format_labeled_message("❌ Error", message))
 
     def rendered_text(self) -> str:
         parts = [self._message_region_text()]
@@ -255,23 +253,35 @@ class PromptToolkitReplView:
             self._exit_application(getattr(event, "app", None))
 
     def scroll_message_region_down(self) -> None:
-        self._message_region_container.vertical_scroll += 10
-        self._invalidate()
+        self._scroll_message_region_down(message_scroll_step_page)
 
     def scroll_message_region_up(self) -> None:
+        self._scroll_message_region_up(message_scroll_step_page)
+
+    def scroll_message_region_line_down(self) -> None:
+        self._scroll_message_region_down(message_scroll_step_lines)
+
+    def scroll_message_region_line_up(self) -> None:
+        self._scroll_message_region_up(message_scroll_step_lines)
+
+    def _scroll_message_region_down(self, step: int) -> None:
+        self._message_region_container.vertical_scroll += step
+        self._invalidate()
+
+    def _scroll_message_region_up(self, step: int) -> None:
         self._message_region_follow_latest = False
         self._message_region_container.vertical_scroll = max(
             0,
-            self._message_region_container.vertical_scroll - 10,
+            self._message_region_container.vertical_scroll - step,
         )
         self._invalidate()
 
     def handle_message_region_mouse_event(self, event: Any) -> None:
         if event.event_type == MouseEventType.SCROLL_DOWN:
-            self.scroll_message_region_down()
+            self.scroll_message_region_line_down()
             return None
         if event.event_type == MouseEventType.SCROLL_UP:
-            self.scroll_message_region_up()
+            self.scroll_message_region_line_up()
             return None
         return None
 
@@ -290,7 +300,7 @@ class PromptToolkitReplView:
             show_scrollbar=True,
             display_arrows=False,
         )
-        self._input_region = VSplit(
+        input_buffer_region = VSplit(
             [
                 Window(
                     FormattedTextControl(lambda: HTML("<b>&gt;</b> ")),
@@ -306,9 +316,22 @@ class PromptToolkitReplView:
             ],
             height=self._input_region_dimension,
         )
+        self._input_region = HSplit(
+            [
+                Window(height=1, char="-", always_hide_cursor=True),
+                input_buffer_region,
+                Window(height=1, char="-", always_hide_cursor=True),
+            ],
+            height=self._input_shell_dimension,
+        )
         root = HSplit(
             [
                 self._message_region_container,
+                Window(
+                    height=self._turn_status_spacer_height,
+                    dont_extend_height=True,
+                    always_hide_cursor=True,
+                ),
                 Window(
                     self._turn_status_control,
                     height=1,
@@ -378,13 +401,13 @@ class PromptToolkitReplView:
             self._messages[index] = f"{self._messages[index]}{text}"
         else:
             self._model_message_indexes[model_call_id] = len(self._messages)
-            self._messages.append(f"assistant: {text}")
+            self._messages.append(_format_assistant_message(text))
         self._last_stream_flush_at = monotonic()
         self._follow_latest_message_if_needed()
         self._mark_dirty()
 
     def _replace_or_append_model_output(self, model_call_id: str, text: str) -> None:
-        message = f"assistant: {text}"
+        message = _format_assistant_message(text)
         if model_call_id in self._model_message_indexes:
             self._messages[self._model_message_indexes[model_call_id]] = message
             self._follow_latest_message_if_needed()
@@ -446,6 +469,15 @@ class PromptToolkitReplView:
     def _input_region_dimension(self) -> Dimension:
         return Dimension.exact(self._input_region_height())
 
+    def _input_shell_height(self) -> int:
+        return self._input_region_height() + 2
+
+    def _input_shell_dimension(self) -> Dimension:
+        return Dimension.exact(self._input_shell_height())
+
+    def _turn_status_spacer_height(self) -> int:
+        return 1
+
     def _sync_input_region_height(self) -> None:
         line_count = self._input_buffer.text.count("\n") + 1
         self._input_visible_lines = min(5, max(1, line_count))
@@ -468,6 +500,9 @@ class PromptToolkitReplView:
     def _replace_input_from_history(self, value: str | None) -> None:
         self._input_buffer.text = value or ""
         self._input_buffer.cursor_position = len(self._input_buffer.text)
+        self._sync_input_region_height()
+
+    def _handle_input_text_changed(self, _event: object) -> None:
         self._sync_input_region_height()
 
     def _handle_prompt_enter_event(self, event: Any) -> None:
@@ -553,6 +588,39 @@ def _format_status_bar(snapshot: StatusBarSnapshot) -> str:
     )
 
 
+def _format_welcome_panel(snapshot: WelcomeSnapshot) -> str:
+    lines = [
+        f"{snapshot.tool_name} {snapshot.version}",
+        f"model: {snapshot.model}",
+        f"workspace: {snapshot.workspace_root}",
+        f"approval: {snapshot.approval_mode}",
+        f"session: {snapshot.session_id_short}",
+    ]
+    width = max(len(line) for line in lines)
+    border = f"+-{'-' * width}-+"
+    body = [f"| {line.ljust(width)} |" for line in lines]
+    return "\n".join([border, *body, border])
+
+
+message_block_border = "--------------"
+
+
+def _format_user_message(message: str) -> str:
+    lines = str(message).splitlines() or [""]
+    body = [f"> {lines[0]}"]
+    body.extend(f"  {line}" for line in lines[1:])
+    border = "-" * max(get_cwidth(line) for line in body)
+    return "\n".join(["", border, *body, border])
+
+
+def _format_assistant_message(text: str) -> str:
+    return _format_labeled_message("🔮 Assistant", text)
+
+
+def _format_labeled_message(label: str, text: object) -> str:
+    return "\n".join(["", message_block_border, label, "", str(text)])
+
+
 def _format_terminal_summary(summary: SessionCloseSummary) -> str:
     status = "exit" if summary.status == "closed" else summary.status
     lines = [f"session {summary.session_id} {status}."]
@@ -566,19 +634,27 @@ def _format_tool_block(payload: dict) -> str:
     status = payload.get("status") or "unknown"
     preview = payload.get("preview")
     if preview is not None and status == "result":
-        lines = _preview_lines(preview)
+        lines = _indented_preview_lines(preview)
         if preview.artifact_ids:
-            lines.append(f"artifacts: {', '.join(preview.artifact_ids)}")
+            lines.append(f"    artifacts: {', '.join(preview.artifact_ids)}")
         return "\n".join(lines)
-    lines = [f"tool: {tool_name}", f"status: {status}"]
-    duration = _format_duration(metadata.get("duration_ms"))
-    if duration is not None:
-        lines.append(f"duration: {duration}")
+    lines = ["", _format_tool_summary(tool_name, status, metadata)]
     if preview is not None:
-        lines.extend(_preview_lines(preview))
+        lines.extend(_indented_preview_lines(preview))
         if preview.artifact_ids:
-            lines.append(f"artifacts: {', '.join(preview.artifact_ids)}")
+            lines.append(f"    artifacts: {', '.join(preview.artifact_ids)}")
     return "\n".join(lines)
+
+
+def _format_tool_summary(tool_name: str, status: object, metadata: dict) -> str:
+    indicator = "🟢" if str(status) in {"ok", "completed"} else "🔴"
+    duration = _format_duration(metadata.get("duration_ms"))
+    suffix = "" if duration is None else f" ({duration})"
+    return f"{indicator} {tool_name}{suffix}"
+
+
+def _indented_preview_lines(preview: object) -> list[str]:
+    return [f"    {line}" for line in _preview_lines(preview)]
 
 
 def _preview_lines(preview: object) -> list[str]:
