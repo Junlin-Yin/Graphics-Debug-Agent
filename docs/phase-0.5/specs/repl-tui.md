@@ -35,11 +35,28 @@ prompt_toolkit `Application` with explicit, independently rendered UI regions:
 - prompt input buffer region
 - bottom status bar region
 
+The TTY application must use the terminal alternate screen. While it is active,
+the terminal viewport is owned by the TUI application rather than by the
+terminal's normal linear transcript. The TUI must not rely on terminal scrollback
+for message history visibility.
+
 The TTY view must keep an in-memory view model for visible messages. Rendering
 updates mutate that view model and request an application redraw. Streaming
 model text, final Markdown replacement, tool blocks, system messages, and error
 messages must not be written directly to stdout, stderr, `write_raw`, or other
 linear terminal transcript paths while the prompt application is active.
+
+The message list region must support scrolling or an equivalent layout mechanism
+that keeps older visible messages reachable after the message list exceeds the
+available terminal height. Long message history must not be silently discarded or
+made unreachable by viewport clipping.
+
+Mouse wheel, macOS trackpad scrolling, PageUp/PageDown, or equivalent
+application-level scrolling controls must operate on the TUI message list
+region, not on terminal-native scrollback, while the TTY application is active.
+Phase 0.5 supports these pointer events only for message-list scrolling; it does
+not add general mouse interaction such as clickable panes, selection behavior,
+or message folding.
 
 ```python
 class ReplController:
@@ -112,8 +129,14 @@ The input area uses a shell-style prompt beginning with `>`.
 
 Minimum behavior:
 
-- single-line input.
+- bounded multiline input in TTY TUI mode, with a minimum visible height of 1
+  line and a maximum visible height of 5 lines.
 - `Ctrl+J` inserts a newline.
+- the prompt input region starts each editable prompt at 1 visible line.
+- `Ctrl+J` grows the prompt input region upward by visible line count until it
+  reaches the 5-line maximum.
+- submitting a prompt resets the prompt input region to the initial 1 visible
+  line state.
 - `Shift+Enter` inserts a newline on terminals where prompt_toolkit can detect it.
 - `Enter` submits.
 - up/down navigates current-session prompt history.
@@ -122,7 +145,17 @@ Minimum behavior:
 - the input area is visually distinct from normal output.
 - in TTY TUI mode, disabling input submission must make the prompt input buffer non-editable for ordinary typing while a turn is running.
 - in TTY TUI mode, disabling input submission must not remove the bottom input/status region; the bottom status bar remains visible while the turn is running and continues to update in place.
-- in TTY TUI mode, up/down history navigation must be wired to the active prompt input buffer, replacing the buffer text with the selected current-session history item and placing the cursor at the end.
+- in TTY TUI mode, the prompt input region owns its current visible height.
+  Message-list growth must not shrink or overwrite the current prompt input
+  height.
+- in TTY TUI mode, prompt input height changes caused by `Ctrl+J`, prompt
+  submission reset, history replacement, or buffer clearing must trigger a
+  layout redraw and keep the newest message visible unless the user has
+  intentionally scrolled away from the newest message.
+- in TTY TUI mode, up/down history navigation must be wired to the active prompt input buffer only when the input cursor is at the end of the buffer.
+- in TTY TUI mode, when the cursor is not at the end of the prompt input buffer, up/down must perform normal in-buffer cursor movement instead of prompt history navigation.
+- in TTY TUI mode, history navigation replaces the buffer text with the selected current-session history item and places the cursor at the end.
+- in TTY TUI mode, `Ctrl+C` must be bound to the existing `ReplController.on_interrupt()` path. Phase 0.5 does not change the persisted interrupt contract.
 
 History rules:
 
@@ -156,6 +189,25 @@ The message list displays:
 - tool result preview blocks.
 - slash command results.
 - system, error, interrupt, and completion status messages.
+
+Message list rules:
+
+- TTY message history must remain reachable after it exceeds the terminal
+  viewport height.
+- Adding new message blocks or streaming deltas must not discard older visible
+  message blocks from the in-memory view model.
+- Adding new message blocks or streaming deltas must keep the newest message
+  visible when the message list is already following the newest message.
+- If the prompt input region changes height and reduces or increases the
+  message-list viewport, the message list must refresh its scroll position so
+  the newest message remains visible when following the newest message.
+- The message-list scroll position must always remain within the real rendered
+  content range. Follow-newest behavior must not use an unbounded or sentinel
+  scroll offset that can render blank viewport rows while welcome or message
+  content exists in the in-memory view model.
+- In full-screen alternate-screen TTY mode, message history visibility is owned
+  by the TUI message list. Terminal-native scrollback is not an acceptance path
+  for viewing in-session message history.
 
 Model output rules:
 
@@ -252,6 +304,37 @@ The bottom status region must remain visually stable while model text streams. S
 
 The prompt input buffer and bottom status toolbar are separate prompt_toolkit-controlled UI regions. Streaming model text and message-list updates must not render through those regions, and bottom status updates must not append to or rewrite the message list.
 
+`/exit` and TTY `Ctrl+C` must close the TTY application through a single
+idempotent application shutdown path. Rendering the session terminal summary
+must not trigger duplicate `Application.exit(...)` calls or surface
+prompt_toolkit return-value errors to the user.
+
+In full-screen alternate-screen TTY mode, `/exit` and TTY `Ctrl+C` terminal
+summaries are printed only after the TUI application exits back to the terminal's
+normal screen. They must not be rendered solely inside the alternate-screen
+message list, because that content is not retained in terminal-native
+scrollback after application exit.
+
+TTY `/exit` prints this terminal summary to stdout after leaving the alternate
+screen:
+
+```text
+session <session-name> exit.
+trace: debug-agent trace <session-name>
+```
+
+TTY `Ctrl+C` prints this terminal summary to stdout after leaving the alternate
+screen:
+
+```text
+session <session-name> cancelled.
+trace: debug-agent trace <session-name>
+```
+
+`<session-name>` is the full runtime `Session.session_id`, matching the existing
+trace command input. This terminal summary is presentation output only; it does
+not change runtime persistence semantics.
+
 While the prompt_toolkit application is active, the TTY view must not maintain
 streaming output by writing visible text directly to the terminal transcript,
 then repairing the prompt with bottom-toolbar redraws. Streaming and final
@@ -282,7 +365,7 @@ During active execution, ordinary user prompts are rejected and shown as system 
 
 Recoverable adapter failures scoped to one prompt turn, such as the Phase 0 tool-call loop iteration limit, display the turn as `failed` and append an error message, but they must not terminalize the REPL session or prompt run. The controller must leave the session database open, keep workspace ownership active, re-enable input, and allow the next user prompt in the same session.
 
-`Ctrl+C` in a TTY REPL exits the current session as a terminal cancellation using the Phase 0 runtime rule: persist `failed` with `error_class=cancelled`, write an error checkpoint when session/run state exists, release workspace ownership, and return a non-zero exit code. Phase 0.5 does not add mid-call cancellation propagation; if the interrupt is observed while a turn is active, terminal marking happens through the existing safe-boundary runtime path.
+`Ctrl+C` in a TTY REPL exits the current session as a terminal cancellation using the Phase 0 runtime rule: persist `failed` with `error_class=cancelled`, write an error checkpoint when session/run state exists, release workspace ownership, return a non-zero exit code, and print the post-TUI terminal summary defined above. Phase 0.5 does not add mid-call cancellation propagation; if the interrupt is observed while a turn is active, terminal marking happens through the existing safe-boundary runtime path.
 
 ## Status Bar
 

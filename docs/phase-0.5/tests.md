@@ -26,6 +26,9 @@
 - reused turn-local `model_call_id` values in later turns create a new assistant block after the later user message.
 - TTY model text deltas update the active assistant block in the prompt_toolkit application layout.
 - TTY model text deltas do not write visible streamed text through stdout, stderr, `write_raw`, or other linear terminal transcript paths while the prompt application is active.
+- TTY mode uses the terminal alternate screen and does not depend on terminal-native scrollback for in-session message history.
+- TTY message-list scrolling controls operate on the application message list region while the prompt application is active.
+- TTY message-list mouse wheel and macOS trackpad scroll events operate on the application message list region while the prompt application is active.
 - TTY model text deltas may coalesce application redraws without changing accumulated assistant text.
 - final Markdown rendering replaces the streamed assistant block for that `model_call_id`.
 - final Markdown rendering updates the user-visible TTY output, not only the view's internal message cache.
@@ -58,7 +61,23 @@
 - TTY bottom input/status region remains visible while input submission is disabled during a running turn.
 - TTY prompt input buffer is non-editable while input submission is disabled during a running turn.
 - TTY up/down keys replace the active prompt input buffer from current-session history and place the cursor at the end.
+- TTY up/down keys navigate current-session prompt history only when the input cursor is at the end of the buffer.
+- TTY up/down keys move the cursor within the prompt input buffer when the cursor is not at the end of the buffer.
 - TTY down navigation past the newest history entry clears the active prompt input buffer.
+- TTY `Ctrl+J` inserts a newline in the prompt input buffer and expands the visible input region up to 5 lines.
+- TTY prompt input region starts at 1 visible line for a new editable prompt.
+- TTY prompt submission resets the prompt input region to 1 visible line.
+- TTY prompt input height changes refresh the message list so the newest message remains visible when following the newest message.
+- TTY follow-newest message-list scrolling remains clamped to actual rendered content and never renders an empty message viewport while welcome or message content exists.
+- TTY message-list visibility tests cover prompt_toolkit application rendering, not only the view's internal message cache or helper text serialization.
+- TTY message-list growth does not shrink the prompt input region below its current visible height.
+- TTY multiline prompt input keeps the bottom status bar visible below the input region.
+- TTY `Ctrl+C` invokes the existing interrupt path and records terminal `failed/cancelled` state.
+- TTY `/exit` closes the application idempotently and does not raise a prompt_toolkit return-value error.
+- TTY `/exit` exits the alternate screen before printing `session <session-name> exit.` and `trace: debug-agent trace <session-name>` to stdout.
+- TTY `Ctrl+C` exits the alternate screen before printing `session <session-name> cancelled.` and `trace: debug-agent trace <session-name>` to stdout.
+- TTY message list content remains reachable after it exceeds the visible terminal height.
+- TTY message list keeps the newest message visible after message append, streaming delta, and prompt input height change when following the newest message.
 - TTY streaming assistant text redraws do not mutate prompt input buffer text or cursor position.
 - TTY streaming assistant text redraws do not change bottom status text unless the status snapshot or turn status changed.
 - TTY streaming assistant text redraws do not rewrite prior user, assistant, tool, system, or error blocks.
@@ -81,8 +100,14 @@
 ## Integration Tests
 
 - `debug-agent` in a TTY starts TUI and shows the welcome panel.
+- TTY REPL uses a full-screen alternate-screen application with application-owned message scrolling.
 - submitted prompt appears as a fixed user message.
 - input is disabled while a prompt turn is running.
+- multiline input grows visibly from 1 to at most 5 prompt input lines.
+- submitted multiline input resets visibly to 1 prompt input line.
+- macOS Terminal or iTerm2 trackpad scrolling scrolls the TUI message list in full-screen alternate-screen mode.
+- long message-list growth does not resize the prompt input region and keeps newest content visible when following the newest message.
+- welcome, submitted prompts, and assistant output remain visible through the actual prompt_toolkit message-list viewport when the message list is following newest content.
 - mock streaming model deltas render incrementally.
 - mock streaming model final text switches to Markdown rendering when allowed.
 - mock tool call start and completion render as tool blocks.
@@ -95,6 +120,9 @@
 - ordinary prompt during active execution is rejected and shown clearly.
 - TTY REPL `Ctrl+C` records terminal `failed/cancelled` state and releases workspace ownership.
 - `/exit` displays session closed and token summary.
+- TTY `/exit` exits without duplicate `Application.exit(...)` errors.
+- TTY `/exit` prints the post-TUI terminal summary to stdout after returning to the terminal's normal screen.
+- TTY `Ctrl+C` prints the post-TUI cancellation summary to stdout after returning to the terminal's normal screen.
 - active execution `/exit` does not introduce mid-call cancel propagation.
 - one-shot mode does not start TUI and keeps plain stdout.
 - non-TTY REPL uses `PlainReplView`.

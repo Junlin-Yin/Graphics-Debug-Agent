@@ -26,11 +26,24 @@ buffer, and bottom status bar. It must not use a `PromptSession.prompt()` loop
 as the primary TTY architecture once streaming is enabled, because that model
 does not provide strict region ownership for concurrent message-list updates.
 
+`PromptToolkitReplView` runs as a full-screen alternate-screen terminal
+application. While active, terminal-native scrollback is not the message history
+surface; the message list region owns in-session scrolling and history
+visibility.
+
 The TTY view owns an in-memory render model for visible messages. Controller
 view calls update that model and invalidate the application. Streaming deltas
 update only the active assistant block in the message list region; they must not
 write directly to stdout/stderr, prompt_toolkit `write_raw`, or ANSI-cleared
 terminal transcript output while the application is active.
+
+When `/exit` or TTY `Ctrl+C` terminates the session, the TTY application exits
+back to the terminal's normal screen before the CLI prints the terminal summary
+to stdout. `/exit` prints `session <session-name> exit.` followed by
+`trace: debug-agent trace <session-name>`. TTY `Ctrl+C` prints
+`session <session-name> cancelled.` followed by
+`trace: debug-agent trace <session-name>`. These summaries are presentation
+output and do not alter runtime persistence contracts.
 
 ### PlainReplView
 
@@ -113,6 +126,8 @@ debug-agent
 -> runtime returns AgentRunResult
 -> controller finalizes turn status and reenables input
 -> /exit closes the session at the runtime safe boundary
+-> PromptToolkitReplView exits the alternate screen
+-> CLI prints the post-TUI terminal summary
 ```
 
 ## Plain REPL Fallback Flow

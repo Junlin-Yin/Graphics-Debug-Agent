@@ -77,7 +77,7 @@ def _select_repl_view(
         and output_stream.isatty()
     ):
         try:
-            return PromptToolkitReplView()
+            return PromptToolkitReplView(output_stream=output_stream)
         except Exception as exc:
             print(
                 f"prompt_toolkit initialization failed; falling back to plain REPL: {exc}",

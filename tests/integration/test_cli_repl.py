@@ -291,10 +291,12 @@ def test_injected_io_repl_uses_plain_repl_view(tmp_path, monkeypatch) -> None:
 
 def test_tty_repl_selects_prompt_toolkit_view(tmp_path, monkeypatch) -> None:
     constructed: list[type[object]] = []
+    passed_output_streams: list[object] = []
 
     class RecordingPromptToolkitReplView:
         def __init__(self, **kwargs) -> None:
             constructed.append(type(self))
+            passed_output_streams.append(kwargs.get("output_stream"))
 
         def run(self, controller) -> int:
             controller.runtime.complete()
@@ -304,7 +306,8 @@ def test_tty_repl_selects_prompt_toolkit_view(tmp_path, monkeypatch) -> None:
         repl_module, "PromptToolkitReplView", RecordingPromptToolkitReplView
     )
     monkeypatch.setattr("sys.stdin", TtyStringIO("/exit\n"))
-    monkeypatch.setattr("sys.stdout", TtyStringIO())
+    stdout = TtyStringIO()
+    monkeypatch.setattr("sys.stdout", stdout)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
@@ -316,6 +319,7 @@ def test_tty_repl_selects_prompt_toolkit_view(tmp_path, monkeypatch) -> None:
 
     assert exit_code == 0
     assert constructed == [RecordingPromptToolkitReplView]
+    assert passed_output_streams == [stdout]
 
 
 def test_prompt_toolkit_initialization_failure_falls_back_to_plain_view(

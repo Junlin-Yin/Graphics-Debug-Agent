@@ -289,6 +289,9 @@ def test_tty_repl_ctrl_c_marks_failed_and_releases_ownership(
     from debug_agent.cli import repl as repl_module
 
     class InterruptingPromptToolkitView:
+        def __init__(self, **kwargs) -> None:
+            pass
+
         def run(self, controller) -> int:
             controller.on_interrupt()
             return controller.exit_code

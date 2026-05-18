@@ -30,6 +30,7 @@ Phase 0.5 is a `CLI Entrypoint / REPL UI` enhancement. It must not introduce a n
   - user message blocks.
   - streaming model text blocks.
   - strict TTY region isolation between message list, active assistant block, prompt input, turn/status display, and bottom status bar.
+  - application-owned message-list scrolling, including keyboard scrolling and terminal mouse wheel or trackpad scroll events.
   - basic Markdown final rendering for completed model text.
   - tool call and tool result blocks.
   - slash command result messages.
@@ -66,7 +67,8 @@ Phase 0.5 is a `CLI Entrypoint / REPL UI` enhancement. It must not introduce a n
 - complete Chinese IME support.
 - mid-call cancel propagation.
 - block-level incremental Markdown rendering.
-- mouse interaction, multi-pane layout, or message folding.
+- mouse interaction beyond terminal mouse wheel or trackpad scrolling for the TUI message list region.
+- multi-pane layout or message folding.
 - any change to Session, Run, RunEvent, Checkpoint, Artifact, ToolBroker, Approval, or Path Policy semantics.
 
 ## Minimum Runnable Slice For Complete Phase 0.5
@@ -141,9 +143,13 @@ Phase 0.5 is complete when all of these pass:
 - streaming model output updates only the active assistant block and does not overwrite prompt input, bottom status, turn status, or prior message blocks.
 - prompt history works with up/down navigation.
 - `Ctrl+J` multiline input works.
+- `Ctrl+J` grows the prompt input region from its initial 1 visible line up to at most 5 visible lines.
+- submitted prompts reset the prompt input region to its initial 1 visible line.
 - `Shift+Enter` multiline input is best-effort.
 - submitted user prompts remain fixed in the message list.
 - input is disabled while a turn is running.
+- prompt input region height remains stable when message-list content grows.
+- message-list updates and prompt input height changes keep the newest message visible unless the user has intentionally scrolled away from the newest message.
 - model output supports streaming display.
 - completed model text supports basic Markdown rendering with plain-text fallback.
 - tool calls and tool results render as separate blocks.

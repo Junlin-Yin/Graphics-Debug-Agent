@@ -330,7 +330,7 @@ Runnable state: TUI turns can render streaming observations or deterministic fal
 - [x] Confirm no one-shot, non-TTY, or injected-I/O regression.
 - [x] Confirm `run(...)` remains valid and covered.
 - [x] Confirm `stream(...)` is used only where TUI needs observations.
-- [ ] Run manual macOS Terminal or iTerm2 check for multiline input, history, long Markdown output, and long tool result preview.
+- [x] Run manual macOS Terminal or iTerm2 check for multiline input, history, long Markdown output, and long tool result preview.
 
 Review evidence:
 
@@ -363,24 +363,35 @@ This milestone supersedes the prior TTY streaming terminal-write approach for
 `PromptToolkitReplView`. It is required before Phase 0.5 can be treated as
 accepted after manual TTY verification.
 
-- [ ] Replace the active TTY view architecture with a prompt_toolkit `Application` layout.
-- [ ] Define separate layout regions for message list, current turn/status display, prompt input buffer, and bottom status bar.
-- [ ] Move visible message rendering behind an in-memory TTY view model owned by `PromptToolkitReplView`.
-- [ ] Ensure streaming text deltas update only the active assistant block in the message list view model.
-- [ ] Ensure final Markdown replacement updates only the same active assistant block.
-- [ ] Remove active-application streaming output paths that directly write visible text through stdout, stderr, prompt_toolkit `write_raw`, or ANSI-cleared terminal transcript output.
-- [ ] Preserve one-shot, non-TTY, and injected-I/O `PlainReplView` behavior.
-- [ ] Wire TTY up/down keys to current-session `PromptHistory` and replace the active prompt input buffer text.
-- [ ] Place the cursor at the end after history replacement.
-- [ ] Clear the input buffer when down navigation advances past the newest history item.
-- [ ] Ensure input remains non-editable while a turn is running.
-- [ ] Ensure streaming redraws preserve prompt input buffer text and cursor position.
-- [ ] Ensure streaming redraws preserve bottom status text unless status state changed.
-- [ ] Ensure streaming redraws do not rewrite prior user, assistant, tool, system, or error blocks.
-- [ ] Add or update unit tests for layout-backed message rendering, active assistant block updates, final Markdown block replacement, and history key binding behavior.
-- [ ] Add or update integration or PTY smoke coverage for streaming output isolation from prompt input and bottom status.
-- [ ] Run the narrow relevant Phase 0.5 verification commands from `docs/phase-0.5/operations.md`.
+- [x] Replace the active TTY view architecture with a prompt_toolkit `Application` layout.
+- [x] Define separate layout regions for message list, current turn/status display, prompt input buffer, and bottom status bar.
+- [x] Move visible message rendering behind an in-memory TTY view model owned by `PromptToolkitReplView`.
+- [x] Ensure streaming text deltas update only the active assistant block in the message list view model.
+- [x] Ensure final Markdown replacement updates only the same active assistant block.
+- [x] Remove active-application streaming output paths that directly write visible text through stdout, stderr, prompt_toolkit `write_raw`, or ANSI-cleared terminal transcript output.
+- [x] Preserve one-shot, non-TTY, and injected-I/O `PlainReplView` behavior.
+- [x] Wire TTY up/down keys to current-session `PromptHistory` and replace the active prompt input buffer text.
+- [x] Place the cursor at the end after history replacement.
+- [x] Clear the input buffer when down navigation advances past the newest history item.
+- [x] Ensure input remains non-editable while a turn is running.
+- [x] Ensure streaming redraws preserve prompt input buffer text and cursor position.
+- [x] Ensure streaming redraws preserve bottom status text unless status state changed.
+- [x] Ensure streaming redraws do not rewrite prior user, assistant, tool, system, or error blocks.
+- [x] Add or update unit tests for layout-backed message rendering, active assistant block updates, final Markdown block replacement, and history key binding behavior.
+- [x] Add or update integration or PTY smoke coverage for streaming output isolation from prompt input and bottom status.
+- [x] Run the narrow relevant Phase 0.5 verification commands from `docs/phase-0.5/operations.md`.
 - [ ] Run manual macOS Terminal or iTerm2 verification for streaming output, narrow wrapping, multiline input, and fast history navigation.
+- [x] Ensure the TTY message list can scroll or otherwise keep older message history reachable after the visible region is full.
+- [x] Ensure `/exit` uses an idempotent application shutdown path and does not raise duplicate `Application.exit(...)` return-value errors.
+- [x] Bind TTY `Ctrl+C` to the existing interrupt path without changing Phase 0.5 persisted interrupt semantics.
+- [x] Ensure `Ctrl+J` inserts a visible newline in a prompt input region that grows from 1 to at most 5 lines.
+- [x] Ensure TTY up/down keys navigate prompt history only when the input cursor is at the end of the buffer, and otherwise move within the input buffer.
+- [x] Add or update tests for scrollable message history, idempotent `/exit`, TTY `Ctrl+C`, visible `Ctrl+J` multiline input, and conditional up/down behavior.
+- [x] Switch TTY mode to a full-screen alternate-screen application with application-owned message-list scrolling.
+- [x] Ensure terminal-native scrollback is not required for viewing in-session TTY message history.
+- [x] Ensure TTY `/exit` exits the alternate screen before printing `session <session-name> exit.` and `trace: debug-agent trace <session-name>` to stdout.
+- [x] Ensure TTY `Ctrl+C` exits the alternate screen before printing `session <session-name> cancelled.` and `trace: debug-agent trace <session-name>` to stdout.
+- [x] Add or update tests for alternate-screen TTY mode, application-owned message scrolling, and post-TUI terminal summaries.
 
 Modified boundaries: `PromptToolkitReplView` and its tests only, unless a small
 controller hook adjustment is required to support application wakeups.
@@ -398,6 +409,102 @@ isolation cannot be completed without destabilizing Phase 0 behavior.
 
 Runnable state: TTY streaming output is isolated to the active assistant block,
 prompt history works through up/down keys, and fallback paths remain unchanged.
+
+## Milestone 12: Corrective TTY Scrolling And Input Height Stability
+
+This milestone addresses manual macOS TTY verification findings after the
+prompt_toolkit `Application` layout migration. It is required before Phase 0.5
+can be treated as accepted after manual TTY verification.
+
+- [x] Resolve the Phase 0.5 scope boundary so terminal mouse wheel and trackpad
+  events are explicitly allowed only for message-list scrolling.
+- [x] Keep the prompt input region's initial editable height at 1 visible line.
+- [x] Ensure `Ctrl+J` grows the prompt input region upward by visible line count
+  up to the existing 5-line maximum.
+- [x] Ensure prompt submission resets the prompt input region to 1 visible line.
+- [x] Ensure prompt input height changes trigger an application layout redraw.
+- [x] Ensure prompt input height changes keep the newest message visible when
+  the message list is following the newest message.
+- [x] Ensure appended messages and streaming deltas keep the newest message
+  visible when the message list is following the newest message.
+- [x] Ensure follow-newest message-list scrolling is clamped to actual rendered
+  content and cannot render a blank message viewport while welcome or message
+  content exists in the in-memory view model.
+- [x] Ensure message-list growth never shrinks or overwrites the current prompt
+  input region height.
+- [x] Bind terminal mouse wheel and macOS trackpad scroll events to the TUI
+  message list region, not to terminal-native scrollback.
+- [x] Preserve PageUp/PageDown or equivalent keyboard message-list scrolling.
+- [x] Add or update unit tests for input height initialization, `Ctrl+J`
+  growth, submit reset, layout redraw, newest-message follow behavior, and
+  message-list growth not shrinking input height.
+- [x] Add or update tests for mouse wheel or trackpad scroll event handling on
+  the message list region.
+- [x] Add renderer-level regression tests that render the prompt_toolkit
+  message-list viewport and verify welcome, submitted prompts, and assistant
+  output remain visible while following newest content.
+- [x] Run the narrow relevant Phase 0.5 verification commands from
+  `docs/phase-0.5/operations.md`.
+- [ ] Run manual macOS Terminal or iTerm2 verification for trackpad scrolling,
+  multiline prompt growth/reset, long message-list growth, and newest-message
+  visibility.
+
+Review evidence:
+
+- Added unit coverage for exact prompt input region height ownership, prompt
+  submission height reset, follow-latest refresh on input height changes,
+  appended-message follow behavior, and message-list mouse wheel or trackpad
+  scroll event handling.
+- `PromptToolkitReplView` now keeps prompt input visible height as explicit
+  state, uses an exact layout dimension for that state, refreshes the message
+  list when prompt height or message content changes, and handles
+  `SCROLL_UP`/`SCROLL_DOWN` pointer events on the message region.
+- Follow-newest message-list scrolling is now clamped during prompt_toolkit
+  viewport rendering, so the TUI cannot render a blank message viewport while
+  welcome or message content exists in the in-memory view model.
+- Added renderer-level unit coverage for the prompt_toolkit message-list
+  viewport showing welcome, submitted prompts, and assistant output while
+  following newest content.
+- Added unit coverage that scrolling down from a historical message-list
+  position advances through history without immediately jumping to the newest
+  message; follow-newest resumes only after the rendered viewport reaches the
+  bottom of the content.
+- Targeted red/green check completed for
+  `uv run pytest tests/unit/cli/test_prompt_toolkit_view.py::test_prompt_toolkit_view_follow_latest_renders_existing_message_viewport -q`:
+  failed before the fix with a blank rendered viewport, then passed after the
+  fix.
+- Targeted red/green check completed for
+  `uv run pytest tests/unit/cli/test_prompt_toolkit_view.py::test_prompt_toolkit_view_scroll_down_from_history_does_not_jump_to_latest -q`:
+  failed before the fix because scroll-down immediately restored follow-newest,
+  then passed after the fix.
+- Targeted TUI view check completed for
+  `uv run pytest tests/unit/cli/test_prompt_toolkit_view.py -q`: 39 passed.
+- Canonical narrow verification completed:
+  `uv run pytest tests/unit -v`: 187 passed.
+- Canonical narrow verification completed:
+  `uv run pytest tests/integration -v`: 26 passed.
+- Manual macOS Terminal or iTerm2 trackpad verification remains pending because
+  it requires an interactive terminal and physical or OS-level trackpad input.
+
+Modified boundaries: `PromptToolkitReplView`, its tests, and Phase 0.5 TUI
+documentation only.
+
+Invariants: no Session, Run, Event, Checkpoint, Artifact, ToolBroker, Approval,
+Path Policy, one-shot, non-TTY, injected-I/O, adapter, or persistence semantics
+change. Pointer support is limited to message-list scrolling and must not add
+general mouse interaction.
+
+Freeze/review checkpoint: do not implement this milestone until the updated
+documentation contract has been reviewed and accepted.
+
+Rollback: disable the new mouse wheel or trackpad message-list binding first;
+if input-height layout stability cannot be completed without destabilizing the
+TUI, disable TTY TUI selection and fall back to `PlainReplView`.
+
+Runnable state: TTY message-list scrolling works with keyboard and macOS
+trackpad input, prompt input remains bounded at 1-5 visible lines, prompt
+submission resets input height, and newest message visibility remains stable
+across message-list and input-height changes.
 
 ## Migration And Rollback Rules
 
