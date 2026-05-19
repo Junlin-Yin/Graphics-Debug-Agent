@@ -70,7 +70,7 @@ message_scroll_step_page = 10
 ```python
 class ReplController:
     def on_submit(self, text: str) -> None: ...
-    def on_slash_command(self, cmd: str) -> None: ...
+    def on_slash_command(self, cmd: str) -> bool: ...
     def on_interrupt(self) -> None: ...
     def on_agent_stream_event(self, event: AgentStreamEvent) -> None: ...
     def notify_event_ready(self) -> None: ...
@@ -159,6 +159,13 @@ Minimum behavior:
 - up/down navigates current-session prompt history.
 - submitted user input is appended to the message list.
 - input submission is disabled while a prompt turn is running.
+- disabled input means ordinary prompts and slash commands are not dispatched
+  while a prompt turn is running. Phase 0.5 has one input lane and does not
+  support a concurrent slash-command lane during active execution.
+- `ReplController.on_slash_command(...)` must also enforce the active-turn
+  boundary. If called while a prompt turn is running, it must not execute
+  `/status`, `/exit`, unknown slash-command handling, or any runtime state
+  transition. The method returns "continue running" to the view.
 - the input area is visually distinct from normal output.
 - in TTY TUI mode, the input area has a one-line top border and a one-line
   bottom border made from `-` characters. These border rows do not count toward
@@ -177,7 +184,7 @@ Minimum behavior:
 - in TTY TUI mode, up/down history navigation must be wired to the active prompt input buffer only when the input cursor is at the end of the buffer.
 - in TTY TUI mode, when the cursor is not at the end of the prompt input buffer, up/down must perform normal in-buffer cursor movement instead of prompt history navigation.
 - in TTY TUI mode, history navigation replaces the buffer text with the selected current-session history item and places the cursor at the end.
-- in TTY TUI mode, `Ctrl+C` must be bound to the existing `ReplController.on_interrupt()` path. Phase 0.5 does not change the persisted interrupt contract.
+- in TTY TUI mode, `Ctrl+C` may be bound to the existing `ReplController.on_interrupt()` path at a safe idle boundary. Phase 0.5 does not change the persisted interrupt contract and does not require active-run interruption.
 
 History rules:
 
@@ -422,11 +429,11 @@ Display statuses:
 
 Persisted run/session statuses remain governed by runtime contracts. `cancelled` maps to `failed` with `error_class=cancelled`. `timeout` maps to `failed` with `error_class=timeout`.
 
-During active execution, ordinary user prompts are rejected and shown as system or error messages. `/status` appends a system message and must not open a modal or replace the status bar.
+During active execution, the prompt input buffer is non-editable and submission is disabled. Ordinary user prompts and slash commands, including `/status` and `/exit`, are not dispatched while a prompt turn is running. The controller must preserve the same boundary if `on_slash_command(...)` is called directly during an active turn: it must not append `/status` output, must not call runtime completion or failure paths, must not show unknown-command output, and must return without ending the TUI application. Phase 0.5 must not add a second command lane, modal, or cancellation path for active turns.
 
 Recoverable adapter failures scoped to one prompt turn, such as the Phase 0 tool-call loop iteration limit, display the turn as `failed` and append an error message, but they must not terminalize the REPL session or prompt run. The controller must leave the session database open, keep workspace ownership active, re-enable input, and allow the next user prompt in the same session.
 
-`Ctrl+C` in a TTY REPL exits the current session as a terminal cancellation using the Phase 0 runtime rule: persist `failed` with `error_class=cancelled`, write an error checkpoint when session/run state exists, release workspace ownership, return a non-zero exit code, and print the post-TUI terminal summary defined above. Phase 0.5 does not add mid-call cancellation propagation; if the interrupt is observed while a turn is active, terminal marking happens through the existing safe-boundary runtime path.
+`Ctrl+C` in a TTY REPL may exit the current session as a terminal cancellation at a safe idle boundary using the Phase 0 runtime rule: persist `failed` with `error_class=cancelled`, write an error checkpoint when session/run state exists, release workspace ownership, return a non-zero exit code, and print the post-TUI terminal summary defined above. Phase 0.5 does not add mid-call cancellation propagation and does not guarantee immediate active-run interruption. The future behavior where the first `Ctrl+C` interrupts the active run and returns to user input, and a second `Ctrl+C` exits the session, is Phase 2 session-control scope unless a later phase document explicitly changes that boundary.
 
 ## Status Bar
 
@@ -468,15 +475,8 @@ Update timing:
 Normal exit:
 
 ```text
-session <session_id> closed.
-tokens used: <input_tokens> input, <output_tokens> output, <total_tokens> total
-```
-
-If usage is unavailable:
-
-```text
-session <session_id> closed.
-tokens used: unavailable
+session <session_id> exit.
+trace: debug-agent trace <session_id>
 ```
 
 Cancellation:

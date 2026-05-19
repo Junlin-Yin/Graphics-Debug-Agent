@@ -20,7 +20,7 @@ from debug_agent.runtime.orchestrator import ReplRuntime, RuntimeOrchestrator
 from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
-BUSY_MESSAGE = "Prompt run is already executing. Use /status or /exit."
+BUSY_MESSAGE = "Prompt run is already executing. Input is disabled."
 STREAMING_FALLBACK_MESSAGE = (
     "streaming unavailable for this model; using non-streaming response."
 )
@@ -124,6 +124,8 @@ class ReplController:
         self._active_thread.start()
 
     def on_slash_command(self, command: str) -> bool:
+        if self.is_executing:
+            return True
         if command == "/status":
             self._append_system_message("\n".join(self.runtime.status_lines()))
             return True
@@ -195,6 +197,7 @@ class ReplController:
         turn_id = self._active_turn_id or self._turn_counter or 1
         elapsed_seconds = self._elapsed_seconds()
         self._update_usage(result.usage)
+        should_reenable_input = True
         if result.status == "completed":
             if result.metadata.get("streaming_fallback"):
                 self._append_system_message(STREAMING_FALLBACK_MESSAGE)
@@ -205,12 +208,14 @@ class ReplController:
             message = result.error["message"] if result.error else "Prompt execution failed."
             if self.view is not None:
                 self.view.show_error(message)
+            should_reenable_input = True
         else:
             self.runtime.fail(result)
             self.exit_code = 1
             message = result.error["message"] if result.error else "Prompt execution failed."
             if self.view is not None:
                 self.view.show_error(message)
+            should_reenable_input = False
         if self.view is not None:
             self.view.set_turn_status(
                 turn_id,
@@ -218,7 +223,14 @@ class ReplController:
                 elapsed_seconds,
             )
             self.view.update_status_bar(self._status_bar_snapshot())
-            self.view.set_input_enabled(True)
+            self.view.set_input_enabled(should_reenable_input)
+            if not should_reenable_input:
+                self.view.show_session_closed(
+                    self._session_close_summary(
+                        _terminal_summary_status(result),
+                        _error_class(result),
+                    )
+                )
         self.is_executing = False
         self._active_turn_id = None
         self._active_turn_started_at = None
@@ -552,6 +564,17 @@ def _display_status(result: AgentRunResult) -> str:
         if error_class in {"cancelled", "timeout"}:
             return str(error_class)
     return result.status
+
+
+def _error_class(result: AgentRunResult) -> str | None:
+    if result.error is None:
+        return None
+    value = result.error.get("error_class")
+    return str(value) if value else None
+
+
+def _terminal_summary_status(result: AgentRunResult) -> str:
+    return "cancelled" if _error_class(result) == "cancelled" else "failed"
 
 
 def _is_turn_scoped_failure(result: AgentRunResult) -> bool:

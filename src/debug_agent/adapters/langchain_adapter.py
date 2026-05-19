@@ -393,7 +393,7 @@ def _stream_model_call(
     tool_call_chunks: list[dict[str, Any]] = []
     usage: dict[str, Any] = {}
     try:
-        for chunk in model.stream(messages):
+        for chunk in _stream_with_timeout(model, messages, request.timeout_seconds):
             chunk_text = _displayable_chunk_text(chunk)
             if chunk_text:
                 text_parts.append(chunk_text)
@@ -508,6 +508,52 @@ def _invoke_with_timeout(
     if status != "ok":
         raise RuntimeError(f"Unsupported model call result status: {status}")
     return value
+
+
+def _stream_with_timeout(
+    model: object,
+    messages: list[object],
+    timeout_seconds: int | float | None,
+):
+    if timeout_seconds is None or timeout_seconds <= 0:
+        yield from model.stream(messages)
+        return
+
+    result_queue: queue.Queue[tuple[str, object | None]] = queue.Queue()
+
+    def stream() -> None:
+        try:
+            for chunk in model.stream(messages):
+                result_queue.put(("chunk", chunk))
+            result_queue.put(("ok", None))
+        except BaseException as exc:
+            result_queue.put(("error", exc))
+
+    thread = threading.Thread(target=stream, daemon=True)
+    thread.start()
+    deadline = monotonic() + float(timeout_seconds)
+    while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"Model stream timed out after {timeout_seconds:g} seconds."
+            )
+        try:
+            status, value = result_queue.get(timeout=remaining)
+        except queue.Empty as exc:
+            raise TimeoutError(
+                f"Model stream timed out after {timeout_seconds:g} seconds."
+            ) from exc
+        if status == "chunk":
+            yield value
+            continue
+        if status == "ok":
+            return
+        if status == "error":
+            if not isinstance(value, BaseException):
+                raise RuntimeError("Model stream failed without returning an exception.")
+            raise value
+        raise RuntimeError(f"Unsupported model stream result status: {status}")
 
 
 def _record_model_failure(

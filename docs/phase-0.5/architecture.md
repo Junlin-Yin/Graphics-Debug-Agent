@@ -12,6 +12,12 @@ Coordinates user input, local slash commands, runtime turn execution, stream-eve
 
 The controller maps `AgentStreamEvent` into `ReplViewEvent`, snapshots, or direct view method calls before calling the view.
 
+The controller owns the active-turn command boundary. During active execution,
+slash-command entry points must not execute `/status`, `/exit`, unsupported
+command output, or runtime state transitions. The TTY view also disables the
+prompt buffer, but that presentation guard does not replace the controller
+boundary.
+
 ### ReplView
 
 Protocol boundary for REPL presentation. View implementations render controller-provided snapshots and view events. They must not read runtime state directly and must not consume `AgentStreamEvent`.

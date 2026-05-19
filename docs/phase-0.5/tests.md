@@ -89,7 +89,7 @@
 - TTY message-list visibility tests cover prompt_toolkit application rendering, not only the view's internal message cache or helper text serialization.
 - TTY message-list growth does not shrink the prompt input region below its current visible height.
 - TTY multiline prompt input keeps the bottom status bar visible below the input region.
-- TTY `Ctrl+C` invokes the existing interrupt path and records terminal `failed/cancelled` state.
+- TTY `Ctrl+C` invokes the existing interrupt path only at a safe idle boundary and records terminal `failed/cancelled` state there; Phase 0.5 does not require active-run interruption.
 - TTY `/exit` closes the application idempotently and does not raise a prompt_toolkit return-value error.
 - TTY `/exit` exits the alternate screen before printing `session <session-name> exit.` and `trace: debug-agent trace <session-name>` to stdout.
 - TTY `Ctrl+C` exits the alternate screen before printing `session <session-name> cancelled.` and `trace: debug-agent trace <session-name>` to stdout.
@@ -100,8 +100,7 @@
 - TTY streaming assistant text redraws do not rewrite prior user, assistant, tool, system, or error blocks.
 - truncated tool previews always include the `[truncated: ...]` detail line, not only a bare `> ...` marker.
 - session cumulative token usage aggregates best-effort provider usage.
-- session close summary formats known token usage.
-- session close summary formats unavailable token usage.
+- session close summary prints the post-TUI terminal summary after returning to the terminal's normal screen.
 - `agent_stream_callback` sends events to the controller queue.
 - controller queue draining maps events in order.
 - recoverable one-turn adapter failures display turn `failed`, keep the REPL session database open, and allow a later prompt in the same session.
@@ -109,7 +108,13 @@
 - non-streaming provider fallback uses `invoke()`.
 - non-streaming provider fallback sets `AgentRunResult.metadata["streaming_fallback"] = True`.
 - non-streaming provider fallback emits the warning at most once.
-- `/status` appends a TUI system message.
+- `/status` appends a TUI system message when submitted while the REPL is idle.
+- active turn input disablement prevents dispatch of ordinary prompts and slash commands.
+- direct `ReplController.on_slash_command("/status")` during an active turn does
+  not append status output or mutate runtime state.
+- direct `ReplController.on_slash_command("/exit")` during an active turn does
+  not call runtime completion, does not close the TUI application, and returns
+  "continue running".
 - prompt_toolkit initialization failure falls back to `PlainReplView`.
 - prompt_toolkit initialization failure emits at most one warning.
 - welcome version lookup failure displays `unknown`.
@@ -144,14 +149,15 @@
 - turn status updates while running and becomes final at completion.
 - timeout displays as `timeout` while persisted state remains `failed` with `error_class=timeout`.
 - cancellation displays as `cancelled` while persisted state remains `failed` with `error_class=cancelled`.
-- `/status` during active execution appends a system message.
-- ordinary prompt during active execution is rejected and shown clearly.
-- TTY REPL `Ctrl+C` records terminal `failed/cancelled` state and releases workspace ownership.
-- `/exit` displays session closed and token summary.
+- ordinary prompt and slash command submission during active execution are not dispatched while input is disabled.
+- direct controller slash-command calls during active execution are suppressed
+  without status output, session completion, or unknown-command messages.
+- TTY REPL `Ctrl+C` at a safe idle boundary records terminal `failed/cancelled` state and releases workspace ownership.
+- `/exit` displays the post-TUI terminal summary.
 - TTY `/exit` exits without duplicate `Application.exit(...)` errors.
 - TTY `/exit` prints the post-TUI terminal summary to stdout after returning to the terminal's normal screen.
-- TTY `Ctrl+C` prints the post-TUI cancellation summary to stdout after returning to the terminal's normal screen.
-- active execution `/exit` does not introduce mid-call cancel propagation.
+- TTY `Ctrl+C` at a safe idle boundary prints the post-TUI cancellation summary to stdout after returning to the terminal's normal screen.
+- active execution `/exit` is not dispatched and does not introduce mid-call cancel propagation.
 - one-shot mode does not start TUI and keeps plain stdout.
 - non-TTY REPL uses `PlainReplView`.
 - injected input/output streams use `PlainReplView`.
@@ -166,6 +172,8 @@
 - model stream raises provider error.
 - model timeout.
 - model cancellation observed by runtime.
+- active turn slash command submission suppressed by disabled input.
+- active turn slash command direct controller call suppressed without runtime side effects.
 - tool result output exceeds preview line limit.
 - tool result output exceeds preview character limit.
 - tool call has no provider tool call id.

@@ -636,6 +636,58 @@ def test_langchain_adapter_times_out_blocking_model_call() -> None:
     assert events[-1][1]["error_class"] == "timeout"
 
 
+def test_langchain_adapter_times_out_blocking_stream_call() -> None:
+    events = []
+    stream_events = []
+
+    class SlowStreamingModel:
+        stream_chunks = ["too late"]
+
+        def stream(self, messages):
+            time.sleep(0.2)
+            yield AIMessageChunk(content="too late")
+
+        def invoke(self, messages):
+            raise AssertionError("streaming timeout must not fall back to invoke")
+
+    request = AgentRunRequest(
+        session_id="sess_1",
+        run_id="run_1",
+        user_input="hello",
+        system_prompt="system prompt",
+        conversation=[],
+        tools=[],
+        model_config={"provider": "fake", "model": "slow-stream"},
+        timeout_seconds=0.01,
+    )
+    context = RunContext(
+        workspace_root="/repo",
+        artifact_root="/repo/.sessions/sess_1/artifacts",
+        approval_mode="yolo",
+        cancellation_token=None,
+        metadata={},
+        model_event_recorder=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    started = time.monotonic()
+    result = LangChainAgentLoopAdapter(model=SlowStreamingModel()).stream(
+        request,
+        context,
+        stream_events.append,
+    )
+    duration = time.monotonic() - started
+
+    assert result.status == "timeout"
+    assert result.error["error_class"] == "timeout"
+    assert duration < 0.15
+    assert [kind for kind, _payload in events] == [
+        "model_call_started",
+        "model_call_failed",
+    ]
+    assert events[-1][1]["error_class"] == "timeout"
+    assert [event.kind for event in stream_events] == ["stream_model_call_started"]
+
+
 def test_langchain_adapter_delegates_tool_calls_to_toolbroker() -> None:
     calls = []
 

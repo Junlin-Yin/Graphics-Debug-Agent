@@ -140,15 +140,18 @@ Runnable state: non-TTY and injected-I/O sessions keep working through the `Repl
 - [x] Add thread-safe completion wakeup so final result handling runs on the UI event-loop side.
 - [x] Adapt final `AgentRunResult` into model, tool, status, and status bar view updates.
 - [x] Disable input while a turn is running and reenable it after final result handling.
-- [x] Reject ordinary prompts during active execution with a system or error message.
-- [x] Append `/status` output as a system message.
+- [x] Ensure disabled active-turn input does not dispatch ordinary prompts or slash commands.
+- [x] Ensure direct `ReplController.on_slash_command(...)` calls during an active
+  turn do not execute `/status`, `/exit`, unknown-command output, or runtime
+  state transitions.
+- [x] Append `/status` output as a system message when submitted while idle.
 - [x] Own best-effort token usage aggregation in the controller.
 - [x] Preserve last known cumulative token usage when a completed model response omits usage.
 - [x] Update the status bar snapshot after each completed model response.
 - [x] Keep `/exit` on the existing runtime safe-boundary behavior.
 - [x] Map display `cancelled` to persisted `failed + error_class=cancelled`.
 - [x] Map display `timeout` to persisted `failed + error_class=timeout`.
-- [x] Add unit tests with fake view and fake runtime for submit lifecycle, background completion wakeup, timer status updates, active prompt rejection, `/status`, status mapping, and usage aggregation.
+- [x] Add unit tests with fake view and fake runtime for submit lifecycle, background completion wakeup, timer status updates, active input suppression, active slash-command suppression, idle `/status`, status mapping, and usage aggregation.
 - [x] Add integration test with fake model through `AgentLoopAdapter.run(...)`.
 - [x] Verify with `uv run pytest tests/unit/cli tests/integration -v`.
 
@@ -383,10 +386,10 @@ accepted after manual TTY verification.
 - [x] Run manual macOS Terminal or iTerm2 verification for streaming output, narrow wrapping, multiline input, and fast history navigation.
 - [x] Ensure the TTY message list can scroll or otherwise keep older message history reachable after the visible region is full.
 - [x] Ensure `/exit` uses an idempotent application shutdown path and does not raise duplicate `Application.exit(...)` return-value errors.
-- [x] Bind TTY `Ctrl+C` to the existing interrupt path without changing Phase 0.5 persisted interrupt semantics.
+- [x] Bind TTY `Ctrl+C` to the existing idle-boundary interrupt path without changing Phase 0.5 persisted interrupt semantics or adding active-run interruption.
 - [x] Ensure `Ctrl+J` inserts a visible newline in a prompt input region that grows from 1 to at most 5 lines.
 - [x] Ensure TTY up/down keys navigate prompt history only when the input cursor is at the end of the buffer, and otherwise move within the input buffer.
-- [x] Add or update tests for scrollable message history, idempotent `/exit`, TTY `Ctrl+C`, visible `Ctrl+J` multiline input, and conditional up/down behavior.
+- [x] Add or update tests for scrollable message history, idempotent `/exit`, idle-boundary TTY `Ctrl+C`, visible `Ctrl+J` multiline input, and conditional up/down behavior.
 - [x] Switch TTY mode to a full-screen alternate-screen application with application-owned message-list scrolling.
 - [x] Ensure terminal-native scrollback is not required for viewing in-session TTY message history.
 - [x] Ensure TTY `/exit` exits the alternate screen before printing `session <session-name> exit.` and `trace: debug-agent trace <session-name>` to stdout.
@@ -646,7 +649,7 @@ Manual verification is required for terminal behavior that automated tests canno
 - [x] Run `uv run pytest -v`.
 - [x] Run one-shot smoke with fake model config: `debug-agent -p "hello"`.
 - [x] Run non-TTY fallback smoke with injected or redirected input.
-- [x] Run TTY TUI smoke with fake model config: `hello`, `/status`, `/exit`.
+- [x] Run TTY TUI smoke with fake model config: `hello`, idle `/status`, idle `/exit`.
 - [x] Run TTY TUI smoke with fake streaming model config.
 - [x] Confirm `.sessions/runtime.db` contains no `AgentStreamEvent` rows.
 - [x] Confirm baseline session/run/event/checkpoint behavior remains compatible with Phase 0.

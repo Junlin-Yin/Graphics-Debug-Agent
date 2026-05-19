@@ -156,8 +156,10 @@ Phase 0.5 is complete when all of these pass:
 - long tool results are truncated for preview without changing persisted data.
 - each prompt turn shows status and elapsed seconds.
 - status bar shows token usage, approval mode, and model.
-- `/status` appends a system message in TUI mode.
-- `/exit` displays `session <session_id> closed.` and token usage or `unavailable`.
+- `/status` appends a system message in TUI mode when submitted while the REPL is idle.
+- active turn input disablement applies to ordinary prompts and slash commands; Phase 0.5 does not accept `/status` or `/exit` while a prompt turn is running, including direct controller slash-command entry points.
+- TTY `/exit` displays the post-TUI terminal summary after leaving the alternate screen:
+  `session <session_id> exit.` and `trace: debug-agent trace <session_id>`.
 - non-TTY and injected I/O environments use `PlainReplView`.
 - prompt_toolkit initialization failure uses `PlainReplView`.
 - one-shot mode keeps plain stdout output.
@@ -170,7 +172,9 @@ Phase 0.5 is complete when all of these pass:
 
 Phase 0.5 does not implement mid-call cancel propagation.
 
-During active execution, `/exit` follows the existing runtime safe-boundary behavior and must not add a new cancellation path. Full cancellation token propagation remains Phase 2 scope.
+During active execution, the TTY prompt input buffer is non-editable and does not dispatch ordinary prompts or slash commands. `/status` and `/exit` remain idle-state commands in Phase 0.5. They must not add a second command lane, modal, cancellation path, or controller-level runtime side effect while a turn is running.
+
+TTY `Ctrl+C` in Phase 0.5 does not provide immediate active-run interruption. If it is observed at a safe idle boundary, it may terminate the session using the existing runtime cancellation mapping. Mid-call cancellation, first-press interrupt returning to user input, and second-press session exit are future session-control behavior and remain Phase 2 scope unless a later phase document explicitly changes that boundary.
 
 The TUI may display:
 

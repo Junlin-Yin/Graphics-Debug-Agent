@@ -538,6 +538,42 @@ def test_status_slash_command_appends_system_message() -> None:
     ]
 
 
+def test_active_slash_status_is_suppressed_without_runtime_side_effects() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+    controller.is_executing = True
+
+    should_continue = controller.on_slash_command("/status")
+
+    assert should_continue is True
+    assert view.events == []
+    assert runtime.completed is False
+    assert runtime.failed_results == []
+
+
+def test_active_slash_exit_and_unknown_command_are_suppressed() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+    controller.is_executing = True
+
+    should_continue = controller.on_slash_command("/exit")
+    unknown_should_continue = controller.on_slash_command("/unknown")
+
+    assert should_continue is True
+    assert unknown_should_continue is True
+    assert runtime.completed is False
+    assert runtime.failed_results == []
+    assert controller.exit_code == 0
+    assert view.closed_summaries == []
+    assert view.events == []
+
+
 def test_welcome_snapshot_uses_contract_session_id_not_artifact_directory() -> None:
     from debug_agent.cli.repl_controller import ReplController
 
@@ -649,6 +685,36 @@ def test_recoverable_turn_failure_keeps_session_open_and_allows_next_prompt() ->
         kind="model_markdown_final",
         payload={"text": "next answer"},
     )
+
+
+def test_terminal_turn_failure_closes_session_and_keeps_input_disabled() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime(
+        _result(
+            "failed",
+            error={
+                "error_class": "model_error",
+                "message": "provider failed",
+                "source": "model",
+                "recoverable": False,
+            },
+        )
+    )
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_submit("break")
+    controller.wait_for_active_turn(timeout=2)
+    controller.drain_completed_turns()
+
+    assert runtime.failed_results[-1].error["message"] == "provider failed"
+    assert controller.exit_code == 1
+    assert controller.is_executing is False
+    assert view.errors == ["provider failed"]
+    assert view.closed_summaries[-1].status == "failed"
+    assert view.closed_summaries[-1].error_type == "model_error"
+    assert view.input_enabled[-1] is False
 
 
 def test_usage_preserves_last_known_counts_when_result_omits_usage() -> None:
