@@ -58,13 +58,13 @@ Phase 0.5 是 `CLI Entrypoint / REPL UI` 层增强，不是新的 runtime 语义
 
 ### Phase 1: Skills And Native Tools
 
-支持 prompt skill、registry、受控 native/shell tools、path policy、approval grants、ContextManager、`/skills`、`/agents`、`/models`、`/compress`。
+支持 prompt skill、registry、受控 native/shell tools、path policy、approval grants、ContextManager、`/skills`、`/compress`。
 
 Phase 1 是 native 可写工具的最早引入点。可写工具必须经过 ToolBroker、path policy、approval 和 audit。
 
 ### Phase 2: Subagents And Session Control
 
-支持 subagent、子 run 生命周期、cancellation token、timeout、`Ctrl+C` interrupt、`/resume`。
+支持 subagent、AgentRegistry、`/agents`、子 run 生命周期、cancellation token、timeout、`Ctrl+C` interrupt、`/resume`。
 
 ### Phase 3: Workflow Core
 
