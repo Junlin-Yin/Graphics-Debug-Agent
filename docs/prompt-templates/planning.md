@@ -8,7 +8,7 @@
 - 是否完备地覆盖我提出的需求
 - 技术方案是否具有可行性
 - 有无前后矛盾或模糊不清的细节
-- 是否与现有phase，特别是phase-0的spec兼容，会不会有冲突
+- 是否与现有phase，特别是<active-phase>之前的spec兼容，会不会有冲突
 - 重排期的方案是否合理
 - 对于其中一些模棱两可的决策点，给出你的推荐方案和理由
 - 判断当前草案是否可以冻结定版，并开始生成正式的phase文档
@@ -37,7 +37,7 @@
 
 ## Implementation Plan Generation
 
-现在代码合同与技术文档已经迭代成熟，请生成 phase-0.5 的 implementation-plan.md
+现在代码合同与技术文档已经迭代成熟，请生成<active-phase>的 implementation-plan.md
 
 生成 `implementation-plan.md` 时，请将其视为“实现执行编排文档（execution planning document）”，而不是 roadmap、架构设计文档或简单 TODO 列表。
 
@@ -131,8 +131,9 @@ implementation-plan 必须包含：
 
 ## Implementation Plan Review
 
-请审阅 docs/phase-0.5/implementation-plan.md，关注以下要点：
+请审阅 docs/<active-phase>/implementation-plan.md，关注以下要点：
 
-- 是否完整覆盖 phase-0.5 的specs, architecture, operations, scope, tests
+- 是否完整覆盖<active-phase>的specs, architecture, operations, scope, tests
 - 是否可执行、可验证、可增量推进，不会出现反向依赖
 - 最终判断：是否可按照该计划进入代码编写阶段？
+- 不要一次性完成全量审阅。请按文件逐个检查，每次最多读 2 个文件；每完成一组就输出 checkpoint：已检查内容、发现的问题、下一步。最后再给 freezing decision。
