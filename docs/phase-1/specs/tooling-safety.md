@@ -58,6 +58,12 @@ write `.sessions/` through runtime service APIs, but model-visible tools cannot
 read, list, search, write, edit, shell into, or use artifact ids to bypass the
 builtin `.sessions/` deny rule.
 
+Model-visible tools must not use `~/.debug-agent/skills/` or
+`<workspace_root>/.debug-agent/skills/` paths. Runtime may snapshot skills from
+those directories during startup, but the model-visible surface for skill
+content is the frozen skill snapshot and runtime-control skill tools, not live
+source-file access.
+
 Minimum Phase 1 schemas:
 
 ```json
@@ -202,11 +208,18 @@ match count. When omitted, runtime uses tool-specific defaults. Runtime may cap
 requested limits at tool-specific maximums from the frozen runtime config or
 built-in defaults.
 
+`search_text.query` is a literal UTF-8 substring, not a regular expression.
+Matching is case-sensitive and line-oriented. Runtime returns matching lines plus
+file path and line number metadata until `search_text.limit` matches are
+reached. Files that cannot be decoded as UTF-8 are skipped. Phase 1 does not add
+regex search semantics to `search_text`.
+
 For `shell_exec`, `timeout_seconds` must be a positive integer when provided.
 The effective timeout is `min(requested_timeout_seconds,
-frozen_config_timeout_seconds)`. If `timeout_seconds` is omitted, the effective
-timeout is the frozen config timeout. The effective timeout participates in
-approval grant scope signatures.
+frozen `default_shell_timeout_seconds`)`. If `timeout_seconds` is omitted, the
+effective timeout is the frozen `default_shell_timeout_seconds`. If the frozen
+config does not declare a shell timeout, the built-in Phase 1 default is `300`
+seconds. The effective timeout participates in approval grant scope signatures.
 
 `edit_file` replaces only the first exact occurrence. If `old_text` is absent,
 the tool returns `ToolResult(status="error")` with `error_class="tool_error"`.
@@ -219,6 +232,9 @@ Matching rules for `edit_file`:
 - Only the first exact occurrence is replaced.
 - The tool returns `error` when `old_text` is not found or when the
   replacement would produce invalid UTF-8.
+- Write-back preserves the file's dominant existing line-ending style. The
+  normalized `\n` view is only for matching and replacement. If no dominant
+  existing style can be determined, runtime writes LF line endings.
 
 ## Tool Listing
 
@@ -268,7 +284,6 @@ Minimum risk levels:
 - `read`
 - `write`
 - `execute`
-- `network`
 - `runtime_control`
 
 Phase 1 does not define per-tool approval metadata. Approval behavior is derived
@@ -311,7 +326,7 @@ class ToolUseContext:
     approval_mode: str
     frozen_config: dict
     tool_definition: ToolDefinition
-    permission_rules: list[PermissionRule]
+    frozen_policy: dict
     approval_grants: object
     approval_provider: object
     event_writer: object
@@ -323,10 +338,11 @@ class ToolUseContext:
 derived from frozen session config, frozen main-agent policy declarations,
 runtime builtin policy, and current session approval records.
 
-`PermissionRule` and the normative permission evaluation order are defined in
-`docs/phase-1/specs/approval.md`. Tooling code must consume normalized
-`PermissionRule` values instead of reinterpreting raw path or shell TOML
-structures at execution time.
+The normative permission decision pipeline is defined in
+`docs/phase-1/specs/approval.md`. Tooling code must consume frozen, validated
+policy facts instead of reinterpreting raw path or shell TOML structures at
+execution time. Implementations may introduce internal helper types for policy
+facts, but Phase 1 does not require a generic permission-rule engine.
 
 ### ToolRouter
 
@@ -433,10 +449,12 @@ Specialized wrappers may expose additional explicit file path arguments.
 `shell_exec` is execute access for approval-mode and shell-policy purposes.
 Separately, generic `shell_exec` evaluates `cwd` through path policy: blacklist
 veto first, then trusted/untrusted classification. It evaluates classified argv
-paths the same way. It must not claim to fully understand every command's
-file-system side effects from arbitrary argv. If a command needs strict
-read/write path enforcement, it should be modeled as a native tool or
-specialized wrapper with explicit path fields.
+paths the same way. Path classification is aggregated conservatively: if `cwd`,
+a path-qualified executable path, or any runtime-classified argv path is
+untrusted, the whole shell call is untrusted for the approval-mode matrix. It
+must not claim to fully understand every command's file-system side effects from
+arbitrary argv. If a command needs strict read/write path enforcement, it should
+be modeled as a native tool or specialized wrapper with explicit path fields.
 
 Shell policy command matching normalizes executable names before applying
 argv-prefix rules. Path-qualified executables and common Windows executable

@@ -12,8 +12,8 @@ prompt skills.
 Phase 1 does not build Markdown section trees or implement section-level
 progressive disclosure.
 
-Workflow skills may be parsed into an unsupported/deferred result for future
-compatibility, but they are not available to `activate_skill`.
+Phase 1 accepts prompt skills only. A manifest that declares any
+`execution_mode` other than `prompt` fails startup with `config_error`.
 
 ### Main Agent Config Loader
 
@@ -37,21 +37,38 @@ observations in durable conversation.
 
 `ContextManager` prepares the compressible conversation history (omission +
 compression). `PromptComposer` takes the prepared history and assembles the
-final `ModelContextFrame`, including skill injection and token estimation.
-`ModelContextFrame` is the runtime-owned LLM-visible context boundary for
-estimation, omission, compression, status display, and tests. In Phase 1,
-`PromptComposer` then materializes that frame into the existing
-`AgentRunRequest.system_prompt`, `AgentRunRequest.conversation`,
-`AgentRunRequest.user_input`, and `AgentRunRequest.tools` fields before calling
-the adapter. The adapter does not own prompt injection policy. Tests must prove
-that the materialized request is semantically equivalent to the frame used for
-token estimation and context decisions.
+final `ModelContextFrame`, including skill injection, tool schema bindings, and
+token estimation input. `ModelContextFrame` is the runtime-owned LLM-visible
+request frame for estimation, omission, compression, status display, provider
+materialization, and tests. Active `SKILL.md` content is represented only as a
+non-persistent `ModelContextFrame` message segment with `role="system"` and
+`kind="runtime_active_skill_context"`. It is not durable
+`ReplRuntime.conversation` and is not part of `/compress` input.
+
+Tool schemas are also part of `ModelContextFrame` as `tool_schema_bindings`.
+They are not conversation messages, must not be serialized into the stable
+system prompt, and remain provider-native tool bindings at adapter call time.
+The adapter materializes provider-legal messages from
+`ModelContextFrame.message_segments` and provider-native tool bindings from
+`ModelContextFrame.tool_schema_bindings`, such as LangChain `bind_tools(...)`.
+
+The Phase 1 `AgentRunRequest` is an adapter-call envelope that carries
+`model_context_frame` plus execution metadata such as session id, run id, model
+config, timeout, and broker execution metadata. It no longer uses the Phase
+0/0.5 context fields `system_prompt`, `conversation`, `user_input`, or `tools`
+as independent prompt/context truth. Any executable tool metadata carried beside
+the frame must match the frozen tool binding snapshot or hash in
+`model_context_frame`. The adapter does not own prompt injection policy. Tests
+must prove that `AgentRunRequest.model_context_frame` is the same
+`ModelContextFrame` that was used for token estimation and context decisions,
+and that provider messages and provider tool bindings are materialized from that
+frame.
 
 `ReplRuntime.conversation` stores durable LLM-visible working history. Omission
 and compression may mutate it, while audit truth remains in events and
 artifacts. It is not the same object as the messages sent to the model.
-`ModelContextFrame` is generated for each model call and is the only object used
-for context window estimation.
+`ModelContextFrame` is generated for each model call and is the only runtime
+object used for context window estimation.
 
 ### QueryControlPlane
 
@@ -69,8 +86,9 @@ Phase 1 query state includes:
 - `turn_id`.
 - current approval mode.
 - durable conversation cursor.
-- current-turn protected suffix.
-- active skill refs.
+- derived `model_call_group` view.
+- non-evictable raw suffix.
+- active skill records.
 - latest context estimate.
 - latest optimization result.
 - continuation reason.
@@ -87,13 +105,14 @@ Phase 1 continuation reasons include:
 
 The query control plane coordinates:
 
-- query composition from durable conversation, current user input, current-turn
-  tool-loop messages, active skill refs, and frozen skill headers.
+- query composition from durable conversation, current user input, current
+  tool-loop messages, active skill records, and frozen skill headers.
 - `ModelContextFrame` construction for ordinary task model calls.
 - deterministic token estimation and context-window status updates.
 - old tool-result omission and automatic compression checks before every adapter
   model invocation.
 - `CompressionContextFrame` construction for runtime-owned compression calls.
+- derived `model_call_group` eligibility and compression batch selection.
 - tool-loop continuation after brokered tool results.
 - turn-scoped aborts for approval denial, compression failure, and context-limit
   failure.
@@ -103,6 +122,7 @@ data model used by the query control plane. Minimum fields are:
 
 ```python
 class ConversationMessage:
+    seq: int
     role: str
     kind: str
     turn_id: str
@@ -110,15 +130,22 @@ class ConversationMessage:
     tool_call_id: str | None
     content: str | dict
     artifact_refs: list[str]
+    estimated_tokens: int
     metadata: dict
 ```
 
-`turn_id`, `model_call_id`, and `tool_call_id` define safe-boundary and
-protected-suffix behavior. The previous safe boundary is the end of the last
-completed user turn or the start of the current user turn before the first model
-call, whichever is later for the current query. Current user input, current-turn
-assistant tool-call messages, fresh tool results, and follow-up tool-loop
-messages form the current-turn protected suffix and are not compressed.
+`seq`, `turn_id`, `model_call_id`, and `tool_call_id` define deterministic
+message grouping and non-evictable suffix behavior. The query control plane
+derives a `model_call_group` view with `model_call_id`, `turn_id`, `start_seq`,
+`end_seq`, `status`, `consumed_by_later_model_call`, `estimated_tokens`, and
+`message_ids`.
+
+A group is evictable only when it is closed, has been consumed by at least one
+later ordinary task model call, and is outside both the live/unconsumed suffix
+and the newest `retain_recent_model_calls` raw completed groups. Current user
+input, open model-call output, pending tool calls, fresh tool results that no
+later ordinary task model call has consumed, and current query/tool-loop buffers
+remain in the non-evictable raw suffix.
 
 ### ContextManager
 
@@ -126,8 +153,10 @@ Owns LLM-visible context shaping. It applies:
 
 - large output artifact references.
 - old tool-result omission at `omit_old_tool_results_at_ratio`.
-- history compression at `compress_history_at_ratio`.
-- manual `/compress` through the same compression path.
+- rolling history compression at `compress_history_at_ratio` or when eligible
+  evictable history exceeds the derived compression input budget.
+- manual `/compress` through the same rolling summary compression machinery,
+  skipping old tool-result omission.
 
 It does not own authoritative business state. It may produce context snapshots
 and request persistence updates through runtime stores.
@@ -135,9 +164,9 @@ and request persistence updates through runtime stores.
 Phase 1 stores post-optimization context snapshots in SQLite by default and may
 artifact large snapshot payloads when the inline payload exceeds persistence
 thresholds. A context snapshot is not the pre-compression full context and is
-not the final composed `ModelContextFrame`. Its shape must be sufficient for
-future recovery, but Phase 1 writes it only for trace, audit, continuity
-inspection, and future recovery support. Phase 1 does not implement restart or
+not the final composed `ModelContextFrame`. It records enough continuity facts
+for trace, audit, continuity inspection, and future design, but it is not an
+executable recovery source in Phase 1. Phase 1 does not implement restart or
 resume recovery from context snapshots.
 
 ### ToolBroker
@@ -155,13 +184,11 @@ Phase 1 tool control plane components:
   category, risk level, and access.
 - `ToolUseContext`: frozen execution context for one tool call, including
   session/run ids, workspace root, artifact root, approval mode, frozen config,
-  permission rules, approval grant store, approval provider, event writer,
+  frozen policy facts, approval grant store, approval provider, event writer,
   artifact store, and skill snapshot store.
-- `PermissionRule`: normalized rule representation produced from builtin
-  policy, main-agent path policy, main-agent shell policy, and session-local
-  approval grants.
-- `PermissionEvaluator`: evaluates normalized tool-call facts against
-  `PermissionRule` values and approval mode.
+- `PermissionEvaluator`: applies the fixed permission decision pipeline to
+  normalized tool-call facts, frozen path policy, frozen shell policy, approval
+  mode, and session-local approval grants.
 - `ToolRouter`: dispatches allowed tool calls to Phase 1 handler categories:
   `native`, `shell`, and `runtime_control`.
 - tool handlers: execute only after broker permission approval and return raw
@@ -175,12 +202,23 @@ The broker execution order is:
    - shell argv identity, cwd, timeout, and classified argv paths.
    - runtime-control targets such as skill name and frozen content hash.
    - risk level, access, category, and approval scope signature.
-3. evaluate deny rules.
-4. evaluate approval mode.
-5. evaluate allow, trust, and session-grant rules.
-6. ask the user through `ApprovalProvider` when the decision remains `ask`.
-7. route the allowed call through `ToolRouter`.
-8. normalize to `ToolResult`, artifact large outputs, and write audit events.
+3. apply hard-deny checks:
+   - builtin path denies.
+   - user path denies.
+   - builtin shell denies.
+   - user shell denies.
+   - invalid runtime-control targets such as unknown skills or corrupt frozen
+     snapshots.
+4. apply the shell allowlist gate for `shell_exec`; if user shell `allow` is
+   non-empty and no normalized prefix matches, deny with `policy_denied` without
+   asking the user.
+5. classify normalized paths as trusted or untrusted after blacklist vetoes.
+6. apply the approval-mode matrix to decide `allow` or `ask`.
+7. if the decision is `ask`, check reusable session approval grants for the
+   exact approval scope signature.
+8. if the decision is still `ask`, ask the user through `ApprovalProvider`.
+9. route the allowed call through `ToolRouter`.
+10. normalize to `ToolResult`, artifact large outputs, and write audit events.
 
 Phase 1 extends the Phase 0 tool surface with:
 
@@ -224,9 +262,10 @@ CLI
 PromptAgentExecutor
 -> QueryControlPlane
 -> PromptComposer / ContextManager
+-> AgentRunRequest(model_context_frame=...)
 -> AgentLoopAdapter
 
-AgentLoopAdapter tool callable
+AgentLoopAdapter provider materialization / tool callable
 -> ToolBroker
 -> PermissionEvaluator / ApprovalProvider / ApprovalGrantStore
 -> ToolRouter
@@ -254,17 +293,24 @@ Model-visible tools must not read, list, search, write, edit, or shell into
 audited metadata to the model or UI, but those references do not grant
 operational filesystem access to `.sessions/`.
 
+Model-visible tools must not read, list, search, write, edit, or shell into the
+configured skill source roots `~/.debug-agent/skills/` and
+`<workspace_root>/.debug-agent/skills/`. Skill source files are normal input to
+startup snapshotting, but after snapshotting the frozen skill registry snapshot
+is the execution truth exposed to model-visible skill tooling.
+
 ## Initialization Order
 
 1. Resolve `workspace_root` using the Phase 0 rule.
 2. Load global runtime config from `~/.debug-agent/config.toml`.
 3. Load main agent config from `~/.debug-agent/agent.toml` if present.
-4. Create the session config snapshot including:
+4. Resolve, validate, and freeze the session config snapshot facts, including:
    - provider/model runtime settings.
    - main agent config facts.
    - path policy declaration facts.
    - shell policy declaration facts.
    - context window settings.
+   - execution settings such as `default_shell_timeout_seconds`.
 5. Initialize `.sessions/runtime.db`:
    - if the file does not exist, create it with the Phase 1 schema and write the
      Phase 1 SQLite `PRAGMA user_version = 1`
@@ -275,7 +321,8 @@ operational filesystem access to `.sessions/`.
    Phase 0, or Phase 0.5 `user_version`, using `error_class="config_error"`.
 7. Check workspace active session ownership using Phase 1 schema semantics.
    Phase 0 and Phase 0.5 schema/session compatibility is rejected in Phase 1.
-8. Create session, session artifact root, and prompt run.
+8. Create session, session artifact root, and prompt run, then persist the
+   frozen session config snapshot with the session.
 9. Discover skills, build the frozen skill snapshot, and persist it in
    skill-registry snapshot storage associated with the session and prompt run:
    - store manifest, `SKILL.md` content, file-level reference snapshots, and
@@ -288,8 +335,8 @@ operational filesystem access to `.sessions/`.
     persisted frozen skill registry snapshot.
 11. Initialize `ToolBroker` with:
    - tool definitions.
-   - permission rules from builtin policy, main-agent path policy, and
-     main-agent shell policy.
+   - frozen policy facts from builtin policy, main-agent path policy,
+     main-agent shell policy, and validated runtime-control targets.
    - permission evaluator.
    - tool router.
    - approval grant store.
@@ -306,21 +353,37 @@ generation are startup-blocking. One-shot execution and REPL input must not
 accept a user prompt until the frozen skill registry snapshot is persisted and
 ready for prompt composition.
 
+Startup failures before the Phase 1 database schema check has completed do not
+write runtime truth. Invalid context settings, invalid execution settings, and
+invalid main-agent policy declarations are resolved and rejected before
+session/run creation, so they do not create runtime rows. Startup failures after
+session/run creation but before the first user prompt is accepted are persisted
+as startup `config_error`
+failures: runtime writes the best available failure event and `error`
+checkpoint, marks the partially initialized prompt run and session as `failed`,
+and releases workspace active ownership. This applies to skill
+discovery/snapshot failures and frozen snapshot persistence failures during
+startup.
+
 ## Prompt Composition Flow
 
 ```text
 model call requested
 -> QueryControlPlane starts or resumes query state
--> load run active_skill refs
--> validate active refs against frozen skill snapshot
--> identify durable conversation and current-turn protected suffix
+-> load run active skill records
+-> validate active skill records against frozen skill snapshot
+-> derive model_call_group view and non-evictable raw suffix
 -> compose candidate ModelContextFrame for an ordinary task model call
 -> estimate candidate ModelContextFrame tokens and update context status
--> if candidate context exceeds omit threshold, ContextManager mutates older tool results to omission markers
--> after omission, rebuild and re-estimate the candidate ModelContextFrame
--> if the re-estimated candidate context exceeds compression threshold:
-     build CompressionContextFrame and run runtime-owned compression
-     mutate compressible durable conversation prefix
+-> if candidate context is strictly greater than omit threshold:
+     ContextManager mutates eligible older tool results to omission markers
+     rebuild and re-estimate the candidate ModelContextFrame
+-> compute eligible evictable model_call_group tokens and compression input budget
+-> if candidate context is strictly greater than compression threshold
+   or eligible evictable tokens exceed compression input budget:
+     select oldest eligible groups that fit the compression input budget
+     build CompressionContextFrame and run one runtime-owned compression call
+     replace previous summary and selected groups with the new summary
 -> rebuild ModelContextFrame from optimized ReplRuntime.conversation
 -> estimate final ModelContextFrame tokens and update context status
 -> if final context still exceeds the hard context limit (`window_tokens`):
@@ -328,27 +391,43 @@ model call requested
 -> else call AgentLoopAdapter
 ```
 
-Ordinary task `ModelContextFrame` composition order:
+Ordinary task `ModelContextFrame.message_segments` composition order:
 
 1. runtime safety prefix.
 2. main agent system prompt.
 3. stable skill formatter header.
 4. available skill headers from the frozen skill registry snapshot.
-5. context summary, if present.
-6. retained conversation messages.
-7. runtime-supplied active `SKILL.md` context for this turn.
+5. runtime-supplied active `SKILL.md` context for this turn.
+6. context summary, if present.
+7. retained raw conversation messages and live/unconsumed suffix messages.
 8. current user input or tool-loop messages.
 
+`ModelContextFrame.tool_schema_bindings` contains the frozen model-visible tool
+schemas for the same call. It is part of the frame and token estimate, but it is
+materialized through provider-native tool binding APIs rather than inserted into
+the message segment order above.
+
 The system block is stable for the session. Dynamic active skill instructions
-are supplied in the near context zone as runtime-authored context messages, not
-by mutating the system prompt.
+are supplied as runtime-authored, non-persistent `ModelContextFrame` segments
+with `role="system"` and `kind="runtime_active_skill_context"` before rolling
+summary and retained raw conversation, not by mutating the stable system prompt
+and not by appending to durable conversation.
+
+The adapter receives an `AgentRunRequest` whose `model_context_frame` is this
+complete `ModelContextFrame`. The adapter materializes provider-legal messages,
+tool bindings, and instruction channels from the frame. It does not pass the
+frame verbatim to providers, but it must not add, remove, reorder, or reinterpret
+model-visible frame content as a prompt policy decision.
 
 Compression does not use the ordinary task `ModelContextFrame`. It uses a
 runtime-owned `CompressionContextFrame` that excludes the main agent system
-prompt, available skill headers, model-visible tool schemas, and active
-`SKILL.md` bodies. It includes the compression instruction, compressible
-conversation history, structured active skill refs, visible artifact refs, and
-visible policy or approval facts needed for continuity.
+prompt, available skill headers, model-visible tool schema bindings, and active
+`SKILL.md` bodies. It also excludes retained recent raw messages, live or
+unconsumed suffix messages, and runtime-owned active skill records, artifact
+refs, policy facts, or approval facts. It includes, in order, the previous
+continuity summary if any, bounded evicted history messages selected from
+eligible `model_call_group` values, and the compression instruction/schema
+prompt.
 
 ## Approval Flow
 
@@ -356,7 +435,8 @@ visible policy or approval facts needed for continuity.
 model requests tool
 -> adapter delegates to ToolBroker
 -> ToolBroker validates schema and normalizes tool facts
--> PermissionEvaluator checks deny rules, approval mode, allow/trust rules, and grants
+-> PermissionEvaluator applies hard denies, shell allowlist gate, path classification,
+   approval-mode matrix, and reusable session grants
    (activate_skill and load_skill_ref_file resolve frozen targets before approval)
 -> if approval needed, ToolBroker calls ApprovalProvider
 -> REPL asks inline
@@ -390,11 +470,17 @@ approval is an exception to that rule: when a tool requires interactive
 approval, the input lane temporarily switches to approval mode so the user can
 enter `y`, `a`, or `n`. After the decision is recorded, the input lane returns
 to normal prompt input or remains disabled if the turn is still executing.
+`Ctrl+Y` approval-mode cycling remains idle-only; during active execution or an
+inline approval prompt it is a silent no-op and must not affect the current or
+next tool decision.
 
 ## Compression Flow
 
-`/compress` and automatic threshold-B compression use the same implementation
-path. The only difference is the trigger.
+`/compress` and automatic compression use the same rolling summary compression
+machinery. Manual `/compress` is compression-only: it skips old tool-result
+omission and directly constructs a `CompressionContextFrame` from the previous
+summary, selected eligible evictable history, and compression
+instruction/schema prompt.
 
 Compression is allowed only at safe boundaries:
 
@@ -403,12 +489,20 @@ Compression is allowed only at safe boundaries:
 
 It is not allowed in the middle of a model stream or active tool invocation.
 
-Automatic compression must preserve the current-turn protected suffix. The
-protected suffix includes the current user input, current-turn assistant
-tool-call messages, fresh tool results, and follow-up tool-loop messages. These
-messages are excluded from the compression model call and appended unchanged to
-the real model call after compression. Compression may only replace history
-before the previous safe boundary.
+Automatic compression preserves the non-evictable raw suffix. The suffix
+includes the newest `retain_recent_model_calls` raw completed groups and live or
+unconsumed messages such as current user input, open model-call output, pending
+tool calls, fresh tool results, and current query/tool-loop buffers. These
+messages are excluded from the compression model call and sent unchanged to the
+real model call after compression.
+
+Compression selects eligible `model_call_group` values from oldest to newest
+until adding the next group would exceed the derived
+`compression_evicted_history_budget`. Runtime must not skip an older eligible
+group to compress a newer group. If the oldest eligible group cannot fit,
+runtime records `compression_failed` without calling the compression model.
+Phase 1 allows at most one compression model call per pre-call optimization
+pass.
 
 The compression model call is runtime-owned and tool-less. It does not expose
 model-visible tools, does not enter the ordinary tool loop, and does not append

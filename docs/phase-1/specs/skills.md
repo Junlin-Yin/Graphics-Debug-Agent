@@ -5,7 +5,7 @@
 Phase 1 supports prompt skills only.
 
 Subagent skills, workflow skills, MCP-provided skills, and plugin-packaged
-skills are outside Phase 1 execution scope.
+skills are outside Phase 1 scope and are invalid Phase 1 skill manifests.
 
 Phase 1 intentionally does not implement section-level progressive disclosure,
 semantic reference retrieval, automatic active-skill disclosure degradation, or
@@ -25,6 +25,12 @@ Precedence:
 
 CLI explicit skill paths and builtin skill roots are not part of Phase 1.
 
+Both configured skill roots are model-visible hard-denied paths. Runtime may
+read them during startup snapshotting, but model-visible file and shell tools
+must not read, list, search, write, edit, or shell into them. Skill behavior is
+exposed to the model only through the frozen skill snapshot, `/skills`, active
+skill injection, and `load_skill_ref_file`.
+
 Same-name skill override is whole-skill override. Phase 1 does not merge skill
 directories or files.
 
@@ -42,6 +48,25 @@ Phase 1 snapshots only `SKILL.md` and files under `references/**`. Files outside
 
 The skill directory name is not the runtime skill id. The runtime skill id comes
 from `SKILL.md` front matter `name`.
+
+Discovery is intentionally shallow and deterministic:
+
+- each configured root is scanned for direct child directories only.
+- the root itself is not treated as a skill directory.
+- each direct child skill directory may contain at most one root-level
+  `SKILL.md`.
+- nested `SKILL.md` files are ignored unless they are in a direct child skill
+  directory's root.
+- symlinked skill directories are not followed.
+- skill directories and reference paths are processed in normalized path order.
+
+`SKILL.md` must decode as UTF-8. Startup fails with `config_error` if a
+discovered skill's `SKILL.md` is unreadable, missing, invalid, or not UTF-8.
+Reference files under `references/**` may be binary. Runtime classifies a
+reference as text when it can decode the payload as UTF-8; otherwise it stores
+the reference as non-text/binary metadata with an artifact-backed payload.
+Non-text references are always artifact-backed, regardless of size. Unreadable
+reference files fail startup with `config_error`.
 
 ## Snapshot Strategy
 
@@ -79,7 +104,7 @@ Minimum persisted snapshot facts:
 
 - session id.
 - skill name.
-- execution mode and support status.
+- execution mode.
 - source scope and source path.
 - normalized manifest metadata.
 - `SKILL.md` content and content hash.
@@ -90,12 +115,68 @@ Minimum persisted snapshot facts:
   SQLite storage.
 - version and creation timestamp.
 
+Phase 1 stores skill snapshots with one owning skill row and zero or more
+reference rows. A skill has exactly one `SKILL.md` body. Reference files are
+linked back to that owning frozen skill snapshot and are never resolved as
+standalone runtime objects.
+
+Minimum table shape:
+
+```sql
+CREATE TABLE skill_snapshots (
+  skill_snapshot_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  skill_name TEXT NOT NULL,
+  execution_mode TEXT NOT NULL,
+  source_scope TEXT NOT NULL,
+  source_path TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  skill_md_content TEXT NOT NULL,
+  skill_md_content_hash TEXT NOT NULL,
+  overall_content_hash TEXT NOT NULL,
+  payload_artifact_id TEXT,
+  created_at TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  UNIQUE(session_id, run_id, skill_name)
+);
+
+CREATE TABLE skill_reference_snapshots (
+  reference_snapshot_id TEXT PRIMARY KEY,
+  skill_snapshot_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  skill_name TEXT NOT NULL,
+  reference_path TEXT NOT NULL,
+  media_kind TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  inline_text_payload TEXT,
+  payload_artifact_id TEXT,
+  created_at TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  UNIQUE(skill_snapshot_id, reference_path),
+  FOREIGN KEY(skill_snapshot_id) REFERENCES skill_snapshots(skill_snapshot_id)
+);
+```
+
+`skill_reference_snapshots.skill_snapshot_id` is the authoritative reference to
+the owning frozen skill. `session_id`, `run_id`, and `skill_name` are duplicated
+on reference rows only for trace, diagnostics, and straightforward queries.
+`load_skill_ref_file` must resolve the active skill by name and content hash to
+one `skill_snapshots` row, then resolve `path` within that row's
+`skill_reference_snapshots` children.
+
+For non-text references, `inline_text_payload` must be `NULL` and
+`payload_artifact_id` must be non-`NULL`. Text references may be stored inline
+only when they fit the inline reference threshold; otherwise they are also
+artifact-backed.
+
 The prompt composer uses the frozen registry snapshot to build the available
 skill header shown to the model in the stable system block for ordinary task
 model calls. The header lists prompt skills as activation candidates for
-`activate_skill`. Unsupported/deferred skills are listed separately with
-non-activatable reasons. The header must not include full skill bodies or
-reference file contents.
+`activate_skill`. The header must not include full skill bodies or reference
+file contents.
 
 Available skill headers are not durable conversation messages and are not part
 of `/compress` input. Compression does not rewrite them. Ordinary task
@@ -126,8 +207,8 @@ activation returns `ToolResult(status="denied")` with
 `error_class="config_error"` and an audit event is written.
 
 After a skill is active, later model calls reconstruct skill context from the
-frozen session snapshot and structured active skill refs. They do not re-read or
-re-hash source files.
+frozen session snapshot and structured active skill records. They do not re-read
+or re-hash source files.
 
 ## Manifest
 
@@ -153,14 +234,31 @@ execution_mode: prompt
 
 If `execution_mode` is absent, Phase 1 treats the skill as `prompt`.
 
-If `execution_mode: workflow`, Phase 1 records it as unsupported/deferred and
-does not expose it to `activate_skill`.
+Any other `execution_mode`, including `workflow`, `subagent`, `mcp`, or
+plugin-related values, is invalid in Phase 1 and fails startup with
+`config_error`.
 
 Unknown top-level manifest fields are invalid in Phase 1. `name`,
 `description`, and `execution_mode` must be strings when present. `triggers`
 must be a list of strings when present. `metadata` must be a JSON-like mapping
 when present. Skill names must match `[A-Za-z0-9_.-]+` and be at most 128
 characters.
+
+## Skill Listing
+
+`/skills` is handled locally by the REPL and is never sent to the model.
+
+Minimum fields:
+
+- skill name.
+- description.
+- execution mode.
+- source scope.
+- content hash.
+- active status for the current run.
+
+`/skills` must list supported prompt skills from the frozen session skill
+registry snapshot. It must not read live skill source files after startup.
 
 ## Model-Visible Skill Tools
 
@@ -193,8 +291,8 @@ Execution rules:
   snapshot before interactive approval is requested.
 - unknown skill returns `ToolResult(status="denied")` without prompting for
   approval.
-- unsupported workflow skill returns `ToolResult(status="denied")` without
-  prompting for approval.
+- non-prompt skill manifests fail startup with `config_error`, so non-prompt
+  skills are not present as activation targets.
 - missing, corrupt, or hash-mismatched frozen snapshots return
   `ToolResult(status="denied")` without prompting for approval.
 - repeated activation is idempotent.
@@ -249,9 +347,10 @@ Text reference files that fit the inline tool-output threshold return their full
 text content plus metadata: skill name, reference path, content hash, size, and
 media kind.
 
-Large text reference files and non-text reference files return a controlled
-artifact/reference marker plus metadata. They must not inject raw large content
-or binary content into the model-visible context.
+Large text reference files return a controlled artifact/reference marker plus
+metadata. Non-text reference files always return a controlled artifact/reference
+marker plus metadata. They must not inject raw large content or binary content
+into the model-visible context.
 
 Loaded reference output is ordinary durable LLM-visible working history. It may
 be omitted or compressed later by `ContextManager`. The frozen skill snapshot
@@ -279,7 +378,7 @@ Minimum Phase 1 shape:
 ```
 
 Persisted database schema, checkpoints, context snapshots, traces, and
-`/skills` output must use the structured shape where active skill references are
+`/skills` output must use the structured shape where active skill records are
 recorded.
 
 Loaded reference files are not active skill state. They are tool observations in
@@ -293,15 +392,23 @@ Phase 1 uses a two-layer context model:
 - per-call `ModelContextFrame`, generated by `PromptComposer`.
 
 System prompts and active skill `SKILL.md` content are not stored in
-`ReplRuntime.conversation`. They participate in model calls through
-`AgentRunRequest.system_prompt`, `PromptComposer`, and the generated
-`ModelContextFrame`.
+`ReplRuntime.conversation`. Stable system content participates through
+the stable system block. Active skill `SKILL.md` content participates only
+through `PromptComposer` as non-persistent `ModelContextFrame` segments with
+`role="system"` and `kind="runtime_active_skill_context"`.
 
 Ordinary task model calls include the stable system block, available skill
-headers, active skill context, retained conversation, current user input or
-tool-loop messages, and tool schemas. Runtime-owned compression calls use a
-separate compression frame and do not include available skill headers, the main
-agent system prompt, model-visible tool schemas, or active `SKILL.md` bodies.
+headers, active skill context, rolling summary, retained raw conversation, live
+or unconsumed messages, current user input or tool-loop messages, and tool
+schema bindings. Tool schema bindings are part of the `ModelContextFrame`, but
+they are not conversation messages and must be materialized by adapters through
+provider-native tool binding APIs such as LangChain `bind_tools(...)`. Active
+skill context is injected before rolling summary and retained raw conversation
+so retained raw groups and live messages remain contiguous.
+Runtime-owned compression calls use a separate compression frame and do not
+include available skill headers, the main agent system prompt, model-visible
+tool schema bindings, active `SKILL.md` bodies, retained recent raw messages,
+live or unconsumed suffix messages, or runtime-owned active skill records.
 
 Loaded reference file outputs are stored as ordinary durable conversation tool
 observations. They are not re-injected automatically on every later model call.
@@ -315,8 +422,8 @@ model context.
 
 ### Option A: Inject Active `SKILL.md` Content During Prompt Composition
 
-The prompt composer places active skill `SKILL.md` content in the near context
-zone before the current user input or tool-loop messages for every model call.
+The prompt composer places active skill `SKILL.md` content before the rolling
+summary and retained raw conversation for every ordinary task model call.
 Reference files are not injected automatically; they are available through
 `load_skill_ref_file`.
 
@@ -376,14 +483,26 @@ Phase 1 does not implement this option.
 
 ## Active Skill Context Message
 
-For each model call, `PromptComposer` may add a runtime-authored context message:
+For each ordinary task model call with one or more active skills,
+`PromptComposer` must add a runtime-authored, non-persistent
+`ModelContextFrame` segment:
+
+```python
+role = "system"
+kind = "runtime_active_skill_context"
+source = "runtime"
+persistent = False
+compressible = False
+```
+
+The segment body starts with:
 
 ```text
 [Runtime supplied active skill context]
 This block is authoritative for this turn.
 ```
 
-Each active skill entry should include:
+Each active skill entry must include at least:
 
 - `skill_id`.
 - `version` or `content_hash`.
@@ -400,6 +519,18 @@ Skill context may include model-visible guidance such as `allowed_tools` or
 `path_policy`, but those fields are not authorization. Actual authorization is
 decided only by runtime and `ToolBroker` using frozen config, path policy, shell
 policy, approval mode, and approval grants.
+
+This active skill context segment is part of the per-call `ModelContextFrame`.
+It is not part of the stable system block, is not written to
+`ReplRuntime.conversation`, and is not included in `/compress` input. Phase 1
+`AgentRunRequest` carries the complete `ModelContextFrame` in
+`model_context_frame`; the Phase 0/0.5 fields `system_prompt`, `conversation`,
+`user_input`, and `tools` are no longer independent prompt/context truth.
+Provider adapters may serialize the segment only through their provider-legal
+instruction channel while preserving the `role`/`kind` semantics; they must not
+turn it into durable conversation history. Provider tool bindings are
+materialized from `ModelContextFrame.tool_schema_bindings`, not from a separate
+adapter-owned tool schema source.
 
 ## Active Skill Lifetime
 
@@ -429,14 +560,16 @@ control.
 
 Active `SKILL.md` content is not in `/compress` input.
 
-Compression stores only active skill references:
+Compression does not summarize active `SKILL.md` content and does not receive
+runtime-owned active skill records as independent compression input. Context
+snapshots and checkpoints preserve structured active skill records such as:
 
 - skill name.
 - content hash.
 - activation reason and scope.
 
 After compression, the prompt composer reconstructs active `SKILL.md` context
-from the frozen skill snapshot and active skill references.
+from the frozen skill snapshot and active skill records.
 
 Loaded reference file outputs are ordinary conversation history. They may be
 omitted or compressed. Compression must not mutate the frozen reference

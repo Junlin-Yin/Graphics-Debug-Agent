@@ -17,8 +17,8 @@
 - manifest fields must match the documented Phase 1 types and skill name
   pattern.
 - absent `execution_mode` is treated as `prompt`.
-- `execution_mode: workflow` is recorded as unsupported/deferred and is not
-  exposed to `activate_skill`.
+- `execution_mode: workflow`, `execution_mode: subagent`, `execution_mode:
+  mcp`, and any other non-`prompt` value fail startup with `config_error`.
 - registry reads and snapshots `SKILL.md` plus files under `references/**`.
 - registry ignores files outside `SKILL.md` and `references/**`.
 - non-Markdown files outside `references/**` are not copied into session
@@ -27,6 +27,11 @@
   complete before one-shot execution or REPL input accepts the first user prompt.
 - skill registry snapshots are persisted separately from
   `sessions.config_snapshot_json` and associated with the session and prompt run.
+- `skill_snapshots` stores one frozen `SKILL.md` body per skill snapshot.
+- `skill_reference_snapshots` stores zero or more reference rows linked to the
+  owning `skill_snapshots.skill_snapshot_id`.
+- `load_skill_ref_file` resolves reference paths only through the owning skill
+  snapshot row for the active skill name and content hash.
 - registry computes stable SHA-256 content hashes.
 - activation validates against the frozen session snapshot without re-reading
   source files.
@@ -52,8 +57,8 @@
 - `load_skill_ref_file` invocation goes through `ToolBroker`.
 - unknown skill activation returns `ToolResult(status="denied")` without
   prompting for approval.
-- workflow skill activation returns `ToolResult(status="denied")` without
-  prompting for approval.
+- non-prompt skill manifests fail startup with `config_error`, so non-prompt
+  skills are not present as activation targets.
 - frozen snapshot corruption or hash mismatch returns
   `ToolResult(status="denied")` without prompting for approval.
 - repeated activation is idempotent.
@@ -66,6 +71,18 @@
 - active `SKILL.md` content is not appended to `ReplRuntime.conversation`.
 - active skill context lists available frozen reference file paths and hashes
   without injecting reference file content automatically.
+- skill discovery scans only direct child directories of the configured global
+  and project skill roots.
+- skill discovery does not treat the configured root itself as a skill directory
+  and does not follow symlinked skill directories.
+- skill discovery processes skill directories and reference paths in normalized
+  path order.
+- discovered `SKILL.md` files must decode as UTF-8; invalid or unreadable
+  `SKILL.md` files fail startup with `config_error`.
+- reference files under `references/**` may be binary; runtime classifies them as
+  text only when UTF-8 decoding succeeds.
+- non-text references are always artifact-backed, regardless of size.
+- unreadable reference files fail startup with `config_error`.
 - `load_skill_ref_file` succeeds only for already active skills.
 - `load_skill_ref_file` resolves `path` only inside the frozen `references/**`
   snapshot for the requested skill.
@@ -73,14 +90,24 @@
   unknown references, and frozen reference hash mismatches without reading source
   files.
 - text reference files below the inline threshold return text plus metadata.
-- large text and non-text reference files return artifact/reference markers plus
-  metadata without injecting raw large or binary content.
+- large text references and all non-text reference files return
+  artifact/reference markers plus metadata without injecting raw large or binary
+  content.
 - loaded reference file outputs are ordinary durable conversation tool
   observations and may later be omitted or compressed.
 - `PromptComposer` keeps the stable system block stable across skill
   activation.
 - `PromptComposer` adds runtime-supplied active skill context to
   `ModelContextFrame`.
+- active skill context is represented in `ModelContextFrame` as a
+  non-persistent segment with `role="system"` and
+  `kind="runtime_active_skill_context"`, not as stable system prompt content.
+- Phase 1 `AgentRunRequest` carries the complete `ModelContextFrame` in
+  `model_context_frame`; Phase 0/0.5 `system_prompt`, `conversation`, and
+  `user_input` fields are not independent context truth.
+- active skill context is not stored in durable `ReplRuntime.conversation`.
+- active skill context appears before rolling summary, retained raw messages,
+  and live/unconsumed messages in `ModelContextFrame`.
 - active skill context is marked authoritative for the current turn.
 - active skill context includes skill id, content hash or version, activation
   reason, scope, `SKILL.md` instructions, and available reference metadata.
@@ -97,18 +124,27 @@
   tool-result continuations, post-compression continuations, approval-denial
   aborts, compression-failure aborts, context-limit aborts, and final assistant
   responses.
-- durable conversation messages carry enough metadata to identify turn ids,
-  model-call ids, tool-call ids, artifact refs, safe boundaries, and the
-  current-turn protected suffix.
-- `ModelContextFrame` contains stable system content, context summary, retained
-  messages, runtime-supplied active skill context, tool-loop messages, and
-  current user input when applicable.
-- `PromptComposer` materializes `ModelContextFrame` into the existing
-  `AgentRunRequest.system_prompt`, `AgentRunRequest.conversation`,
-  `AgentRunRequest.user_input`, and `AgentRunRequest.tools` fields before the
+- durable conversation messages carry enough metadata to identify sequence,
+  turn ids, model-call ids, tool-call ids, artifact refs, estimated tokens, and
+  `model_call_group` boundaries.
+- query control plane derives `model_call_group` views with closed/open status,
+  consumed-by-later-model-call status, estimated tokens, and message ids.
+- query control plane identifies the non-evictable raw suffix from recent raw
+  groups, open groups, unconsumed groups, and current query/tool-loop buffers.
+- `ModelContextFrame` contains message segments for stable system content,
+  runtime-supplied active skill context, context summary, retained raw messages,
+  live/unconsumed messages, tool-loop messages, and current user input when
+  applicable, plus `tool_schema_bindings` for provider-native tool binding.
+- `PromptComposer` constructs the complete `ModelContextFrame` before the
   adapter call.
-- the materialized `AgentRunRequest` is semantically equivalent to the
-  `ModelContextFrame` used for token estimation and context decisions.
+- `AgentRunRequest.model_context_frame` is the same `ModelContextFrame` that was
+  used for token estimation and context decisions.
+- provider messages and provider-native tool bindings materialized by the
+  adapter are semantically equivalent to the `ModelContextFrame` used for token
+  estimation and context decisions.
+- provider-native tool bindings are materialized from
+  `ModelContextFrame.tool_schema_bindings`, not from an independent
+  `AgentRunRequest.tools` prompt truth.
 - token estimates are based on `ModelContextFrame`, not raw
   `ReplRuntime.conversation`.
 - context checks run before every adapter model invocation, including tool-loop
@@ -118,17 +154,22 @@
 - context settings load from `~/.debug-agent/config.toml`.
 - absent `[context]` uses Phase 1 built-in defaults for `window_tokens`,
   `omit_old_tool_results_at_ratio`, `compress_history_at_ratio`, and
-  `retain_recent_turns`.
-- invalid context settings fail startup with `config_error`.
+  `retain_recent_model_calls`.
+- absent `[context]` uses `compression_reserved_output_tokens = 10000`.
+- absent `[execution]` uses `default_shell_timeout_seconds = 300`.
+- invalid context or execution settings fail before session/run creation and do
+  not write runtime rows.
 - configured `window_tokens` is frozen into the session config snapshot.
 - context window percentage uses `window_tokens`.
 - status-bar context window display uses the frozen configured
   `window_tokens`, not a hardcoded default.
-- `retain_recent_turns` applies to the durable `ReplRuntime.conversation` list,
-  not to `ModelContextFrame`.
+- `retain_recent_model_calls` applies to raw completed `model_call_group` values
+  retained in durable `ReplRuntime.conversation`, not to `ModelContextFrame`.
+- `compression_reserved_output_tokens` is non-negative and less than
+  `window_tokens`.
 - `omit_old_tool_results_at_ratio` triggers old tool-result omission.
-- old tool-result omission keeps recent `retain_recent_turns` turns from
-  `ReplRuntime.conversation` intact.
+- old tool-result omission keeps recent `retain_recent_model_calls` raw groups
+  and live/unconsumed suffix messages intact.
 - old tool-result omission keeps artifact ids visible when available.
 - old tool-result omission mutates `ReplRuntime.conversation` by replacing
   older tool result bodies with omission markers.
@@ -139,54 +180,90 @@
   reduced-to estimates.
 - after old tool-result omission, runtime rebuilds and re-estimates the
   candidate `ModelContextFrame` before deciding whether compression is needed.
-- `compress_history_at_ratio` triggers conversation compression.
-- automatic compression excludes the current user input.
-- automatic compression excludes the full current-turn protected suffix,
-  including current user input, current-turn assistant tool-call messages, fresh
-  tool results, and follow-up tool-loop messages.
+- if omission does not run, runtime uses the original candidate estimate for
+  compression decisions.
+- `compress_history_at_ratio` triggers conversation compression only when
+  candidate tokens are strictly greater than
+  `compress_history_at_ratio * window_tokens`.
+- eligible evictable history tokens greater than
+  `compression_evicted_history_budget` trigger proactive compression.
+- compression selects oldest eligible `model_call_group` values without skipping
+  older eligible groups.
+- compression fails with `compression_failed` if the oldest eligible group cannot
+  fit within the compression input budget.
+- each pre-call optimization pass runs at most one compression model call.
+- automatic compression excludes the non-evictable raw suffix, including current
+  user input, open model-call output, pending tool calls, fresh tool results not
+  consumed by a later ordinary model call, and current query/tool-loop buffers.
 - compression prompt preserves task goal, completed milestones, inspected or
   modified files, remaining work, next plan, key decisions, and constraints.
+- compression prompt requires a complete rolling replacement summary, not a
+  delta.
 - compression output must parse as the required Phase 1 continuity summary JSON
   object.
-- compression output with missing required keys, non-string list entries,
-  non-object output, or empty output fails with `compression_failed`.
-- inability to construct a compression model input within `window_tokens` fails
-  with `compression_failed` before any compression model call is made.
+- compression output `visible_*` fields are continuity fields populated only from
+  previous summary or evicted LLM-visible history.
+- compression output includes `visible_loaded_skill_reference_files` as a
+  continuity field populated only from previous summary or evicted LLM-visible
+  history.
+- compression output that is not a JSON object, is empty, is missing a required
+  core field, or contains a known field with the wrong type (for example,
+  `task_goal` not a string or `completed_work` not an array of strings) fails
+  with `compression_failed`. Extra fields are ignored. Missing optional
+  `visible_*` fields default to empty arrays.
+- inability to construct a compression model input within `window_tokens` while
+  respecting `compression_reserved_output_tokens` fails with
+  `compression_failed` before any compression model call is made.
 - compression model calls are runtime-owned and tool-less.
 - compression model calls do not expose model-visible tools, enter the ordinary
   tool loop, or append assistant answers to durable conversation.
 - compression model calls use `CompressionContextFrame`, not the ordinary task
   `ModelContextFrame`.
 - `CompressionContextFrame` excludes the main agent system prompt, available
-  skill headers, model-visible tool schemas, active `SKILL.md` bodies, and the
-  current-turn protected suffix.
+  skill headers, model-visible tool schema bindings, active `SKILL.md` bodies,
+  retained recent raw messages, live/unconsumed suffix messages, runtime-owned
+  active skill refs, runtime-owned artifact refs, and runtime-owned policy or
+  approval facts.
+- `CompressionContextFrame` includes only previous summary if present, bounded
+  evicted history messages, and compression instruction/schema prompt.
 - ordinary task `ModelContextFrame` estimates still include the stable system
-  block, available skill headers, model-visible tool schemas, and active
+  block, available skill headers, model-visible tool schema bindings, and active
   `SKILL.md` bodies.
 - compression model calls write normal `model_call_started` and
   `model_call_completed` or `model_call_failed` events with
   `purpose="compression"` and an empty model-visible tool set.
 - successful compression writes compression-specific run events after the
   compression model-call event pair.
-- runtime, not the compression summary, preserves active skill refs, frozen skill
+- runtime, not the compression summary, preserves active skill records, frozen skill
   and reference snapshots, artifact ids, approval records, path policy, shell
   policy, and context snapshot ids.
-- compression replaces the compressible portion of `ReplRuntime.conversation`.
+- compression replaces selected evicted history in `ReplRuntime.conversation`.
+- compression replaces only the previous summary and selected evicted groups,
+  leaving retained recent raw groups and live/unconsumed suffix messages
+  unchanged.
 - compression rebuilds `ModelContextFrame` from the replaced conversation state.
-- `/compress` uses the same compression path as automatic compression.
+- `/compress` uses the same rolling summary compression machinery as automatic
+  compression.
 - `/compress` is accepted only while REPL is idle.
-- `/compress` ignores the compression threshold when compressible history exists.
+- `/compress` ignores the compression threshold when evictable history exists.
+- `/compress` skips old-tool-result omission and directly constructs a
+  `CompressionContextFrame` when evictable history exists.
 - `/compress` is a no-op with an English system message when durable
   conversation is empty.
-- `/compress` is a no-op with the same English system message when safe-boundary
-  and `retain_recent_turns` rules leave no compressible prefix.
+- `/compress` is a no-op with the same English system message when
+  `model_call_group` eligibility and `retain_recent_model_calls` leave no
+  evictable group.
 - `/compress` does not call skill activation or tool execution.
-- `/compress` preserves structured active skill refs.
-- context snapshot stores trigger, source checkpoint id, active skill refs,
-  summary, retained messages, omitted tool result count, artifact refs, token
-  estimate, payload artifact id when present, and version.
+- `/compress` preserves structured active skill records.
+- context snapshot stores trigger, source checkpoint id, active skill records,
+  summary, retained messages, omitted tool result count, evicted message count,
+  evicted model-call-group count, artifact refs, token estimate, payload
+  artifact id when present, and version.
 - context snapshot trigger supports `manual`, `omission`, `compression`, and
   `omission | compression`.
+- one pre-call optimization pass writes at most one context snapshot; an
+  omission-plus-compression pass writes only the final `omission | compression`
+  snapshot.
 - compression context snapshots store `summary` as canonical JSON serialization
   of the parsed continuity summary.
 - omission-only context snapshots store an empty string as `summary`.
@@ -194,8 +271,8 @@
   inline.
 - context snapshot stores post-optimization continuity state, not the
   pre-compression full context and not the final composed `ModelContextFrame`.
-- automatic omission and compression context snapshots exclude the current user
-  input and the rest of the current-turn protected suffix.
+- automatic omission and compression context snapshots exclude the live and
+  unconsumed raw suffix.
 - `runs.context_snapshot_id` is updated when a context snapshot is written.
 - `context` checkpoints reference the written context snapshot.
 - when omission/compression still leaves the next `ModelContextFrame` over the
@@ -238,20 +315,19 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 - tool handlers do not write audit events directly.
 - tool handlers do not read mutable global policy directly.
 - builtin path policy, user path policy, builtin shell policy, user shell policy,
-  runtime-control decisions, and reusable session approval grants are normalized
-  into `PermissionRule` values.
-- `PermissionRule.effect` supports `deny`, `allow`, `trust`, and `ask`.
-- path trust rules use `effect="trust"` and do not by themselves grant read,
-  write, execute, or runtime-control permission.
-- reusable `approved_for_session` grants are evaluated as session-local
-  `PermissionRule` values with `effect="allow"` after schema validation and all
-  deny rules.
-- `PermissionEvaluator` checks deny rules before approval mode, allow/trust
-  rules, approval grants, or user approval.
+  runtime-control decisions, approval mode, and reusable session approval grants
+  are consumed through one fixed permission decision pipeline.
+- path trust facts do not by themselves grant read, write, execute, or
+  runtime-control permission.
+- reusable `approved_for_session` grants are evaluated after schema validation,
+  hard-deny checks, shell allowlist gate, path classification, and approval-mode
+  matrix.
+- `PermissionEvaluator` checks hard denies before approval mode, approval grants,
+  or user approval.
 - non-empty shell allowlist miss is a policy denial and does not ask the user.
-- path trust rules are not exclusive allowlist gates.
-- `PermissionEvaluator` applies approval mode before asking the user.
-- policy denial cannot be overridden by allow rules, session grants, or
+- path trust facts are not exclusive allowlist gates.
+- `PermissionEvaluator` applies the approval-mode matrix before asking the user.
+- policy denial cannot be overridden by shell allow prefixes, session grants, or
   approval.
 - Phase 1 does not define per-tool approval metadata such as
   `requires_approval`.
@@ -265,6 +341,11 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
   as entry count.
 - `search_text` accepts `path`, `query`, and optional positive integer `limit`
   interpreted as match count.
+- `search_text.query` is treated as a literal UTF-8 substring, not a regular
+  expression.
+- `search_text` matching is case-sensitive and line-oriented, and returns file
+  path and line number metadata for each match.
+- `search_text` skips files that cannot be decoded as UTF-8.
 - `write_file` accepts `path` and `content`, and may create missing parent
   directories under authorized write scope.
 - `write_file` writes complete UTF-8 file content only under authorized write
@@ -274,10 +355,16 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
   authorized write paths.
 - `edit_file` replaces only the first exact occurrence and returns
   `ToolResult(status="error")` when `old_text` is absent.
+- `edit_file` matches on a normalized LF view but preserves the file's dominant
+  existing line-ending style on write-back.
+- `edit_file` writes LF line endings when no dominant existing line-ending style
+  can be determined.
 - `shell_exec` accepts non-empty `argv`, optional `cwd`, and optional positive
   integer `timeout_seconds`.
 - `shell_exec` effective timeout is the lesser of requested timeout and frozen
-  config timeout, or frozen config timeout when omitted.
+  `default_shell_timeout_seconds`, or frozen `default_shell_timeout_seconds`
+  when omitted, or the built-in default of `300` seconds when the frozen config
+  does not declare a timeout.
 - `activate_skill` uses `runtime_control` risk.
 - `load_skill_ref_file` uses read risk and runtime-control category.
 - `load_skill_ref_file` is audit-only in every approval mode when the target
@@ -316,10 +403,17 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 - builtin path-policy deny rules block explicit access to `.git`,
   `node_modules`, `build`, `dist`, `.venv`, `__pycache__`, `.pytest_cache`, and
   `.sessions` as an intentional Phase 1 breaking change.
+- the builtin skill-source deny rules block explicit model-visible access to
+  `~/.debug-agent/skills/` and `<workspace_root>/.debug-agent/skills/` without
+  blocking unrelated directories named `skills`.
 - builtin path-policy deny rules are hard denies and cannot be overridden by
   approval or user path policy in Phase 1.
 - model-visible tools cannot read, list, search, write, edit, or shell into
   `.sessions/`.
+- model-visible tools cannot read, list, search, write, edit, or shell into
+  `~/.debug-agent/skills/` or `<workspace_root>/.debug-agent/skills/`; frozen
+  skill content remains available through `/skills`, active skill context, and
+  `load_skill_ref_file`.
 - model-visible tools cannot use artifact ids or runtime references to bypass
   the builtin `.sessions/` deny rule.
 - runtime-owned stores can write under `.sessions/` through runtime service APIs
@@ -397,6 +491,12 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
   hash.
 - `load_skill_ref_file` approval scope signatures include skill name, skill
   content hash, reference path, and reference content hash.
+- `load_skill_ref_file` signature facts are audit/scope facts only in Phase 1:
+  valid active-skill reference loads are audit-only in every approval mode and
+  invalid loads are denied before approval.
+- `approval_grants` records only interactive user approval prompt decisions.
+- policy auto-allow outcomes, including `semi-auto` and `yolo`
+  runtime-control decisions, do not create `approval_grants` rows.
 - `approved_once` does not create a reusable session grant.
 - `approved_for_session` creates a reusable grant only for the current session.
 - `denied` decisions are persisted for audit.
@@ -405,6 +505,8 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 - `normal` mode requires approval for `activate_skill`.
 - `semi-auto` and `yolo` do not request interactive approval for
   `runtime_control` tools but still audit the runtime-control decision.
+- `semi-auto` and `yolo` runtime-control auto-allow decisions do not emit
+  `approval_requested` or `approval_decision_recorded`.
 - non-interactive approval requests return `policy_denied` and do not hang.
 - `n` denial returns a denied tool outcome with `turn_aborted=true`, ends the
   current turn normally, and re-enables input.
@@ -414,8 +516,11 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 
 ### REPL Commands And Views
 
-- `/skills` lists discoverable prompt skills and unsupported/deferred workflow
-  skills with reasons.
+- `/skills` lists supported prompt skills from the frozen session skill registry
+  snapshot.
+- `/skills` shows skill name, description, execution mode, source scope, content
+  hash, and active status for the current run.
+- `/skills` does not read live skill source files after startup.
 - `/tools` lists runtime-visible tools, category, risk, access, approval
   behavior, enabled status, and disabled reason.
 - `/compress` triggers manual compression only while idle.
@@ -423,7 +528,12 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
   effects.
 - `/agents` remains unsupported in Phase 1.
 - `/models` remains unsupported in Phase 1.
-- `Ctrl+Y` cycles `normal -> semi-auto -> yolo -> normal`.
+- idle-state `Ctrl+Y` cycles `normal -> semi-auto -> yolo -> normal`, updates
+  the session approval mode, writes an `approval_mode_changed` run event, and
+  records the switch in `engine.log`.
+- `Ctrl+Y` during active execution or while an inline approval prompt is waiting
+  is a silent no-op, does not queue a later mode change, and does not change the
+  current tool decision.
 - TUI approval prompt uses the existing prompt_toolkit application input area.
 - TUI approval `y` approves once and continues execution.
 - TUI approval `a` approves for the current session and continues execution.
@@ -445,7 +555,7 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
   `payload_artifact_id`.
 - run events support skill activation, approval request, approval decision,
   context omission, context compression, and shell policy denial events.
-- trace renders skill activation, active skill refs, approval decisions, shell
+- trace renders skill activation, active skill records, approval decisions, shell
   policy denials, path policy denials, context snapshots, and compression
   events.
 - engine log records approval mode switches, approval decisions, policy denials,
@@ -459,16 +569,16 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
   the next model call receives runtime-supplied active skill context.
 - one-shot explicitly configured as `semi-auto` can activate a prompt skill
   through `activate_skill`.
-- workflow skills cannot be activated in Phase 1.
+- non-prompt skill manifests fail startup with `config_error`.
 - modifying a skill file after session start does not change the frozen skill
   content used by the session.
 - frozen snapshot hash mismatch fails with a clear audit trail.
 - frozen reference file loading through `load_skill_ref_file` returns text
-  content for small text references and artifact/reference markers for large or
-  non-text references.
+  content for small text references and artifact/reference markers for large text
+  or any non-text references.
 - loaded reference file outputs may be omitted or compressed as ordinary
   conversation observations.
-- `/skills` shows prompt skills and unsupported workflow skills.
+- `/skills` shows prompt skills.
 - `/tools` shows available and disabled tools with reasons.
 - `/compress` while idle writes a context snapshot and updates
   `runs.context_snapshot_id`.
@@ -476,7 +586,7 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
   message and does not write a context snapshot.
 - `/compress` while idle and with durable conversation but no compressible
   prefix displays a no-op message and does not write a context snapshot.
-- `/compress` while idle and with compressible history runs compression even when
+- `/compress` while idle and with evictable history runs compression even when
   the current context estimate is below `compress_history_at_ratio`.
 - automatic old tool-result omission triggers before a model call and shows a
   REPL system message.
@@ -488,11 +598,11 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 - compression model calls are visible in trace as model-call events with
   `purpose="compression"` before the compression-specific events.
 - automatic compression in a tool-calling loop runs before follow-up model
-  invocation when the follow-up frame exceeds the threshold.
-- the current-turn protected suffix is not included in the compression model
-  call.
-- after compression, the current-turn protected suffix is passed unchanged to the
-  real model call.
+  invocation when the follow-up frame exceeds the threshold or eligible
+  evictable history exceeds the compression input budget.
+- the non-evictable raw suffix is not included in the compression model call.
+- after compression, the non-evictable raw suffix is passed unchanged to the real
+  model call.
 - after compression inside a tool-calling loop, fresh tool results and
   follow-up tool-loop messages are passed unchanged to the real model call.
 - if context remains over the hard context limit (`window_tokens`) after
@@ -505,9 +615,11 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 - `semi-auto` allows read-only native tools without asking unless path policy
   blacklist veto applies.
 - `semi-auto` allows `shell_exec` inside trusted workspace when shell policy
-  allows it and all classified paths are trusted or non-blacklisted.
-- `semi-auto` asks approval for `shell_exec` outside trusted workspace when
-  shell policy allows it.
+  allows it and `cwd`, any path-qualified executable path, and all classified
+  argv paths are trusted.
+- `semi-auto` asks approval for `shell_exec` when shell policy allows it but
+  `cwd`, a path-qualified executable path, or any classified argv path is
+  untrusted.
 - TUI approval `y` continues the current turn.
 - TUI approval `a` creates a session-local reusable grant and continues the
   current turn.
@@ -545,6 +657,9 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
   compression events.
 - Phase 1 startup, `status`, and `trace` fail closed with a clear legacy-schema
   error for Phase 0/0.5 legacy sessions.
+- legacy-schema errors instruct the user to move or remove `.sessions/` or use a
+  fresh workspace, and runtime does not migrate, delete, or rewrite the legacy
+  database automatically.
 - Phase 1 startup creates a missing `.sessions/runtime.db` with the Phase 1
   schema and writes `PRAGMA user_version = 1`
   (`PHASE_1_SCHEMA_USER_VERSION = 1`).
@@ -561,7 +676,7 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 
 - invalid `SKILL.md` front matter.
 - duplicate skill names within one discovery scope.
-- unsupported workflow skill activation.
+- non-prompt `execution_mode` in `SKILL.md`.
 - frozen skill snapshot corrupt or hash-mismatched.
 - missing referenced file in a frozen skill snapshot.
 - malformed reference paths passed to `load_skill_ref_file`.
@@ -585,9 +700,25 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 - compression model failure.
 - compression model failure writes `model_call_failed` with
   `purpose="compression"` before `compression_failed`.
-- compression output empty or invalid.
-- compression output missing required continuity summary JSON fields.
-- compression input cannot be constructed within `window_tokens`.
+- compression failure covers model-call failure, empty output, invalid continuity
+  summary output, inability to construct compression input within
+  `window_tokens` while respecting `compression_reserved_output_tokens`, and the
+  oldest eligible evictable `model_call_group` not fitting within the derived
+  compression input budget.
+- manual `/compress` compression failure writes `compression_failed` and a
+  `context` checkpoint, does not write a context snapshot, does not mutate
+  `ReplRuntime.conversation`, and keeps the long-lived REPL run/session running.
+- compression output empty, non-object, missing a required core field, or
+  containing a field with the wrong type.
+- compression input cannot be constructed within `window_tokens` while
+  respecting `compression_reserved_output_tokens`.
+- oldest eligible evictable `model_call_group` cannot fit within the compression
+  input budget.
+- oldest-eligible-group compression failure displays an English message that
+  tells the user to start a new session with a fresh context window.
+- oldest-eligible-group compression failure does not add recovery commands,
+  forced history deletion, map-reduce compression, or repeated compression
+  calls in Phase 1.
 - compression failure aborts the current turn without terminalizing the REPL
   session or long-lived prompt run.
 - provider usage unavailable.
@@ -600,6 +731,9 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 - `/agents` or `/models` submitted in Phase 1.
 - existing runtime database with `PRAGMA user_version = 0`, unknown, Phase 0, or
   Phase 0.5, reported as `error_class="config_error"`.
+- startup `config_error` after session/run creation but before accepting the
+  first prompt writes failure facts, terminalizes the partially initialized
+  run/session as `failed`, and releases workspace active ownership.
 
 ## Fake Model Testing
 
@@ -704,11 +838,14 @@ Phase 1 is accepted only if:
   and survive compression.
 - skill reference files are frozen and loadable through `load_skill_ref_file`
   without being automatically injected into every model call.
-- `/compress` and automatic compression share one path and replace
+- `/compress` and automatic compression share rolling summary compression
+  machinery, manual `/compress` skips old tool-result omission, and compression
+  replaces the previous summary and selected evicted groups in
   `ReplRuntime.conversation`.
 - status bar context percentage is based on `ModelContextFrame`.
 - ToolBroker enforces shell policy, path policy, approval, timeout, and audit.
-- approval grants are session-local and persisted for audit.
+- approval grants are session-local persisted audit records for interactive
+  approval prompts only.
 - model-visible `git_status` is removed and git access is controlled by shell
   policy.
 - `/skills`, `/tools`, and `/compress` are available.

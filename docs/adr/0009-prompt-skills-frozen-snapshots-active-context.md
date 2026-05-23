@@ -59,7 +59,16 @@ prompt.
 
 For each model call, `PromptComposer` generates a runtime-supplied active skill
 context block from the frozen `SKILL.md` body inside the per-call
-`ModelContextFrame`. This block is marked as authoritative for that turn.
+`ModelContextFrame`. This block is marked as authoritative for that turn,
+uses `role="system"` and `kind="runtime_active_skill_context"`, and is placed
+before rolling summary and retained raw conversation so recent raw history and
+live messages remain contiguous. It is not stable system prompt content, is not
+durable conversation history, and is not part of `/compress` input. Phase 1
+`AgentRunRequest` carries the complete `ModelContextFrame` in
+`model_context_frame`; the older `system_prompt`, `conversation`, and
+`user_input` fields are not independent context truth. Phase 1 also does not
+use a separate `AgentRunRequest.tools` field as prompt/context truth; provider
+tool bindings are materialized from `ModelContextFrame.tool_schema_bindings`.
 
 Phase 1 does not implement section-level progressive disclosure, semantic
 reference retrieval, or automatic active-skill disclosure degradation.

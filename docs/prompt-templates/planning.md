@@ -21,6 +21,20 @@
 - 逐项评估意见是否中肯，如果中肯，给出你的推荐解决方案
 - 如果有需要我拍版的地方，请停下来问我，不要随意发挥
 
+## Phase Documents Review
+
+请你评审当前<active-phase>的文档集，结合参考project-contract.md和adr/*文档，主要关注以下要点：
+1. 技术方案是否合理可行？
+2. 技术细节有无模糊点、矛盾点
+3. 是否兼容<active-phase>以前的各个phase，会不会有冲突？
+4. 对于发现的问题，给出你的推荐方案和理由
+5. 如果有需要我拍版的地方，请停下来告诉我，不要随意发挥
+6. 作出最终决定：是否可以冻结现有文档集，开始生成`implementation-plan.md`?
+提示：
+1. <active-phase>以前的各个phase都已经完成实现并通过验收，不用担心
+2. 当前还没有生成`implementation-plan.md`，这是故意的：必须等其他文档迭代成熟后在做实现计划
+3. 不要一次性完成全量审阅。请按文件逐个检查，每次最多读 2 个文件；每完成一组就输出 checkpoint：已检查内容、发现的问题、下一步。最后再给 freezing decision。
+
 ## Implementation Plan Generation
 
 现在代码合同与技术文档已经迭代成熟，请生成 phase-0.5 的 implementation-plan.md

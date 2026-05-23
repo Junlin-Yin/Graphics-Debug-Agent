@@ -32,7 +32,8 @@ packaging, or broad provider/model discovery.
     reasons, active skill injection, context estimation, and context
     optimization decisions.
   - `ContextManager`.
-  - `ModelContextFrame` as the model-call input shape used for token estimates.
+  - `ModelContextFrame` as the runtime-owned LLM-visible request frame used for
+    token estimates, including message segments and tool schema bindings.
   - `CompressionContextFrame` for runtime-owned compression model calls.
   - deterministic runtime-owned token estimator for pre-call context estimates.
   - context snapshot storage.
@@ -41,8 +42,16 @@ packaging, or broad provider/model discovery.
   - large model/tool output remains artifact-backed with summaries and artifact
     ids in model-visible context.
   - old tool-result omission at `omit_old_tool_results_at_ratio`.
-  - automatic conversation compression at `compress_history_at_ratio`.
-  - `/compress` shares the same compression path and is allowed only while idle.
+  - `retain_recent_model_calls` as the raw recent-history retention setting.
+  - `compression_reserved_output_tokens` as the compression-call output margin
+    setting, defaulting to `10000`.
+  - query-control-plane derived `model_call_group` view for omission and
+    compression eligibility.
+  - automatic rolling conversation compression at `compress_history_at_ratio`
+    or when eligible evictable history exceeds the derived compression input
+    budget.
+  - `/compress` shares the same rolling summary compression machinery and is
+    allowed only while idle, but does not run old tool-result omission.
   - if omission/compression still leaves the next `ModelContextFrame` over the
     hard context limit (`window_tokens`), the UI turn fails and runtime records
     a run event/checkpoint fact without terminating the session or long-lived
@@ -50,8 +59,9 @@ packaging, or broad provider/model discovery.
 - Tool safety:
   - Phase 1 `ToolBroker` acts as the runtime-owned tool control plane.
   - `ToolUseContext` for normalized per-call execution context.
-  - `PermissionRule` and `PermissionEvaluator` for builtin path, user path,
-    builtin shell, user shell, runtime-control, and approval-grant decisions.
+  - fixed permission decision pipeline for builtin path, user path,
+    builtin shell, user shell, runtime-control, approval-mode, and
+    approval-grant decisions.
   - path policy declared by the main agent config at
     `~/.debug-agent/agent.toml`.
   - shell policy declared independently from path policy in
@@ -83,7 +93,9 @@ packaging, or broad provider/model discovery.
   - `/skills`.
   - `/tools`.
   - `/compress`.
-  - `Ctrl+Y` approval mode cycling through `normal -> semi-auto -> yolo -> normal`.
+  - idle-state `Ctrl+Y` approval mode cycling through
+    `normal -> semi-auto -> yolo -> normal`, with persisted run-event and engine
+    log audit.
   - REPL default approval mode remains `normal`.
   - one-shot default approval mode remains `normal`; users may explicitly select
     `semi-auto` or `yolo` through the CLI approval-mode option.
@@ -101,6 +113,7 @@ packaging, or broad provider/model discovery.
 - subagents.
 - workflow execution.
 - workflow skill activation.
+- workflow skill manifests in the Phase 1 skill registry.
 - MCP server lifecycle, MCP tool discovery, or MCP tool invocation.
 - plugin packaging.
 - skill, agent, config, or model hot reload.
@@ -124,8 +137,11 @@ long-lived REPL prompt run; those statuses remain `running` and the REPL accepts
 the next user query.
 
 `compression_failed` is used when the compression model call fails, returns
-empty output, or returns output that cannot be parsed into a valid continuity
-summary. It is recorded as a run event and `context` checkpoint fact, and the
+empty output, returns output that cannot be parsed into a valid continuity
+summary, runtime cannot construct a compression input within `window_tokens`
+while respecting `compression_reserved_output_tokens`, or the oldest eligible
+evictable `model_call_group` cannot fit within the derived compression input
+budget. It is recorded as a run event and `context` checkpoint fact, and the
 current turn is aborted without terminalizing the session or long-lived prompt
 run.
 
@@ -164,6 +180,11 @@ must fail closed with a clear legacy-schema error. It must not silently
 reinterpret legacy rows as Phase 1 runtime truth, and Phase 1 `status` and
 `trace` do not support legacy sessions.
 
+The user-facing legacy-schema error must say that Phase 0/0.5 runtime databases
+are unsupported by Phase 1 and instruct the user to move or remove `.sessions/`
+or use a fresh workspace. Runtime must not migrate, delete, or rewrite the
+legacy database automatically.
+
 This is the final Phase 1 compatibility contract, not an open implementation
 question. Phase 1 identifies its schema with SQLite `PRAGMA user_version`. If
 `.sessions/runtime.db` does not exist, Phase 1 creates it with the Phase 1 schema
@@ -186,11 +207,14 @@ approval or user path policy.
 
 1. User starts a REPL session.
 2. Runtime loads global config and main agent `~/.debug-agent/agent.toml`.
-3. Runtime initializes the Phase 1 database, checks active session ownership,
-   creates the session, prompt run, and artifact root.
+3. Runtime resolves and validates config and main-agent policy facts, initializes
+   the Phase 1 database, checks active session ownership, creates the session,
+   prompt run, and artifact root, and persists the frozen session config
+   snapshot.
 4. Runtime snapshots prompt skills, persists the skill registry snapshot, and
    makes available skill headers ready before any user prompt is accepted.
-5. Runtime snapshots agent-declared path policy and shell policy.
+5. Runtime initializes `ToolBroker` from frozen builtin policy, main-agent path
+   policy, main-agent shell policy, and validated runtime-control targets.
 6. User asks for a task that causes the model to call `activate_skill`.
 7. `activate_skill` runs through `ToolBroker`, validates the skill hash, updates
    run-scoped `active_skills`, and records audit events.
@@ -199,35 +223,37 @@ approval or user path policy.
 9. If needed, the model calls `load_skill_ref_file` to load a frozen reference
    file from the active skill as an ordinary tool observation.
 10. The model calls a controlled tool.
-11. `ToolBroker` normalizes the tool call, evaluates `PermissionRule` values,
-   applies approval mode, approval grants, timeout, artifact rules, and audit,
-   then routes the allowed call to the native, shell, or runtime-control
-   handler.
+11. `ToolBroker` normalizes the tool call, applies the fixed permission
+   decision pipeline, applies timeout, artifact rules, and audit, then routes the
+   allowed call to the native, shell, or runtime-control handler.
 12. If approval is needed, the REPL asks the user inline.
-13. If context grows past configured thresholds, `ContextManager` applies
-    omission or the query control plane runs compression before the next
-    ordinary task model call.
-14. `/compress` triggers the same compression path while idle.
+13. Before each ordinary task model call, if context grows past configured
+    thresholds, `ContextManager` applies omission or the query control plane runs
+    at most one rolling compression call over bounded evictable
+    `model_call_group` history.
+14. `/compress` triggers the same rolling summary compression machinery while
+    idle. Manual `/compress` does not run old tool-result omission.
 
 ## Completion Definition
 
 Phase 1 is complete when:
 
 - prompt skills can be discovered, snapshotted, activated, injected, and audited.
-- workflow skills are rejected from the usable Phase 1 registry.
+- non-prompt skill manifests fail startup with `config_error`.
 - skill content is not compressed into conversation summaries and remains
   recoverable from the frozen skill snapshot.
-- active skill references survive `/compress`.
+- active skill records survive `/compress`.
 - skill reference files are frozen at session startup and can be loaded through
   `load_skill_ref_file` only for active skills.
 - loaded skill reference file outputs are ordinary conversation observations and
   may be omitted or compressed.
 - skills are not automatically deactivated or disclosure-degraded.
 - controlled tools cannot bypass `ToolBroker`.
-- `ToolBroker` evaluates normalized `PermissionRule` values before routing tool
-  calls to handlers.
-- path policy, shell policy, runtime-control constraints, and reusable session
-  approval grants are represented in one permission rule model.
+- `ToolBroker` applies the fixed permission decision pipeline before routing
+  tool calls to handlers.
+- path policy, shell policy, runtime-control constraints, approval mode, and
+  reusable session approval grants participate in one deterministic broker
+  decision path.
 - path policy denial is enforced by runtime, not by prompts.
 - path policy applies only to model-visible tool invocations mediated by
   `ToolBroker`; runtime-owned persistence and artifact store operations are not
@@ -239,6 +265,11 @@ Phase 1 is complete when:
 - model-visible tools cannot read, list, search, write, edit, or shell into
   `.sessions/`, and cannot use artifact ids or runtime references to bypass this
   builtin deny rule.
+- model-visible tools cannot read, list, search, write, edit, or shell into the
+  configured skill source roots `~/.debug-agent/skills/` and
+  `<workspace_root>/.debug-agent/skills/`.
+  Prompt skill content is exposed only through frozen skill snapshots,
+  `/skills`, active skill injection, and `load_skill_ref_file`.
 - Phase 1 acknowledges that argv path classification cannot fully sandbox shell
   command filesystem side effects.
 - approval decisions are persisted for audit and grants apply only to the
@@ -251,7 +282,19 @@ Phase 1 is complete when:
   current turn normally without a same-turn follow-up model call, records the
   denied tool result as a terminal observation visible to future turns, and
   returns the REPL to prompt input without terminalizing the session.
-- `/compress` and automatic compression share one implementation path.
+- `/compress` and automatic compression share one rolling summary compression
+  implementation path, while manual `/compress` skips old tool-result omission.
+- compression evicts only closed, later-consumed `model_call_group` values
+  outside the live/unconsumed suffix and outside the
+  `retain_recent_model_calls` raw window.
+- automatic compression runs when post-omission context exceeds
+  `compress_history_at_ratio * window_tokens` or when eligible evictable history
+  exceeds the derived compression input budget.
+- each pre-call optimization pass runs at most one compression model call.
+- manual `/compress` compression failure uses the same `compression_failed`
+  event/checkpoint behavior as automatic compression, does not write a context
+  snapshot, does not mutate conversation, and keeps the long-lived REPL prompt
+  run/session non-terminal.
 - when context remains over the hard limit (`window_tokens`) after omission and
   compression, the UI turn is marked failed, an English UI message is displayed,
   a run event/checkpoint fact is recorded with
@@ -266,3 +309,6 @@ Phase 1 is complete when:
 - Phase 1 acceptance is evaluated against the Phase 1 schema and safety policy.
   Phase 0 and Phase 0.5 sessions and the Phase 0 explicit-search behavior for
   generated/dependency directories are not compatibility requirements.
+- startup failures after session/run creation but before the first user prompt
+  are recorded as `config_error`, terminalize the partially initialized
+  run/session as `failed`, and release workspace active ownership.

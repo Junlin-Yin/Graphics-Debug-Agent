@@ -19,7 +19,7 @@ operate on the same data.
 ## Decision
 
 Introduce `ModelContextFrame` as the ordinary task model-call LLM-visible
-context boundary.
+request boundary.
 
 `ReplRuntime.conversation` remains durable LLM-visible working history. It is
 not audit truth, may be modified by context omission or compression, and is not
@@ -30,15 +30,31 @@ Before every adapter model invocation, runtime builds a `ModelContextFrame`.
 This includes follow-up model calls inside a tool-calling loop, not only the
 first model call of a user turn.
 
+Phase 1 `AgentRunRequest` is the adapter-call envelope. It carries
+`model_context_frame` plus execution metadata such as session id, run id, model
+config, timeout, and broker execution metadata. The adapter materializes
+provider-legal messages from `ModelContextFrame.message_segments` and
+provider-native tool bindings from `ModelContextFrame.tool_schema_bindings`; it
+does not pass the frame verbatim to providers. It must not own prompt injection
+policy or reconstruct model-visible context from separate `system_prompt`,
+`conversation`, `user_input`, or `tools` fields.
+
 Ordinary task `ModelContextFrame` includes:
 
-- stable system message content.
-- available skill headers and model-visible tool schemas.
+- message segments for stable system message content.
+- available skill headers.
+- runtime-supplied active skill context as non-persistent frame segments with
+  `role="system"` and `kind="runtime_active_skill_context"`.
 - context summary, when present.
-- retained conversation messages.
-- runtime-supplied active skill context.
+- retained raw conversation messages and live or unconsumed suffix messages.
 - tool-loop messages when applicable.
 - current user input when applicable.
+- `tool_schema_bindings` describing the frozen model-visible tool set.
+
+Tool schema bindings are not conversation messages and must not be serialized
+into the stable system prompt. They remain provider-native tool bindings at
+adapter call time, such as LangChain `bind_tools(...)`, while still being part
+of the runtime-owned frame used for estimates and tests.
 
 Token estimation, context window percentage, omission, compression decisions,
 and status bar context display are based on `ModelContextFrame`.
@@ -51,10 +67,11 @@ budget decisions.
 
 Runtime-owned compression calls use a separate compression frame. Compression
 does not include the main agent system prompt, available skill headers,
-model-visible tool schemas, or active `SKILL.md` bodies, because those are not
-compressible durable conversation. Ordinary task `ModelContextFrame` estimates
-still count those inputs because they are sent to the provider for ordinary task
-model calls.
+model-visible tool schema bindings, active `SKILL.md` bodies, retained recent raw
+messages, live or unconsumed suffix messages, or runtime-owned active skill
+records, artifact refs, policy facts, or approval facts. Ordinary task
+`ModelContextFrame` estimates still count those ordinary task inputs because
+they are sent to the provider for ordinary task model calls.
 
 ## Alternatives Considered
 

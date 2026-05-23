@@ -34,6 +34,14 @@ the CLI approval-mode option. This is a Phase 1 breaking change from Phase 0
 one-shot default autonomy: approval-required non-interactive operations fail
 closed unless the user explicitly selects a more autonomous mode.
 
+TTY REPL users may cycle the active approval mode with `Ctrl+Y` only while the
+REPL is idle. The cycle order is `normal -> semi-auto -> yolo -> normal`.
+Runtime updates the session approval mode, writes an `approval_mode_changed` run
+event, and records the switch in `engine.log`. `Ctrl+Y` during active turn
+execution or while an inline approval prompt is waiting must not change the
+current tool decision and must not queue a later mode change. Phase 1 fixes this
+behavior as a silent no-op.
+
 Mode behavior:
 
 - `normal`: read access inside trusted workspace is allowed automatically. Read
@@ -70,6 +78,13 @@ Runtime-control tools are evaluated independently from path access:
 | --- | --- | --- | --- |
 | `runtime_control` | interactive approval required | no interactive approval, audit required | no interactive approval, audit required |
 
+The `semi-auto` and `yolo` runtime-control outcomes are policy auto-allow
+decisions, not interactive approval decisions. They do not write
+`approval_grants` rows and do not emit `approval_requested` or
+`approval_decision_recorded` events. They must still write normal ToolBroker,
+runtime-control, and skill audit facts so trace can show that the call was
+allowed by the active approval mode.
+
 Policy denial, schema validation failure, and config errors cannot be overridden
 by any approval mode.
 
@@ -102,7 +117,6 @@ Minimum risk levels:
 - `read`
 - `write`
 - `execute`
-- `network`
 - `runtime_control`
 
 `activate_skill` uses `runtime_control`. `load_skill_ref_file` uses `read` risk
@@ -116,71 +130,69 @@ In `normal` mode, `runtime_control` tools such as `activate_skill` require
 approval. A user may choose approval for the current session so repeated
 same-scope activations can proceed without asking again.
 
-## Permission Rules And Evaluation
+## Permission Decision Pipeline
 
-Phase 1 normalizes builtin policy, main-agent path policy, main-agent shell
-policy, and session-local approval grants into runtime-owned `PermissionRule`
-values before tool execution.
+Phase 1 uses a fixed permission decision pipeline instead of a generic policy
+rule engine.
 
 Main-agent policy is still declared in `~/.debug-agent/agent.toml`.
 `~/.debug-agent/config.toml` remains operational runtime configuration. Policy
 declarations are not enforced directly from TOML structures; they are parsed,
 validated, frozen into the session config snapshot as policy facts, and then
-evaluated as `PermissionRule` values.
+consumed by the broker decision pipeline.
 
-Minimum rule shape:
+Minimum frozen policy facts:
 
-```python
-class PermissionRule:
-    rule_id: str
-    source: str
-    target: dict
-    matcher: dict
-    effect: str
-    priority: int
-    reason: str
-```
+- builtin path deny entries.
+- user path trust entries.
+- user path deny entries.
+- builtin shell deny patterns.
+- user shell allow prefixes.
+- user shell deny prefixes.
+- validated runtime-control target facts, such as frozen skill names and hashes.
+- reusable session approval grants.
 
-Allowed `source` values:
-
-- `builtin_path`
-- `user_path`
-- `builtin_shell`
-- `user_shell`
-- `approval_grant`
-- `runtime_control`
-
-Allowed `effect` values:
-
-- `deny`
-- `allow`
-- `trust`
-- `ask`
+Implementations may use internal helper classes for these facts, but Phase 1
+does not require `PermissionRule` or another generic normalized rule model as a
+contract.
 
 `trust` is intentionally separate from `allow`. A trusted path affects whether
 approval mode can automatically allow an operation; it does not by itself grant
-read, write, execute, or runtime-control permission. Shell allow rules authorize
-command identity only; they do not override path denies, builtin denies, schema
-validation, timeout, artifact handling, or audit.
+read, write, execute, or runtime-control permission. Shell allow prefixes
+authorize command identity only; they do not override path denies, builtin
+denies, schema validation, timeout, artifact handling, or audit.
 
 `PermissionEvaluator` evaluates normalized tool-call facts in this order:
 
-1. check `deny` rules.
-2. apply approval mode to risk, access, path trust, and shell facts.
-3. check `allow` and `trust` rules, including shell allowlist and path trust.
-4. check reusable session approval grants.
-5. ask the user through `ApprovalProvider` if the resulting decision is still
-   `ask`.
-
-Some allow rules are gates, not convenience grants. In particular, when user
-shell `allow` is non-empty, a shell command must match a shell allow rule or it
-is denied with `policy_denied`; runtime must not ask the user to override the
-missing allow match. Path `trust` rules are not gates and do not form an
-exclusive path allowlist.
+1. Validate schema and normalize tool-call facts:
+   - risk level, category, and requested access.
+   - canonical file paths.
+   - shell argv identity, canonical cwd, effective timeout, and classified argv
+     path tokens.
+   - runtime-control targets such as skill name and frozen content hash.
+   - deterministic approval scope signature.
+2. Apply hard-deny checks:
+   - builtin path deny entries.
+   - user path deny entries.
+   - builtin shell deny patterns.
+   - user shell deny prefixes.
+   - invalid runtime-control targets, including unknown skills, invalid reference
+     paths, missing frozen snapshots, corrupt snapshots, and hash mismatches.
+3. For `shell_exec`, apply the shell allowlist gate. If user shell `allow` is
+   non-empty, the normalized command must match a user shell allow prefix. A miss
+   is `policy_denied` and must not ask the user.
+4. Classify all normalized paths that survived deny checks as trusted or
+   untrusted. Path trust entries are not gates and do not form an exclusive path
+   allowlist.
+5. Apply the approval-mode matrix to risk level, requested access, shell-policy
+   result, and path classification. The matrix returns either `allow` or `ask`.
+6. If the matrix returns `ask`, check reusable session approval grants for the
+   exact session, tool name, risk level, and approval scope signature.
+7. If the decision is still `ask`, ask the user through `ApprovalProvider`.
 
 Policy denial, schema validation failure, config errors, invalid frozen skill
 targets, and builtin deny matches are final. They cannot be overridden by
-approval mode, `allow` rules, or session grants.
+approval mode, shell allow prefixes, or session grants.
 
 ## Path Policy
 
@@ -211,11 +223,11 @@ paths = ["secrets/", ".env"]
 ```
 
 The agent config only declares policy. Runtime and `ToolBroker` enforce it.
-Runtime parses each path policy entry into `PermissionRule` values with
-`effect="trust"` or `effect="deny"`.
+Runtime parses each path policy entry into frozen path policy facts with either
+`trust` or `deny` scope.
 
 If `~/.debug-agent/agent.toml` is absent or does not declare path policies,
-Phase 1 creates a builtin workspace-root `PermissionRule` with `effect="trust"`.
+Phase 1 treats the workspace root as a builtin trusted root.
 
 Allowed path policy scopes are:
 
@@ -252,6 +264,11 @@ Builtin path policy deny rules (cannot be overridden by user configuration):
 - `.pytest_cache/`
 - `.sessions/`
 
+Additional builtin path policy deny rules:
+
+- `~/.debug-agent/skills/`
+- `<workspace_root>/.debug-agent/skills/`
+
 TODO(Phase 4): shader/build artifact collection should expose controlled
 runtime artifact summaries or previews instead of relaxing these Phase 1
 model-visible filesystem denies.
@@ -261,6 +278,12 @@ skip directories and are now enforced uniformly through path policy. They apply
 to all model-visible tools that traverse or access the filesystem, including
 `search_text`, `read_file`, `list_dir`, `write_file`, `edit_file`, and
 `shell_exec` classified path tokens.
+
+The skill-source deny rules are intentionally scoped to the configured global
+and project skill roots. They must not deny unrelated directories merely because
+they are named `skills`. Runtime may read these directories during startup skill
+snapshotting, but after snapshotting the frozen skill snapshot is the runtime
+truth exposed to model-visible skill tooling.
 
 This is an intentional Phase 1 breaking change. Phase 0 allowed explicit
 `search_text` requests inside these directories even though default workspace
@@ -295,6 +318,12 @@ access to `.sessions/`. A model-visible tool cannot bypass `.sessions/` denial
 by presenting an artifact id or runtime reference unless runtime explicitly
 resolves that reference into a controlled preview or summary that does not expose
 `.sessions/` path access.
+
+Model-visible tools also must not read, list, search, write, edit, or shell into
+`~/.debug-agent/skills/` or `<workspace_root>/.debug-agent/skills/`. A
+model-visible tool cannot bypass this denial by asking for current source files
+after startup; it must use `/skills`, active skill context, or
+`load_skill_ref_file` to see frozen skill content.
 
 For paths that do not yet exist, such as a `write_file` target whose parent
 directory will be created, canonicalization uses this algorithm:
@@ -377,11 +406,11 @@ Rules:
 - matching is performed on parsed argv, not on a raw shell string.
 - unrestricted `shell=True` execution is not a Phase 1 tool contract.
 
-Runtime parses shell policy into `PermissionRule` values:
+Runtime parses shell policy into frozen shell policy facts:
 
-- builtin shell denies use `effect="deny"` and `source="builtin_shell"`.
-- user shell denies use `effect="deny"` and `source="user_shell"`.
-- user shell allow prefixes use `effect="allow"` and `source="user_shell"`.
+- builtin shell deny patterns.
+- user shell deny prefixes.
+- user shell allow prefixes.
 
 An empty shell allow list does not create a wildcard allow rule. It means there
 is no user allowlist restriction after builtin deny, user deny, path policy,
@@ -440,6 +469,13 @@ under each approval mode, given path policy classification.
 
 `deny` (blacklist) overrides all cells: denied before approval is requested
 in every mode, including `yolo`.
+
+`load_skill_ref_file` does not follow the general matrix above. When the target
+skill is already active, the requested path resolves inside the frozen reference
+snapshot for that skill, and the frozen reference hash validates, the tool is
+audit-only in every approval mode. Inactive skills, invalid paths, missing
+references, corrupt snapshots, and hash mismatches are denied before approval and
+cannot be overridden by any mode.
 
 Known issue: `yolo` intentionally auto-allows untrusted write-native operations
 and untrusted shell execution after schema validation, builtin/user path-policy
@@ -503,6 +539,14 @@ If a classified argv path is blacklisted, `ToolBroker` denies before approval.
 If a classified argv path is untrusted, approval-mode rules decide whether
 interactive approval is required.
 
+For `shell_exec`, path classification is aggregated conservatively. The call is
+treated as trusted only when `cwd`, any path-qualified executable path, and every
+runtime-classified argv path are trusted. If any participating path is
+untrusted, the whole shell call is treated as untrusted for the approval-mode
+matrix. This means `semi-auto` auto-allows shell execution only when shell
+policy passes and all participating paths are trusted; otherwise it asks for
+approval unless the path is denied outright.
+
 Known issue: argv classification cannot prove the command will not access paths
 that are absent from argv or hidden behind tool-specific semantics. Phase 1
 acknowledges this limitation. A future phase may need a real filesystem sandbox
@@ -540,17 +584,26 @@ Minimum Phase 1 signatures:
 - `load_skill_ref_file` uses the skill `name`, skill content hash, reference
   path, and reference content hash.
 
+`load_skill_ref_file` signature facts are recorded for audit and scope
+consistency. In Phase 1 they do not create a practical reusable interactive
+grant path because valid active-skill reference loads are audit-only in every
+approval mode, while invalid loads are denied before approval.
+
 Approval grants are not path-policy or shell-policy declarations. Reusable
-`approved_for_session` grants are represented to `PermissionEvaluator` as
-session-local `PermissionRule` values with `source="approval_grant"` and
-`effect="allow"`. They only skip future interactive approval for the same
-session, tool, risk level, and exact scope signature after schema validation,
-shell policy, path policy, builtin deny, timeout, artifact, and audit checks
-still pass.
+`approved_for_session` grants are checked only after schema validation, hard
+denies, the shell allowlist gate, path classification, and approval-mode matrix
+have run. They only skip future interactive approval for the same session, tool,
+risk level, and exact scope signature after schema validation, shell policy,
+path policy, builtin deny, timeout, artifact, and audit checks still pass.
 
 ## Persistence
 
-Phase 1 adds persisted approval audit records. A minimum table shape:
+Phase 1 adds persisted interactive approval records. `approval_grants` is the
+history and reusable-grant table for user approval prompts only. It does not
+record policy auto-allow outcomes such as `semi-auto` or `yolo` runtime-control
+decisions.
+
+A minimum table shape:
 
 ```sql
 CREATE TABLE approval_grants (
@@ -580,8 +633,12 @@ Allowed `grant_scope` values:
 - `session`
 - `none`
 
-The table is audit history. Only `approved_for_session` rows are reusable grant
-cache entries, and only within the same session.
+The table is interactive approval audit history. Only `approved_for_session`
+rows are reusable grant cache entries, and only within the same session.
+Policy auto-allow, audit-only runtime-control decisions, schema denials, shell
+or path policy denials, and other non-interactive broker outcomes are recorded
+through run events, tool audit events, trace, and `engine.log`, not as
+`approval_grants` rows.
 
 ## TUI Approval Prompt
 
@@ -639,6 +696,9 @@ Minimum event kinds:
 
 - `approval_requested`
 - `approval_decision_recorded`
+
+These event kinds are emitted only for interactive approval prompts. They are
+not emitted for `semi-auto` or `yolo` policy auto-allow decisions.
 
 Tool denial due to approval uses existing tool denial semantics and includes
 `error_class=policy_denied`.
