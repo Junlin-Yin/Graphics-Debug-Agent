@@ -1,5 +1,8 @@
 .codely-cli/
-.codex/
+.codex/*
+!.codex/agents/
+.codex/agents/*
+!.codex/agents/*.toml
 .claude/
 .sessions/
 test.md
