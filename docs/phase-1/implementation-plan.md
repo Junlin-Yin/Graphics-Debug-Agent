@@ -322,27 +322,27 @@ Objective: freeze prompt skills at startup before any user prompt or runtime-con
 
 Deliverables: deterministic skill discovery, manifest validation, frozen skill/reference snapshots, startup ordering, available skill headers, and startup-failure transaction behavior.
 
-- [ ] Implement `SkillRegistry` discovery from exactly `~/.debug-agent/skills` and `<workspace_root>/.debug-agent/skills`.
-- [ ] Ensure CLI explicit skill paths and builtin skill roots are not discovered in Phase 1.
-- [ ] Scan direct child directories only; do not treat the root itself as a skill directory; ignore nested `SKILL.md`; do not follow symlinked skill directories.
-- [ ] Process skill directories and reference paths in normalized path order.
-- [ ] Parse required UTF-8 `SKILL.md` with YAML front matter and Markdown body.
-- [ ] Validate manifest fields: `name`, `description`, optional `execution_mode`, `triggers`, and `metadata`; reject unknown fields and invalid field types.
-- [ ] Enforce skill names matching `[A-Za-z0-9_.-]+` with maximum length 128.
-- [ ] Treat absent `execution_mode` as `prompt`; reject non-`prompt` execution modes with startup `config_error`.
-- [ ] Implement project-over-global whole-skill override and duplicate-name rejection within the same scope.
-- [ ] Snapshot `SKILL.md` and file-level `references/**`; ignore files outside those paths, do not copy them to artifacts, and do not include them in skill hashes.
-- [ ] Classify references as UTF-8 text or non-text; artifact large text and always artifact all non-text reference payloads.
-- [ ] Artifact oversized serialized skill snapshot payloads through `skill_snapshots.payload_artifact_id` while preserving inline minimum snapshot facts required for lookup and trace.
-- [ ] Fail startup with `config_error` for unreadable reference files under `references/**`.
-- [ ] Compute deterministic SHA-256 hashes for manifest facts, normalized `SKILL.md`, reference paths, reference metadata, and reference content.
-- [ ] Persist `skill_snapshots` and `skill_reference_snapshots` after session/run/artifact root creation and before accepting any user prompt.
-- [ ] Wire the startup coordinator so Phase 1 validates config/policy, performs schema-version gating, checks active ownership, creates session/run/artifact state, persists frozen skill snapshots and available skill headers, initializes broker/context/query-control services, and only then accepts the first one-shot or REPL prompt.
-- [ ] Implement available skill header generation from the frozen registry snapshot.
-- [ ] Ensure available skill headers contain activation candidates only and do not include full skill bodies or reference file contents.
-- [ ] Implement startup `config_error` transaction behavior after session/run creation but before first prompt: write best available failure event and `error` checkpoint, mark partially initialized run/session `failed`, and release active ownership.
-- [ ] Add unit tests for discovery roots, precedence, duplicates, invalid manifests, hash stability, startup blocking, source file mutation after startup, unreadable reference startup failure, reference artifacting, oversized skill snapshot payload artifacting, and startup failure transactions.
-- [ ] Verify with canonical command `uv run pytest tests/unit -v`.
+- [x] Implement `SkillRegistry` discovery from exactly `~/.debug-agent/skills` and `<workspace_root>/.debug-agent/skills`.
+- [x] Ensure CLI explicit skill paths and builtin skill roots are not discovered in Phase 1.
+- [x] Scan direct child directories only; do not treat the root itself as a skill directory; ignore nested `SKILL.md`; do not follow symlinked skill directories.
+- [x] Process skill directories and reference paths in normalized path order.
+- [x] Parse required UTF-8 `SKILL.md` with YAML front matter and Markdown body.
+- [x] Validate manifest fields: `name`, `description`, optional `execution_mode`, `triggers`, and `metadata`; reject unknown fields and invalid field types.
+- [x] Enforce skill names matching `[A-Za-z0-9_.-]+` with maximum length 128.
+- [x] Treat absent `execution_mode` as `prompt`; reject non-`prompt` execution modes with startup `config_error`.
+- [x] Implement project-over-global whole-skill override and duplicate-name rejection within the same scope.
+- [x] Snapshot `SKILL.md` and file-level `references/**`; ignore files outside those paths, do not copy them to artifacts, and do not include them in skill hashes.
+- [x] Classify references as UTF-8 text or non-text; artifact large text and always artifact all non-text reference payloads.
+- [x] Artifact oversized serialized skill snapshot payloads through `skill_snapshots.payload_artifact_id` while preserving inline minimum snapshot facts required for lookup and trace.
+- [x] Fail startup with `config_error` for unreadable reference files under `references/**`.
+- [x] Compute deterministic SHA-256 hashes for manifest facts, normalized `SKILL.md`, reference paths, reference metadata, and reference content.
+- [x] Persist `skill_snapshots` and `skill_reference_snapshots` after session/run/artifact root creation and before accepting any user prompt.
+- [x] Wire the startup coordinator so Phase 1 validates config/policy, performs schema-version gating, checks active ownership, creates session/run/artifact state, persists frozen skill snapshots and available skill headers, initializes broker/context/query-control services, and only then accepts the first one-shot or REPL prompt.
+- [x] Implement available skill header generation from the frozen registry snapshot.
+- [x] Ensure available skill headers contain activation candidates only and do not include full skill bodies or reference file contents.
+- [x] Implement startup `config_error` transaction behavior after session/run creation but before first prompt: write best available failure event and `error` checkpoint, mark partially initialized run/session `failed`, and release active ownership.
+- [x] Add unit tests for discovery roots, precedence, duplicates, invalid manifests, hash stability, startup blocking, source file mutation after startup, unreadable reference startup failure, reference artifacting, oversized skill snapshot payload artifacting, and startup failure transactions.
+- [x] Verify with canonical command `uv run pytest tests/unit -v`.
 
 Modified boundaries: startup orchestration, skill discovery/snapshotting, skill snapshot persistence, and available skill header generation.
 

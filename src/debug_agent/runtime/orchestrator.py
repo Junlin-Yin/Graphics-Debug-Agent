@@ -17,6 +17,7 @@ from debug_agent.persistence.errors import StoreError
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
+from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeBootstrapError, RuntimeDatabase
 from debug_agent.runtime.config import PHASE_0_SYSTEM_PROMPT
 from debug_agent.runtime.contracts import AgentRunResult, Checkpoint, RunEvent, utc_now_iso
@@ -24,6 +25,7 @@ from debug_agent.runtime.policy import load_main_agent_policy, policy_facts_to_s
 from debug_agent.runtime.prompt_executor import PromptAgentExecutor
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.runtime.workspace import resolve_workspace_root
+from debug_agent.skills.registry import SkillRegistry, SkillRegistryError
 from debug_agent.tools.broker import ToolBroker
 from debug_agent.tools.native import gated_user_facing_tool_definitions
 
@@ -263,6 +265,39 @@ class RuntimeOrchestrator:
             session = sessions.set_active_run(session.session_id, run.run_id)
             _append_event(events, session.session_id, run.run_id, "session_started", {})
             _append_event(events, session.session_id, run.run_id, "run_started", {})
+            startup_error = _snapshot_skills_for_startup(
+                workspace_root=self.workspace_root,
+                artifacts=artifacts,
+                connection=db.connection,
+                session_id=session.session_id,
+                run_id=run.run_id,
+            )
+            if startup_error is not None:
+                failed = _mark_failed_terminal(
+                    sessions=sessions,
+                    runs=runs,
+                    events=events,
+                    checkpoints=checkpoints,
+                    trace_writer=TraceWriter(db.connection, sessions_root),
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    agent_result=AgentRunResult(
+                        status="failed",
+                        assistant_output=None,
+                        tool_results=[],
+                        usage={},
+                        error=startup_error,
+                        metadata={"prompt_turn_counter": 0},
+                    ),
+                )
+                return OneShotResult(
+                    exit_code=1,
+                    assistant_output=None,
+                    error=failed.error,
+                    message=failed.message,
+                    session_id=failed.session_id,
+                    run_id=failed.run_id,
+                )
 
             model_result = ModelFactory().create(config_snapshot)
             if model_result.error is not None:
@@ -578,6 +613,40 @@ class RuntimeOrchestrator:
         session = sessions.set_active_run(session.session_id, run.run_id)
         _append_event(events, session.session_id, run.run_id, "session_started", {})
         _append_event(events, session.session_id, run.run_id, "run_started", {})
+        startup_error = _snapshot_skills_for_startup(
+            workspace_root=self.workspace_root,
+            artifacts=artifacts,
+            connection=db.connection,
+            session_id=session.session_id,
+            run_id=run.run_id,
+        )
+        if startup_error is not None:
+            _mark_failed_terminal(
+                sessions=sessions,
+                runs=runs,
+                events=events,
+                checkpoints=checkpoints,
+                trace_writer=TraceWriter(db.connection, sessions_root),
+                session_id=session.session_id,
+                run_id=run.run_id,
+                agent_result=AgentRunResult(
+                    status="failed",
+                    assistant_output=None,
+                    tool_results=[],
+                    usage={},
+                    error=startup_error,
+                    metadata={"prompt_turn_counter": 0},
+                ),
+            )
+            db.close()
+            return ReplStartResult(
+                runtime=None,
+                error=ReplStartError(
+                    exit_code=4,
+                    message=startup_error["message"],
+                    error=startup_error,
+                ),
+            )
 
         model_result = ModelFactory().create(config_snapshot)
         if model_result.error is not None:
@@ -657,6 +726,32 @@ class RuntimeOrchestrator:
         frozen = dict(config_snapshot)
         frozen["policy"] = policy_facts_to_snapshot(policy.facts)
         return frozen
+
+
+def _snapshot_skills_for_startup(
+    *,
+    workspace_root: Path,
+    artifacts: ArtifactStore,
+    connection,
+    session_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
+    try:
+        snapshots = SkillRegistry(
+            workspace_root=workspace_root,
+            artifact_store=artifacts,
+        ).snapshot(session_id=session_id, run_id=run_id)
+        store = SkillSnapshotStore(connection)
+        store.save_many(snapshots)
+        store.available_skill_headers(session_id=session_id, run_id=run_id)
+        return None
+    except SkillRegistryError as exc:
+        return {
+            "error_class": exc.error_class,
+            "message": str(exc),
+            "source": exc.source,
+            "recoverable": exc.recoverable,
+        }
 
 def _mark_failed_terminal(
     *,

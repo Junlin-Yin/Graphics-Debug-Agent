@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from debug_agent.runtime.contracts import AgentRunResult
@@ -25,6 +26,12 @@ def _config(response: str = "fake answer") -> dict:
 def test_one_shot_success_persists_lifecycle_and_completes_session(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    skill_dir = workspace / ".debug-agent" / "skills" / "alpha"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: Alpha skill\n---\nUse alpha.\n",
+        encoding="utf-8",
+    )
     result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
         "hello", _config("one shot answer")
     )
@@ -50,6 +57,7 @@ def test_one_shot_success_persists_lifecycle_and_completes_session(tmp_path) -> 
         run_latest_checkpoint_id = conn.execute(
             "SELECT latest_checkpoint_id FROM runs"
         ).fetchone()[0]
+        skill_rows = conn.execute("SELECT skill_name FROM skill_snapshots").fetchall()
 
     assert session_row == ("completed", "normal", None)
     assert run_row == ("completed", "prompt")
@@ -69,6 +77,54 @@ def test_one_shot_success_persists_lifecycle_and_completes_session(tmp_path) -> 
     terminal_checkpoint_id = checkpoint_rows[-1][0]
     assert session_latest_checkpoint_id == terminal_checkpoint_id
     assert run_latest_checkpoint_id == terminal_checkpoint_id
+    assert skill_rows == [("alpha",)]
+
+
+def test_one_shot_skill_headers_do_not_mutate_config_snapshots_or_model_input(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    skill_dir = workspace / ".debug-agent" / "skills" / "alpha"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: Alpha skill\n---\nSECRET BODY\n",
+        encoding="utf-8",
+    )
+    config = _config("unused")
+    original_config = json.loads(json.dumps(config))
+    captured: dict[str, dict] = {}
+
+    class CapturingAdapter:
+        def __init__(self, *, model: object, tool_broker: object) -> None:
+            self.model = model
+            self.tool_broker = tool_broker
+
+        def run(self, request, context):
+            captured["model_config"] = dict(request.model_config)
+            return AgentRunResult(
+                status="completed",
+                assistant_output="captured",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+    monkeypatch.setattr(
+        orchestrator_module, "LangChainAgentLoopAdapter", CapturingAdapter
+    )
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot("hello", config)
+
+    assert result.exit_code == 0
+    assert config == original_config
+    assert "available_skill_headers" not in captured["model_config"]
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        persisted_config = json.loads(
+            conn.execute("SELECT config_snapshot_json FROM sessions").fetchone()[0]
+        )
+    assert "available_skill_headers" not in persisted_config
 
 
 def test_one_shot_default_path_does_not_expose_phase1_native_tools_before_gate(
@@ -125,6 +181,85 @@ def test_one_shot_model_failure_marks_run_and_session_failed(tmp_path) -> None:
         ]
     assert "run_failed" in event_kinds
     assert "session_failed" in event_kinds
+
+
+def test_one_shot_invalid_skill_fails_before_model_call_and_releases_ownership(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    skill_dir = workspace / ".debug-agent" / "skills" / "bad"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: bad\ndescription: Bad\nexecution_mode: workflow\n---\nbody\n",
+        encoding="utf-8",
+    )
+
+    def fail_if_model_created(self, config_snapshot):
+        raise AssertionError("model must not be created after skill startup failure")
+
+    monkeypatch.setattr(orchestrator_module.ModelFactory, "create", fail_if_model_created)
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot("hello", _config())
+
+    assert result.exit_code == 1
+    assert result.error["error_class"] == "config_error"
+    assert "Only prompt skills" in result.message
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        session_status, active_run_id = conn.execute(
+            "SELECT status, active_run_id FROM sessions"
+        ).fetchone()
+        run_status = conn.execute("SELECT status FROM runs").fetchone()[0]
+        event_kinds = [
+            row[0] for row in conn.execute("SELECT kind FROM run_events ORDER BY rowid")
+        ]
+        checkpoint_kind, checkpoint_summary = conn.execute(
+            "SELECT kind, summary FROM checkpoints ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+
+    assert (session_status, active_run_id, run_status) == ("failed", None, "failed")
+    assert checkpoint_kind == "error"
+    assert "Only prompt skills" in checkpoint_summary
+    assert event_kinds == [
+        "session_started",
+        "run_started",
+        "checkpoint_written",
+        "run_failed",
+        "session_failed",
+    ]
+
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: bad\ndescription: Fixed\n---\nbody\n", encoding="utf-8"
+    )
+    monkeypatch.undo()
+    second = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
+        "hello", _config()
+    )
+    assert second.exit_code == 0
+
+
+def test_repl_invalid_skill_fails_startup_before_returning_runtime(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    skill_dir = workspace / ".debug-agent" / "skills" / "bad"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: bad\ndescription: Bad\nexecution_mode: subagent\n---\nbody\n",
+        encoding="utf-8",
+    )
+
+    result = RuntimeOrchestrator(workspace_root=workspace).start_repl(_config())
+
+    assert result.runtime is None
+    assert result.error is not None
+    assert result.error.error["error_class"] == "config_error"
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        session_status, active_run_id = conn.execute(
+            "SELECT status, active_run_id FROM sessions"
+        ).fetchone()
+        run_status = conn.execute("SELECT status FROM runs").fetchone()[0]
+
+    assert (session_status, active_run_id, run_status) == ("failed", None, "failed")
 
 
 def test_one_shot_model_cancellation_marks_failed_and_releases_ownership(
