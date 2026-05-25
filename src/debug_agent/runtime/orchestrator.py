@@ -144,16 +144,15 @@ class ReplRuntime:
             )
             if not records:
                 return ["Skills: none"]
-            lines = ["Skills:"]
+            lines: list[str] = []
             for record in records:
-                active = "yes" if record.active else "no"
-                lines.append(
-                    "- "
-                    f"{record.name} | {record.description} | "
-                    f"mode={record.execution_mode} | "
-                    f"scope={record.source_scope} | "
-                    f"hash={record.content_hash} | "
-                    f"active={active}"
+                active = "active" if record.active else "inactive"
+                lines.extend(
+                    [
+                        "",
+                        f"- {record.name} ({record.source_scope}) [{active}]",
+                        record.description,
+                    ]
                 )
             return lines
 

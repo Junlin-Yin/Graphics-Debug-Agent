@@ -91,9 +91,12 @@ class FakeRuntime:
         self.stream_events: list[AgentStreamEvent] = []
         self.stream_callback_seen = False
         self.frozen_skill_lines = [
-            "Skills:",
-            "- alpha | Alpha skill | mode=prompt | scope=project | hash=sha256:aaa | active=yes",
-            "- beta | Beta skill | mode=prompt | scope=global | hash=sha256:bbb | active=no",
+            "",
+            "- alpha (project) [active]",
+            "Alpha skill",
+            "",
+            "- beta (global) [inactive]",
+            "Beta skill",
         ]
 
     def run_turn(self, user_input: str, agent_stream_callback=None) -> AgentRunResult:

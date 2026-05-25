@@ -5,6 +5,7 @@
 !.codex/agents/*.toml
 .claude/
 .sessions/
+.debug-agent/
 test.md
 
 # Byte-compiled / optimized / DLL files

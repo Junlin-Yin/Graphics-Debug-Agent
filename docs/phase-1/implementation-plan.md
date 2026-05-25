@@ -395,7 +395,9 @@ Objective: expose frozen skill state to users and traces without adding new runt
 Deliverables: local `/skills`, skill snapshot/activation/reference trace rendering, and skill engine-log facts.
 
 - [x] Implement `/skills` as a local REPL command from the frozen session snapshot.
-- [x] Ensure `/skills` lists skill name, description, execution mode, source scope, content hash, and active status for the current run, and never reads live skill source files after startup.
+- [x] Ensure `/skills` lists skill name, description, source scope, and active status for the current run, never reads live skill source files after startup, and renders each skill as a blank-line-prefixed two-line entry:
+  first line `- <skill-name> (<global|project>) [<inactive|active>]`,
+  second line `<description>`.
 - [x] Add trace and engine-log facts for skill snapshotting, activation, and reference loading.
 - [x] Add unit tests for `/skills` rendering from frozen snapshots and active skill state.
 - [x] Add trace/log tests for skill snapshotting, activation, and reference loading facts.

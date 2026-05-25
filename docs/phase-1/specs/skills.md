@@ -248,17 +248,31 @@ characters.
 
 `/skills` is handled locally by the REPL and is never sent to the model.
 
-Minimum fields:
+Required display content:
 
 - skill name.
 - description.
-- execution mode.
 - source scope.
-- content hash.
 - active status for the current run.
 
 `/skills` must list supported prompt skills from the frozen session skill
 registry snapshot. It must not read live skill source files after startup.
+
+Phase 1 `/skills` display format is:
+
+```text
+
+- <skill-name> (<global|project>) [<inactive|active>]
+<description>
+```
+
+Formatting rules:
+
+- output starts with one blank line before the first skill entry.
+- `source scope` is rendered only as `global` or `project` inside `()`.
+- active status is rendered only as `inactive` or `active` inside `[]`.
+- description is rendered on the next line, left-aligned with no extra prefix.
+- `execution mode` and content hash are not displayed in `/skills` output.
 
 ## Model-Visible Skill Tools
 

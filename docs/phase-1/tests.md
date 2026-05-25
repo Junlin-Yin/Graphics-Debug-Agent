@@ -518,8 +518,12 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 
 - `/skills` lists supported prompt skills from the frozen session skill registry
   snapshot.
-- `/skills` shows skill name, description, execution mode, source scope, content
-  hash, and active status for the current run.
+- `/skills` shows skill name, description, source scope, and active status for
+  the current run.
+- `/skills` does not show execution mode or content hash.
+- `/skills` renders each skill as a blank-line-prefixed two-line entry:
+  first line `- <skill-name> (<global|project>) [<inactive|active>]`,
+  second line `<description>`.
 - `/skills` does not read live skill source files after startup.
 - `/tools` lists runtime-visible tools, category, risk, access, approval
   behavior, enabled status, and disabled reason.

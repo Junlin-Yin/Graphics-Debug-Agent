@@ -20,7 +20,12 @@ def _config(response: str = "fake answer") -> dict:
     }
 
 
-def test_status_query_returns_documented_fields_after_one_shot(tmp_path) -> None:
+def test_status_query_returns_documented_fields_after_one_shot(
+    tmp_path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     orchestrator = RuntimeOrchestrator(workspace_root=workspace)
@@ -42,7 +47,12 @@ def test_status_query_returns_documented_fields_after_one_shot(tmp_path) -> None
     assert status.fields["error_summary"] is None
 
 
-def test_trace_query_refreshes_trace_and_returns_summary_after_one_shot(tmp_path) -> None:
+def test_trace_query_refreshes_trace_and_returns_summary_after_one_shot(
+    tmp_path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     one_shot = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
