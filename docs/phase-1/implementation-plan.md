@@ -443,17 +443,17 @@ Objective: use the frame foundation to build ordinary task prompt frames, includ
 
 Deliverables: `PromptComposer`, available skill header composition, active skill context frame segments, stable system block handling, and prompt-frame tests.
 
-- [ ] Implement `PromptComposer` for stable system content, available skill headers, active skill context, summary, retained raw messages, live/unconsumed messages, current user input/tool-loop messages, and tool schema bindings.
-- [ ] Inject active `SKILL.md` bodies as non-persistent `ModelContextFrame` segments with `role="system"` and `kind="runtime_active_skill_context"`.
-- [ ] Ensure active skill context segments are runtime-authored with `source="runtime"`, `persistent=false`, `compressible=false`, and start with `[Runtime supplied active skill context]` plus `This block is authoritative for this turn.`
-- [ ] Ensure each active skill context entry includes skill id, content hash or version, activation reason, scope, instructions, and available reference file paths and hashes.
-- [ ] Ensure any model-visible `allowed_tools` or `path_policy` guidance inside active skill context is non-authorizing; runtime and `ToolBroker` remain the only authorization source.
-- [ ] Ensure active skill context is not appended to `ReplRuntime.conversation`.
-- [ ] Ensure active skill content is not disclosure-degraded under budget pressure.
-- [ ] Ensure loaded skill reference outputs remain ordinary durable conversation tool observations.
-- [ ] Ensure prompt composition estimates use the composed `ModelContextFrame`, not raw `ReplRuntime.conversation`.
-- [ ] Add unit tests for frame ordering, active skill segment shape, available skill headers, active skill metadata, active skill context not being durable conversation, loaded reference outputs remaining ordinary conversation observations, and prompt-frame estimate consistency.
-- [ ] Verify with canonical command `uv run pytest tests/unit -v`.
+- [x] Implement `PromptComposer` for stable system content, available skill headers, active skill context, summary, retained raw messages, live/unconsumed messages, current user input/tool-loop messages, and tool schema bindings.
+- [x] Inject active `SKILL.md` bodies as non-persistent `ModelContextFrame` segments with `role="system"` and `kind="runtime_active_skill_context"`.
+- [x] Ensure active skill context segments are runtime-authored with `source="runtime"`, `persistent=false`, `compressible=false`, and start with `[Runtime supplied active skill context]` plus `This block is authoritative for this turn.`
+- [x] Ensure each active skill context entry includes skill id, content hash or version, activation reason, scope, instructions, and available reference file paths and hashes.
+- [x] Ensure any model-visible `allowed_tools` or `path_policy` guidance inside active skill context is non-authorizing; runtime and `ToolBroker` remain the only authorization source.
+- [x] Ensure active skill context is not appended to `ReplRuntime.conversation`.
+- [x] Ensure active skill content is not disclosure-degraded under budget pressure.
+- [x] Ensure loaded skill reference outputs remain ordinary durable conversation tool observations.
+- [x] Ensure prompt composition estimates use the composed `ModelContextFrame`, not raw `ReplRuntime.conversation`.
+- [x] Add unit tests for frame ordering, active skill segment shape, available skill headers, active skill metadata, active skill context not being durable conversation, loaded reference outputs remaining ordinary conversation observations, and prompt-frame estimate consistency.
+- [x] Verify with canonical command `uv run pytest tests/unit -v`.
 
 Modified boundaries: prompt composition, active skill injection, available skill headers, and model-call frame construction.
 
