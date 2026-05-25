@@ -196,34 +196,34 @@ Objective: establish the Phase 1 persistence/config/policy base before any model
 
 Deliverables: Phase 1 schema/user-version gate, frozen context/execution settings, frozen main-agent path/shell policy facts, deterministic permission evaluation, deterministic approval scope signatures, and approval grant storage.
 
-- [ ] Follow the Phase 1 initialization order from `docs/phase-1/architecture.md`: resolve workspace, load global config, load main-agent config, validate/freeze config and policy facts, then perform schema bootstrap/version gating before interpreting runtime truth rows.
-- [ ] Add Phase 1 SQLite schema bootstrap with `PHASE_1_SCHEMA_USER_VERSION = 1`.
-- [ ] Ensure startup, `debug-agent status`, and `debug-agent trace` read `PRAGMA user_version` before interpreting runtime truth tables.
-- [ ] Fail closed with `error_class="config_error"` for missing (`0`), unknown, Phase 0, or Phase 0.5 schema versions.
-- [ ] Add schema support for `approval_grants`, `skill_snapshots`, `skill_reference_snapshots`, `context_snapshots`, and `runs.context_snapshot_id`, preserving the minimum table shapes and constraints from the Phase 1 specs.
-- [ ] Ensure `context_snapshots` schema preserves the minimum Phase 1 fields, allowed trigger values `manual`, `omission`, `compression`, and `omission | compression`, and the `payload_artifact_id` reference used when serialized snapshot payloads exceed 16 KiB.
-- [ ] Ensure `skill_snapshots` enforces one frozen `SKILL.md` body per `(session_id, run_id, skill_name)` and `skill_reference_snapshots` enforces one reference row per `(skill_snapshot_id, reference_path)` with a foreign key to the owning skill snapshot.
-- [ ] Ensure `approval_grants` stores only allowed `decision` values `approved_once`, `approved_for_session`, and `denied`, only allowed `grant_scope` values `once`, `session`, and `none`, the rendered `approval_request` text, and uses only `approved_for_session` rows as reusable grants.
-- [ ] Parse `[context]` defaults from `~/.debug-agent/config.toml`: `window_tokens=200000`, `omit_old_tool_results_at_ratio=0.60`, `compress_history_at_ratio=0.80`, `retain_recent_model_calls=4`, and `compression_reserved_output_tokens=10000`.
-- [ ] Parse `[execution].default_shell_timeout_seconds` with default `300`.
-- [ ] Reject invalid context or execution settings with `config_error` before session/run creation.
-- [ ] Load main-agent policy declarations from `~/.debug-agent/agent.toml`.
-- [ ] Treat absent `~/.debug-agent/agent.toml`, absent path policy, and absent shell policy as documented Phase 1 defaults: workspace root remains trusted, user shell `allow` and `deny` are empty, and builtin path/shell denies still apply.
-- [ ] Parse and freeze path policy facts with scopes `trust` and `deny`.
-- [ ] Parse and freeze shell policy facts with argv-prefix `allow` and `deny`; reject regex policy shapes.
-- [ ] Add builtin path denies for `.git/`, `node_modules/`, `build/`, `dist/`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `.sessions/`, `~/.debug-agent/skills/`, and `<workspace_root>/.debug-agent/skills/`.
-- [ ] Add builtin shell denies for privilege escalation, destructive recursive `rm`, and raw shell trampoline forms.
-- [ ] Implement path canonicalization for existing paths, missing targets, symlink escape checks, exact file policy entries, and subtree policy entries.
-- [ ] Implement shell executable normalization, Windows executable suffix normalization, and transparent `env` wrapper unwrapping.
-- [ ] Implement argv path classification for documented path-like tokens and only the Phase 1 runtime-owned path option list in `docs/phase-1/specs/approval.md`.
-- [ ] Implement `PermissionEvaluator` with the fixed decision order from `docs/phase-1/specs/approval.md`.
-- [ ] Implement approval-mode matrix for `normal`, `semi-auto`, and `yolo`.
-- [ ] Implement deterministic approval scope signatures for file tools, `shell_exec`, `activate_skill`, and `load_skill_ref_file`.
-- [ ] Ensure file-tool approval scope signatures use the exact canonical path plus access type, and `write_file`/`edit_file` signatures do not widen from file path to directory path.
-- [ ] Ensure `load_skill_ref_file` signature facts are audit/scope facts only; valid active reference loads remain audit-only and invalid loads are denied before approval.
-- [ ] Implement `ApprovalGrantStore` over `approval_grants`, with reusable grants only for `approved_for_session`.
-- [ ] Add unit tests for schema creation, schema version gate, legacy fail-closed behavior, config defaults, invalid settings, absent policy defaults, policy parsing, path classification, shell matching, mode matrix, approval grant lookup, and `context_snapshots` table shape/trigger constraints.
-- [ ] Verify with canonical command `uv run pytest tests/unit -v`.
+- [x] Follow the Phase 1 initialization order from `docs/phase-1/architecture.md`: resolve workspace, load global config, load main-agent config, validate/freeze config and policy facts, then perform schema bootstrap/version gating before interpreting runtime truth rows.
+- [x] Add Phase 1 SQLite schema bootstrap with `PHASE_1_SCHEMA_USER_VERSION = 1`.
+- [x] Ensure startup, `debug-agent status`, and `debug-agent trace` read `PRAGMA user_version` before interpreting runtime truth tables.
+- [x] Fail closed with `error_class="config_error"` for missing (`0`), unknown, Phase 0, or Phase 0.5 schema versions.
+- [x] Add schema support for `approval_grants`, `skill_snapshots`, `skill_reference_snapshots`, `context_snapshots`, and `runs.context_snapshot_id`, preserving the minimum table shapes and constraints from the Phase 1 specs.
+- [x] Ensure `context_snapshots` schema preserves the minimum Phase 1 fields, allowed trigger values `manual`, `omission`, `compression`, and `omission | compression`, and the `payload_artifact_id` reference used when serialized snapshot payloads exceed 16 KiB.
+- [x] Ensure `skill_snapshots` enforces one frozen `SKILL.md` body per `(session_id, run_id, skill_name)` and `skill_reference_snapshots` enforces one reference row per `(skill_snapshot_id, reference_path)` with a foreign key to the owning skill snapshot.
+- [x] Ensure `approval_grants` stores only allowed `decision` values `approved_once`, `approved_for_session`, and `denied`, only allowed `grant_scope` values `once`, `session`, and `none`, the rendered `approval_request` text, and uses only `approved_for_session` rows as reusable grants.
+- [x] Parse `[context]` defaults from `~/.debug-agent/config.toml`: `window_tokens=200000`, `omit_old_tool_results_at_ratio=0.60`, `compress_history_at_ratio=0.80`, `retain_recent_model_calls=4`, and `compression_reserved_output_tokens=10000`.
+- [x] Parse `[execution].default_shell_timeout_seconds` with default `300`.
+- [x] Reject invalid context or execution settings with `config_error` before session/run creation.
+- [x] Load main-agent policy declarations from `~/.debug-agent/agent.toml`.
+- [x] Treat absent `~/.debug-agent/agent.toml`, absent path policy, and absent shell policy as documented Phase 1 defaults: workspace root remains trusted, user shell `allow` and `deny` are empty, and builtin path/shell denies still apply.
+- [x] Parse and freeze path policy facts with scopes `trust` and `deny`.
+- [x] Parse and freeze shell policy facts with argv-prefix `allow` and `deny`; reject regex policy shapes.
+- [x] Add builtin path denies for `.git/`, `node_modules/`, `build/`, `dist/`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `.sessions/`, `~/.debug-agent/skills/`, and `<workspace_root>/.debug-agent/skills/`.
+- [x] Add builtin shell denies for privilege escalation, destructive recursive `rm`, and raw shell trampoline forms.
+- [x] Implement path canonicalization for existing paths, missing targets, symlink escape checks, exact file policy entries, and subtree policy entries.
+- [x] Implement shell executable normalization, Windows executable suffix normalization, and transparent `env` wrapper unwrapping.
+- [x] Implement argv path classification for documented path-like tokens and only the Phase 1 runtime-owned path option list in `docs/phase-1/specs/approval.md`.
+- [x] Implement `PermissionEvaluator` with the fixed decision order from `docs/phase-1/specs/approval.md`.
+- [x] Implement approval-mode matrix for `normal`, `semi-auto`, and `yolo`.
+- [x] Implement deterministic approval scope signatures for file tools, `shell_exec`, `activate_skill`, and `load_skill_ref_file`.
+- [x] Ensure file-tool approval scope signatures use the exact canonical path plus access type, and `write_file`/`edit_file` signatures do not widen from file path to directory path.
+- [x] Ensure `load_skill_ref_file` signature facts are audit/scope facts only; valid active reference loads remain audit-only and invalid loads are denied before approval.
+- [x] Implement `ApprovalGrantStore` over `approval_grants`, with reusable grants only for `approved_for_session`.
+- [x] Add unit tests for schema creation, schema version gate, legacy fail-closed behavior, config defaults, invalid settings, absent policy defaults, policy parsing, path classification, shell matching, mode matrix, approval grant lookup, and `context_snapshots` table shape/trigger constraints.
+- [x] Verify with canonical command `uv run pytest tests/unit -v`.
 
 Modified boundaries: persistence bootstrap, runtime config, policy facts, permission evaluation, and approval grant storage.
 

@@ -49,7 +49,7 @@ def test_one_shot_success_persists_lifecycle_and_completes_session(tmp_path) -> 
             "SELECT latest_checkpoint_id FROM runs"
         ).fetchone()[0]
 
-    assert session_row == ("completed", "yolo", None)
+    assert session_row == ("completed", "normal", None)
     assert run_row == ("completed", "prompt")
     assert event_kinds == [
         "session_started",

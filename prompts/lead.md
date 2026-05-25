@@ -112,7 +112,7 @@ Milestone loop:
     - no contract divergence remains unresolved
 11. Commit with:
 
-    `[<active-phase>] <milestone-title>`
+    `[<active-phase>] Milestone <milestone-number>: <milestone-title>.`
 
 12. Confirm `git status` is clean.
 13. Continue to the next incomplete milestone only if the human asked for a

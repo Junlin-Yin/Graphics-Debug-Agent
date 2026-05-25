@@ -6,6 +6,13 @@ from pathlib import Path
 from typing import Self
 
 
+PHASE_1_SCHEMA_USER_VERSION = 1
+LEGACY_SCHEMA_MESSAGE = (
+    "Phase 0/0.5 runtime databases are unsupported by Phase 1. Move or remove "
+    ".sessions/ or use a fresh workspace."
+)
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
   session_id TEXT PRIMARY KEY,
@@ -35,7 +42,8 @@ CREATE TABLE IF NOT EXISTS runs (
   updated_at TEXT NOT NULL,
   error_summary TEXT,
   version INTEGER NOT NULL,
-  FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+  FOREIGN KEY(session_id) REFERENCES sessions(session_id),
+  FOREIGN KEY(context_snapshot_id) REFERENCES context_snapshots(context_snapshot_id)
 );
 
 CREATE TABLE IF NOT EXISTS run_events (
@@ -76,6 +84,79 @@ CREATE TABLE IF NOT EXISTS artifacts (
   FOREIGN KEY(session_id) REFERENCES sessions(session_id)
 );
 
+CREATE TABLE IF NOT EXISTS approval_grants (
+  grant_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  risk_level TEXT NOT NULL,
+  scope_signature TEXT NOT NULL,
+  decision TEXT NOT NULL CHECK (
+    decision IN ('approved_once', 'approved_for_session', 'denied')
+  ),
+  grant_scope TEXT NOT NULL CHECK (grant_scope IN ('once', 'session', 'none')),
+  approval_request TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  version INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS skill_snapshots (
+  skill_snapshot_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  skill_name TEXT NOT NULL,
+  execution_mode TEXT NOT NULL,
+  source_scope TEXT NOT NULL,
+  source_path TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  skill_md_content TEXT NOT NULL,
+  skill_md_content_hash TEXT NOT NULL,
+  overall_content_hash TEXT NOT NULL,
+  payload_artifact_id TEXT,
+  created_at TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  UNIQUE(session_id, run_id, skill_name)
+);
+
+CREATE TABLE IF NOT EXISTS skill_reference_snapshots (
+  reference_snapshot_id TEXT PRIMARY KEY,
+  skill_snapshot_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  skill_name TEXT NOT NULL,
+  reference_path TEXT NOT NULL,
+  media_kind TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  inline_text_payload TEXT,
+  payload_artifact_id TEXT,
+  created_at TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  UNIQUE(skill_snapshot_id, reference_path),
+  FOREIGN KEY(skill_snapshot_id) REFERENCES skill_snapshots(skill_snapshot_id)
+);
+
+CREATE TABLE IF NOT EXISTS context_snapshots (
+  context_snapshot_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  trigger TEXT NOT NULL CHECK (
+    trigger IN ('manual', 'omission', 'compression', 'omission | compression')
+  ),
+  source_checkpoint_id TEXT,
+  active_skill_records_json TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  retained_messages_json TEXT NOT NULL,
+  omitted_tool_result_count INTEGER NOT NULL,
+  evicted_message_count INTEGER NOT NULL DEFAULT 0,
+  evicted_model_call_group_count INTEGER NOT NULL DEFAULT 0,
+  artifact_refs_json TEXT NOT NULL,
+  token_estimate_json TEXT NOT NULL,
+  payload_artifact_id TEXT,
+  created_at TEXT NOT NULL,
+  version INTEGER NOT NULL
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_one_running_per_workspace
 ON sessions(workspace_root)
 WHERE status = 'running';
@@ -83,7 +164,18 @@ WHERE status = 'running';
 
 
 class RuntimeBootstrapError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_class: str = "config_error",
+        source: str = "persistence",
+        recoverable: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.error_class = error_class
+        self.source = source
+        self.recoverable = recoverable
 
 
 @dataclass
@@ -97,10 +189,18 @@ class RuntimeDatabase:
         try:
             sessions_root.mkdir(parents=True, exist_ok=True)
             db_path = sessions_root / "runtime.db"
+            existed = db_path.exists()
             connection = sqlite3.connect(db_path, check_same_thread=False)
             connection.execute("PRAGMA foreign_keys = ON")
+            user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if existed and user_version != PHASE_1_SCHEMA_USER_VERSION:
+                connection.close()
+                raise RuntimeBootstrapError(LEGACY_SCHEMA_MESSAGE)
             connection.executescript(SCHEMA)
+            connection.execute(f"PRAGMA user_version = {PHASE_1_SCHEMA_USER_VERSION}")
             connection.commit()
+        except RuntimeBootstrapError:
+            raise
         except (OSError, sqlite3.DatabaseError) as exc:
             raise RuntimeBootstrapError(
                 f"Runtime database bootstrap failed: {exc}"

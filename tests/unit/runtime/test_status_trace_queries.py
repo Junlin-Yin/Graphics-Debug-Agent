@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
 
 
@@ -30,7 +32,7 @@ def test_status_query_returns_documented_fields_after_one_shot(tmp_path) -> None
     assert status.fields["session_id"] == one_shot.session_id
     assert status.fields["workspace_root"] == str(workspace.resolve())
     assert status.fields["session_status"] == "completed"
-    assert status.fields["approval_mode"] == "yolo"
+    assert status.fields["approval_mode"] == "normal"
     assert status.fields["active_run_id"] is None
     assert status.fields["latest_run_id"] == one_shot.run_id
     assert status.fields["latest_run_status"] == "completed"
@@ -68,3 +70,49 @@ def test_status_query_returns_missing_session_error(tmp_path) -> None:
 
     assert status.exit_code == 1
     assert status.message == "No session found for id: sess_missing"
+
+
+def test_status_trace_and_startup_fail_closed_for_legacy_schema(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    db_dir = workspace / ".sessions"
+    db_dir.mkdir(parents=True)
+    with sqlite3.connect(db_dir / "runtime.db") as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('legacy_session')")
+        conn.execute("PRAGMA user_version = 0")
+
+    orchestrator = RuntimeOrchestrator(workspace_root=workspace)
+
+    status = orchestrator.status("legacy_session")
+    trace = orchestrator.trace("legacy_session")
+    one_shot = orchestrator.run_one_shot("hello", _config())
+
+    for result in (status, trace, one_shot):
+        assert result.exit_code != 0
+        assert "Phase 0/0.5 runtime databases are unsupported by Phase 1" in result.message
+    assert one_shot.error["error_class"] == "config_error"
+
+
+def test_startup_rejects_invalid_agent_policy_before_creating_database(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    agent_dir = home / ".debug-agent"
+    workspace = tmp_path / "workspace"
+    agent_dir.mkdir(parents=True)
+    workspace.mkdir()
+    (agent_dir / "agent.toml").write_text(
+        """
+[[path_policies]]
+scope = "allow"
+paths = ["src/"]
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
+        "hello", _config()
+    )
+
+    assert result.exit_code == 4
+    assert result.error["error_class"] == "config_error"
+    assert not (workspace / ".sessions" / "runtime.db").exists()

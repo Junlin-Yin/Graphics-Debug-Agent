@@ -94,6 +94,16 @@ base_url_env = "ANTHROPIC_BASE_URL"
             "base_url_env": "ANTHROPIC_BASE_URL",
             "base_url_present": True,
         },
+        "context": {
+            "window_tokens": 200000,
+            "omit_old_tool_results_at_ratio": 0.60,
+            "compress_history_at_ratio": 0.80,
+            "retain_recent_model_calls": 4,
+            "compression_reserved_output_tokens": 10000,
+        },
+        "execution": {
+            "default_shell_timeout_seconds": 300,
+        },
     }
     assert "secret-value" not in str(result.snapshot)
 
@@ -126,6 +136,16 @@ fake_response = "hello"
             "You are debug-agent, a local debugging assistant. Answer "
             "concisely and use only tools exposed by the runtime."
         ),
+        "context": {
+            "window_tokens": 200000,
+            "omit_old_tool_results_at_ratio": 0.60,
+            "compress_history_at_ratio": 0.80,
+            "retain_recent_model_calls": 4,
+            "compression_reserved_output_tokens": 10000,
+        },
+        "execution": {
+            "default_shell_timeout_seconds": 300,
+        },
         "fake_response": "hello",
     }
 

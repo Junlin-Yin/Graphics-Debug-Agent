@@ -17,9 +17,10 @@ from debug_agent.persistence.errors import StoreError
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
-from debug_agent.persistence.sqlite import RuntimeDatabase
+from debug_agent.persistence.sqlite import RuntimeBootstrapError, RuntimeDatabase
 from debug_agent.runtime.config import PHASE_0_SYSTEM_PROMPT
 from debug_agent.runtime.contracts import AgentRunResult, Checkpoint, RunEvent, utc_now_iso
+from debug_agent.runtime.policy import load_main_agent_policy, policy_facts_to_snapshot
 from debug_agent.runtime.prompt_executor import PromptAgentExecutor
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.runtime.workspace import resolve_workspace_root
@@ -211,7 +212,14 @@ class RuntimeOrchestrator:
         self.workspace_root = resolve_workspace_root(workspace_root)
 
     def run_one_shot(self, prompt: str, config_snapshot: dict[str, Any]) -> OneShotResult:
-        db = RuntimeDatabase.bootstrap(self.workspace_root)
+        policy_result = self._freeze_policy(config_snapshot)
+        if isinstance(policy_result, OneShotResult):
+            return policy_result
+        config_snapshot = policy_result
+        try:
+            db = RuntimeDatabase.bootstrap(self.workspace_root)
+        except RuntimeBootstrapError as exc:
+            return _bootstrap_one_shot_error(exc)
         sessions_root = db.path.parent
         sessions = SessionStore(db.connection)
         runs = RunStore(db.connection)
@@ -222,7 +230,7 @@ class RuntimeOrchestrator:
             try:
                 session = sessions.create(
                     workspace_root=self.workspace_root,
-                    approval_mode="yolo",
+                    approval_mode="normal",
                     config_snapshot=config_snapshot,
                 )
             except StoreError as exc:
@@ -367,7 +375,10 @@ class RuntimeOrchestrator:
             db.close()
 
     def status(self, session_id: str) -> StatusResult:
-        db = RuntimeDatabase.bootstrap(self.workspace_root)
+        try:
+            db = RuntimeDatabase.bootstrap(self.workspace_root)
+        except RuntimeBootstrapError as exc:
+            return StatusResult(exit_code=4, fields={}, message=str(exc))
         try:
             sessions = SessionStore(db.connection)
             runs = RunStore(db.connection)
@@ -394,7 +405,15 @@ class RuntimeOrchestrator:
             db.close()
 
     def trace(self, session_id: str) -> TraceResult:
-        db = RuntimeDatabase.bootstrap(self.workspace_root)
+        try:
+            db = RuntimeDatabase.bootstrap(self.workspace_root)
+        except RuntimeBootstrapError as exc:
+            return TraceResult(
+                exit_code=4,
+                trace_path=Path(),
+                summary={},
+                message=str(exc),
+            )
         sessions_root = db.path.parent
         try:
             try:
@@ -429,7 +448,10 @@ class RuntimeOrchestrator:
             db.close()
 
     def cancel_active_session(self, message: str) -> OneShotResult:
-        db = RuntimeDatabase.bootstrap(self.workspace_root)
+        try:
+            db = RuntimeDatabase.bootstrap(self.workspace_root)
+        except RuntimeBootstrapError as exc:
+            return _bootstrap_one_shot_error(exc)
         sessions_root = db.path.parent
         sessions = SessionStore(db.connection)
         runs = RunStore(db.connection)
@@ -484,7 +506,33 @@ class RuntimeOrchestrator:
             db.close()
 
     def start_repl(self, config_snapshot: dict[str, Any]) -> ReplStartResult:
-        db = RuntimeDatabase.bootstrap(self.workspace_root)
+        policy_result = self._freeze_policy(config_snapshot)
+        if isinstance(policy_result, OneShotResult):
+            return ReplStartResult(
+                runtime=None,
+                error=ReplStartError(
+                    exit_code=policy_result.exit_code,
+                    message=policy_result.message,
+                    error=policy_result.error,
+                ),
+            )
+        config_snapshot = policy_result
+        try:
+            db = RuntimeDatabase.bootstrap(self.workspace_root)
+        except RuntimeBootstrapError as exc:
+            return ReplStartResult(
+                runtime=None,
+                error=ReplStartError(
+                    exit_code=4,
+                    message=str(exc),
+                    error={
+                        "error_class": exc.error_class,
+                        "message": str(exc),
+                        "source": exc.source,
+                        "recoverable": exc.recoverable,
+                    },
+                ),
+            )
         sessions_root = db.path.parent
         sessions = SessionStore(db.connection)
         runs = RunStore(db.connection)
@@ -588,6 +636,28 @@ class RuntimeOrchestrator:
             error=None,
         )
 
+    def _freeze_policy(
+        self, config_snapshot: dict[str, Any]
+    ) -> dict[str, Any] | OneShotResult:
+        policy = load_main_agent_policy(self.workspace_root)
+        if policy.error is not None:
+            return OneShotResult(
+                exit_code=4,
+                assistant_output=None,
+                error={
+                    "error_class": policy.error.error_class,
+                    "message": policy.error.message,
+                    "source": policy.error.source,
+                    "recoverable": policy.error.recoverable,
+                },
+                message=policy.error.message,
+                session_id=None,
+                run_id=None,
+            )
+        frozen = dict(config_snapshot)
+        frozen["policy"] = policy_facts_to_snapshot(policy.facts)
+        return frozen
+
 def _mark_failed_terminal(
     *,
     sessions: SessionStore,
@@ -672,6 +742,22 @@ def _mark_failed_terminal(
         message=error["message"],
         session_id=session.session_id,
         run_id=run.run_id,
+    )
+
+
+def _bootstrap_one_shot_error(exc: RuntimeBootstrapError) -> OneShotResult:
+    return OneShotResult(
+        exit_code=4,
+        assistant_output=None,
+        error={
+            "error_class": exc.error_class,
+            "message": str(exc),
+            "source": exc.source,
+            "recoverable": exc.recoverable,
+        },
+        message=str(exc),
+        session_id=None,
+        run_id=None,
     )
 
 
