@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from debug_agent.tools.native import tool_definitions
+from debug_agent.tools.shell import tool_definitions as shell_tool_definitions
 
 
 def test_native_tool_definitions_are_phase1_metadata() -> None:
@@ -38,3 +39,12 @@ def test_native_tool_schemas_require_fields_and_positive_limits() -> None:
             "type": "integer",
             "minimum": 1,
         }
+
+
+def test_shell_exec_definition_is_not_a_native_tool() -> None:
+    native_definitions = {definition.name for definition in tool_definitions()}
+    shell_definitions = {definition.name: definition for definition in shell_tool_definitions()}
+
+    assert "shell_exec" not in native_definitions
+    assert set(shell_definitions) == {"shell_exec"}
+    assert shell_definitions["shell_exec"].category == "shell"

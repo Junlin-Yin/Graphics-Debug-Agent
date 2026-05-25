@@ -362,6 +362,10 @@ def policy_facts_to_snapshot(facts: PolicyFacts) -> dict[str, Any]:
 
 
 def canonicalize_path(path: str | Path, workspace_root: str | Path) -> Path:
+    if isinstance(path, str):
+        windows_absolute = _windows_absolute_path(path)
+        if windows_absolute is not None:
+            return windows_absolute
     candidate = Path(path)
     if not candidate.is_absolute():
         candidate = Path(workspace_root) / candidate
@@ -543,6 +547,14 @@ def _is_path_like(token: str) -> bool:
 
 def _is_env_assignment(token: str) -> bool:
     return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*", token))
+
+
+def _windows_absolute_path(token: str) -> Path | None:
+    if re.match(r"^[A-Za-z]:[\\/]", token):
+        return Path("/__debug_agent_windows_drive__") / token[0].lower() / token[3:].replace("\\", "/")
+    if token.startswith("\\\\"):
+        return Path("/__debug_agent_windows_unc__") / token.lstrip("\\").replace("\\", "/")
+    return None
 
 
 def _is_recursive_rm_option(token: str) -> bool:

@@ -43,7 +43,7 @@ def _session_id(workspace: Path) -> str:
         return conn.execute("SELECT session_id FROM sessions").fetchone()[0]
 
 
-def test_phase_0_one_shot_status_trace_and_persistence_acceptance(tmp_path) -> None:
+def test_phase_1_one_shot_status_trace_and_persistence_acceptance(tmp_path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     home.mkdir()
@@ -82,7 +82,7 @@ def test_phase_0_one_shot_status_trace_and_persistence_acceptance(tmp_path) -> N
     assert status.returncode == 0
     assert f"session_id: {session_id}" in status.stdout
     assert "session_status: completed" in status.stdout
-    assert "approval_mode: yolo" in status.stdout
+    assert "approval_mode: normal" in status.stdout
     assert "latest_checkpoint_id:" in status.stdout
     assert "updated_at:" in status.stdout
     assert trace.returncode == 0
@@ -351,7 +351,7 @@ def test_phase_0_trace_surfaces_missing_artifact_path(tmp_path) -> None:
         db.close()
 
 
-def test_phase_0_sqlite_bootstrap_failure_is_surfaced(tmp_path) -> None:
+def test_phase_1_sqlite_bootstrap_failure_is_surfaced(tmp_path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     home.mkdir()
@@ -368,6 +368,6 @@ def test_phase_0_sqlite_bootstrap_failure_is_surfaced(tmp_path) -> None:
         check=False,
     )
 
-    assert result.returncode == 1
+    assert result.returncode == 4
     assert "Runtime database bootstrap failed" in result.stderr
     assert "Traceback" not in result.stderr

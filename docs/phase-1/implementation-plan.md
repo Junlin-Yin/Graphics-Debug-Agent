@@ -286,25 +286,25 @@ Objective: add structured shell execution without weakening the broker, policy, 
 
 Deliverables: `shell_exec` definition, structured argv execution path, shell policy matching, argv path classification, fake shell runner seam, timeout behavior, stdout/stderr artifacting, and git-denial integration coverage.
 
-- [ ] Add `shell_exec` tool definition with structured `argv`, optional `cwd`, and optional positive `timeout_seconds`.
-- [ ] Add unit tests for `shell_exec` required schema fields, non-empty `argv`, positive integer `timeout_seconds` validation, raw shell string rejection, and `additionalProperties=false`.
-- [ ] Ensure raw shell strings and unrestricted `shell=True` are not accepted.
-- [ ] Resolve default `cwd` to `workspace_root`; resolve provided `cwd` against `workspace_root`.
-- [ ] Apply shell policy allow/deny gates before approval.
-- [ ] Apply path policy to `cwd`, path-qualified `argv[0]`, bare syntactically path-like argv tokens, and runtime-classified argv option/value path tokens.
-- [ ] Limit argv path classification to the documented Phase 1 runtime-owned path option list and do not add ad-hoc implicit path options: `--output`, `--out`, `--config`, `--file`, `--path`, `--cwd`, `--directory`, `--root`, `--input`, `--src`, `--source`, `--dest`, `--destination`, `-o`, `-c`, `-f`, `-C`, and `-I`.
-- [ ] Aggregate path classification conservatively: the shell call is trusted only when all participating paths are trusted.
-- [ ] Compute effective timeout as `min(requested_timeout_seconds, frozen default_shell_timeout_seconds)` when requested, or the frozen default when omitted; include the effective timeout in approval scope signatures.
-- [ ] Add a fake shell runner test seam so unit and integration tests remain network-free and platform-independent.
-- [ ] Capture stdout and stderr separately, normalize them into `ToolResult`, and artifact large stdout/stderr.
-- [ ] Return `ToolResult(status="timeout")` on timeout and write the required audit facts.
-- [ ] Add unit tests for shell allow prefix, user deny prefix, builtin deny, non-empty allowlist miss, and empty allow default.
-- [ ] Add unit tests for path-qualified executable normalization, Windows executable suffix normalization, Windows shell wrapper behavior through a fake runner when real OS coverage is unavailable, and transparent `env` wrapper denial for nested denied commands.
-- [ ] Add unit tests documenting opaque wrapper behavior for `npm run`, `make`, `uv run`, interpreter script execution, and arbitrary local scripts.
-- [ ] Add unit tests proving bare syntactically path-like argv tokens such as `src/file.py`, `../repo/file.py`, `/tmp/file`, and Windows drive/UNC paths are classified and checked by path policy.
-- [ ] Add unit tests for shell cwd blacklist denial, path-qualified `argv[0]` blacklist denial, classified argv path blacklist denial, untrusted argv path approval behavior, timeout, and stdout/stderr artifacting.
-- [ ] Add integration tests proving denying `["git"]` blocks direct git, path-qualified git, Windows suffix git, and transparent-wrapper git.
-- [ ] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
+- [x] Add `shell_exec` tool definition with structured `argv`, optional `cwd`, and optional positive `timeout_seconds`.
+- [x] Add unit tests for `shell_exec` required schema fields, non-empty `argv`, positive integer `timeout_seconds` validation, raw shell string rejection, and `additionalProperties=false`.
+- [x] Ensure raw shell strings and unrestricted `shell=True` are not accepted.
+- [x] Resolve default `cwd` to `workspace_root`; resolve provided `cwd` against `workspace_root`.
+- [x] Apply shell policy allow/deny gates before approval.
+- [x] Apply path policy to `cwd`, path-qualified `argv[0]`, bare syntactically path-like argv tokens, and runtime-classified argv option/value path tokens.
+- [x] Limit argv path classification to the documented Phase 1 runtime-owned path option list and do not add ad-hoc implicit path options: `--output`, `--out`, `--config`, `--file`, `--path`, `--cwd`, `--directory`, `--root`, `--input`, `--src`, `--source`, `--dest`, `--destination`, `-o`, `-c`, `-f`, `-C`, and `-I`.
+- [x] Aggregate path classification conservatively: the shell call is trusted only when all participating paths are trusted.
+- [x] Compute effective timeout as `min(requested_timeout_seconds, frozen default_shell_timeout_seconds)` when requested, or the frozen default when omitted; include the effective timeout in approval scope signatures.
+- [x] Add a fake shell runner test seam so unit and integration tests remain network-free and platform-independent.
+- [x] Capture stdout and stderr separately, normalize them into `ToolResult`, and artifact large stdout/stderr.
+- [x] Return `ToolResult(status="timeout")` on timeout and write the required audit facts.
+- [x] Add unit tests for shell allow prefix, user deny prefix, builtin deny, non-empty allowlist miss, and empty allow default.
+- [x] Add unit tests for path-qualified executable normalization, Windows executable suffix normalization, Windows shell wrapper behavior through a fake runner when real OS coverage is unavailable, and transparent `env` wrapper denial for nested denied commands.
+- [x] Add unit tests documenting opaque wrapper behavior for `npm run`, `make`, `uv run`, interpreter script execution, and arbitrary local scripts.
+- [x] Add unit tests proving bare syntactically path-like argv tokens such as `src/file.py`, `../repo/file.py`, `/tmp/file`, and Windows drive/UNC paths are classified and checked by path policy.
+- [x] Add unit tests for shell cwd blacklist denial, path-qualified `argv[0]` blacklist denial, classified argv path blacklist denial, untrusted argv path approval behavior, timeout, and stdout/stderr artifacting.
+- [x] Add integration tests proving denying `["git"]` blocks direct git, path-qualified git, Windows suffix git, and transparent-wrapper git.
+- [x] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
 
 Modified boundaries: shell tool handler, broker normalization, shell policy matching, fake shell runner tests, and shell audit events.
 
