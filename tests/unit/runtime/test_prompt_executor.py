@@ -13,7 +13,7 @@ from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.prompt_executor import PromptAgentExecutor
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.tools.broker import ToolBroker
-from debug_agent.tools.native_readonly import tool_definitions
+from debug_agent.tools.native import tool_definitions
 
 
 def _runtime(tmp_path, model):

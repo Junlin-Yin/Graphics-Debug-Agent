@@ -25,7 +25,7 @@ from debug_agent.runtime.prompt_executor import PromptAgentExecutor
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.runtime.workspace import resolve_workspace_root
 from debug_agent.tools.broker import ToolBroker
-from debug_agent.tools.native_readonly import tool_definitions
+from debug_agent.tools.native import gated_user_facing_tool_definitions
 
 
 @dataclass(frozen=True)
@@ -302,7 +302,7 @@ class RuntimeOrchestrator:
                 checkpoint_store=checkpoints,
                 artifact_store=artifacts,
                 adapter=adapter,
-                tool_definitions=tool_definitions(),
+                tool_definitions=gated_user_facing_tool_definitions(),
                 system_prompt=config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
             )
             agent_result = executor.run_turn(
@@ -618,7 +618,7 @@ class RuntimeOrchestrator:
             checkpoint_store=checkpoints,
             artifact_store=artifacts,
             adapter=adapter,
-            tool_definitions=tool_definitions(),
+            tool_definitions=gated_user_facing_tool_definitions(),
             system_prompt=config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
         )
         return ReplStartResult(

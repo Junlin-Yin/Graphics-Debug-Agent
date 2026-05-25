@@ -241,34 +241,34 @@ Objective: expose Phase 1 native filesystem tools only through the brokered tool
 
 Deliverables: Phase 1 `ToolDefinition`, `ToolUseContext`, `ToolRouter`, broker invocation envelope, native read/list/search/write/edit handlers, removal of model-visible `git_status`, native tool audit and artifact behavior.
 
-- [ ] Replace the Phase 0 direct read-only broker shape with the Phase 1 broker envelope: schema validation, target normalization, permission evaluation, approval dispatch, routing, artifact handling, `ToolResult` normalization, and audit event writing.
-- [ ] Keep the broker envelope migration reviewable as two internal checkpoints: first introduce `ToolDefinition`, `ToolUseContext`, `ToolRouter`, permission result types, approval-provider seam, and audit/result normalization without enabling new handlers; then enable the native handlers behind that envelope.
-- [ ] Define Phase 1 `ToolDefinition` with `name`, `description`, `input_schema`, `category`, `risk_level`, and `access`.
-- [ ] Define `ToolUseContext` with session/run ids, workspace root, artifact root, approval mode, frozen config, frozen policy, approval grants, approval provider, event writer, artifact store, and skill snapshot store.
-- [ ] Define only the abstract approval-provider interface and fake/non-interactive test provider needed by `ToolBroker`; concrete TUI and plain interactive approval providers are implemented later in Milestone 6B.
-- [ ] Add `ToolRouter` with Phase 1 categories `native`, `shell`, and `runtime_control`, while only native handlers are enabled in this sub-milestone.
-- [ ] Expose native tool definitions for `read_file`, `list_dir`, `search_text`, `write_file`, and `edit_file`.
-- [ ] Remove model-visible `git_status` from the Phase 1 tool list.
-- [ ] Implement `read_file` for UTF-8 text files with optional positive line limit and output artifacting for large content.
-- [ ] Implement `list_dir` for immediate directory entries with optional positive entry limit.
-- [ ] Implement literal, case-sensitive, line-oriented `search_text` with optional positive match limit and UTF-8-only file scanning.
-- [ ] Keep native tool limit defaults and caps as builtin frozen runtime facts unless a later approved contract adds new user-facing configuration for them.
-- [ ] Implement `write_file` for complete UTF-8 content and missing parent directory creation under authorized write scope.
-- [ ] Implement `edit_file` as first exact occurrence replacement on normalized LF view while preserving dominant line endings.
-- [ ] Ensure all native tool handlers execute only after `ToolBroker` permission approval and do not write audit events directly.
-- [ ] Ensure tool handlers do not read mutable global policy directly, ask users for approval directly, or widen model-visible schemas.
-- [ ] Add unit tests for tool schemas rejecting unknown fields.
-- [ ] Add unit tests for native tool required schema fields, positive integer `limit` validation, and `additionalProperties=false` on every native model-visible tool schema enabled in this milestone.
-- [ ] Add unit tests for `edit_file` absent `old_text` returning `ToolResult(status="error", error_class="tool_error")`, first-occurrence replacement only, normalized-LF matching, dominant line-ending preservation, and LF fallback when no dominant line ending exists.
-- [ ] Add unit tests for native read auto-allow in trusted workspace under `normal`.
-- [ ] Add unit tests for read outside trusted workspace requiring approval in `normal`.
-- [ ] Add unit tests for write requiring approval in `normal`, auto-allow in trusted workspace under `semi-auto`, and untrusted write requiring approval under `semi-auto`.
-- [ ] Add unit tests for builtin path denies, user path denies, symlink escape denies, missing target canonicalization, and skill-source deny rules.
-- [ ] Add unit tests proving `search_text` traversal deterministically skips or denies builtin-denied and user-denied directories instead of reading through them.
-- [ ] Add unit tests proving model-visible tools cannot access `.sessions/` or skill source roots.
-- [ ] Add unit tests proving artifact ids or runtime references cannot be used to bypass `.sessions/` builtin deny.
-- [ ] Add unit tests proving native tools do not write audit events directly; broker writes the audit events.
-- [ ] Verify with canonical command `uv run pytest tests/unit -v`.
+- [x] Replace the Phase 0 direct read-only broker shape with the Phase 1 broker envelope: schema validation, target normalization, permission evaluation, approval dispatch, routing, artifact handling, `ToolResult` normalization, and audit event writing.
+- [x] Keep the broker envelope migration reviewable as two internal checkpoints: first introduce `ToolDefinition`, `ToolUseContext`, `ToolRouter`, permission result types, approval-provider seam, and audit/result normalization without enabling new handlers; then enable the native handlers behind that envelope.
+- [x] Define Phase 1 `ToolDefinition` with `name`, `description`, `input_schema`, `category`, `risk_level`, and `access`.
+- [x] Define `ToolUseContext` with session/run ids, workspace root, artifact root, approval mode, frozen config, frozen policy, approval grants, approval provider, event writer, artifact store, and skill snapshot store.
+- [x] Define only the abstract approval-provider interface and fake/non-interactive test provider needed by `ToolBroker`; concrete TUI and plain interactive approval providers are implemented later in Milestone 6B.
+- [x] Add `ToolRouter` with Phase 1 categories `native`, `shell`, and `runtime_control`, while only native handlers are enabled in this sub-milestone.
+- [x] Expose native tool definitions for `read_file`, `list_dir`, `search_text`, `write_file`, and `edit_file`.
+- [x] Remove model-visible `git_status` from the Phase 1 tool list.
+- [x] Implement `read_file` for UTF-8 text files with optional positive line limit and output artifacting for large content.
+- [x] Implement `list_dir` for immediate directory entries with optional positive entry limit.
+- [x] Implement literal, case-sensitive, line-oriented `search_text` with optional positive match limit and UTF-8-only file scanning.
+- [x] Keep native tool limit defaults and caps as builtin frozen runtime facts unless a later approved contract adds new user-facing configuration for them.
+- [x] Implement `write_file` for complete UTF-8 content and missing parent directory creation under authorized write scope.
+- [x] Implement `edit_file` as first exact occurrence replacement on normalized LF view while preserving dominant line endings.
+- [x] Ensure all native tool handlers execute only after `ToolBroker` permission approval and do not write audit events directly.
+- [x] Ensure tool handlers do not read mutable global policy directly, ask users for approval directly, or widen model-visible schemas.
+- [x] Add unit tests for tool schemas rejecting unknown fields.
+- [x] Add unit tests for native tool required schema fields, positive integer `limit` validation, and `additionalProperties=false` on every native model-visible tool schema enabled in this milestone.
+- [x] Add unit tests for `edit_file` absent `old_text` returning `ToolResult(status="error", error_class="tool_error")`, first-occurrence replacement only, normalized-LF matching, dominant line-ending preservation, and LF fallback when no dominant line ending exists.
+- [x] Add unit tests for native read auto-allow in trusted workspace under `normal`.
+- [x] Add unit tests for read outside trusted workspace requiring approval in `normal`.
+- [x] Add unit tests for write requiring approval in `normal`, auto-allow in trusted workspace under `semi-auto`, and untrusted write requiring approval under `semi-auto`.
+- [x] Add unit tests for builtin path denies, user path denies, symlink escape denies, missing target canonicalization, and skill-source deny rules.
+- [x] Add unit tests proving `search_text` traversal deterministically skips or denies builtin-denied and user-denied directories instead of reading through them.
+- [x] Add unit tests proving model-visible tools cannot access `.sessions/` or skill source roots.
+- [x] Add unit tests proving artifact ids or runtime references cannot be used to bypass `.sessions/` builtin deny.
+- [x] Add unit tests proving native tools do not write audit events directly; broker writes the audit events.
+- [x] Verify with canonical command `uv run pytest tests/unit -v`.
 
 Modified boundaries: `ToolBroker`, native tool implementations, native tool audit events, and model-visible tool list.
 

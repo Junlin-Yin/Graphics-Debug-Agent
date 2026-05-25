@@ -12,7 +12,7 @@ CONTRACT_VERSION = 1
 ModelEventRecorder = Callable[[str, dict[str, Any]], None]
 
 SESSION_STATUSES = frozenset({"running", "completed", "failed"})
-APPROVAL_MODES = frozenset({"normal", "yolo"})
+APPROVAL_MODES = frozenset({"normal", "semi-auto", "yolo"})
 RUN_TYPES = frozenset({"prompt"})
 RUN_STATUSES = frozenset({"running", "completed", "failed"})
 RUN_EVENT_KINDS = frozenset(
@@ -32,6 +32,8 @@ RUN_EVENT_KINDS = frozenset(
         "tool_call_completed",
         "tool_call_denied",
         "tool_call_failed",
+        "approval_requested",
+        "approval_decision_recorded",
         "checkpoint_written",
         "artifact_registered",
     }
@@ -213,6 +215,13 @@ class ToolDefinition:
     name: str
     description: str
     input_schema: dict[str, Any]
+    category: str = "native"
+    risk_level: str = "read"
+    access: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.access is None:
+            object.__setattr__(self, "access", [self.risk_level])
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from debug_agent.runtime.contracts import AgentRunResult
+from debug_agent.runtime import orchestrator as orchestrator_module
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
 
 
@@ -67,6 +69,41 @@ def test_one_shot_success_persists_lifecycle_and_completes_session(tmp_path) -> 
     terminal_checkpoint_id = checkpoint_rows[-1][0]
     assert session_latest_checkpoint_id == terminal_checkpoint_id
     assert run_latest_checkpoint_id == terminal_checkpoint_id
+
+
+def test_one_shot_default_path_does_not_expose_phase1_native_tools_before_gate(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    captured: dict[str, list[dict]] = {}
+
+    class CapturingAdapter:
+        def __init__(self, *, model: object, tool_broker: object) -> None:
+            self.model = model
+            self.tool_broker = tool_broker
+
+        def run(self, request, context):
+            captured["tools"] = request.tools
+            return AgentRunResult(
+                status="completed",
+                assistant_output="captured",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+    monkeypatch.setattr(
+        orchestrator_module, "LangChainAgentLoopAdapter", CapturingAdapter
+    )
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
+        "hello", _config("unused")
+    )
+
+    assert result.exit_code == 0
+    assert captured["tools"] == []
 
 
 def test_one_shot_model_failure_marks_run_and_session_failed(tmp_path) -> None:
