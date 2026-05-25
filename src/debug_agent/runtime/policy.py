@@ -362,11 +362,11 @@ def policy_facts_to_snapshot(facts: PolicyFacts) -> dict[str, Any]:
 
 
 def canonicalize_path(path: str | Path, workspace_root: str | Path) -> Path:
-    if isinstance(path, str):
+    candidate = Path(path)
+    if isinstance(path, str) and not candidate.is_absolute():
         windows_absolute = _windows_absolute_path(path)
         if windows_absolute is not None:
             return windows_absolute
-    candidate = Path(path)
     if not candidate.is_absolute():
         candidate = Path(workspace_root) / candidate
     return _canonicalize_candidate(candidate)

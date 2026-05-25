@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from debug_agent.runtime.policy import (
     PermissionEvaluator,
     ShellPolicy,
     build_builtin_policy,
+    canonicalize_path,
     classify_argv_paths,
     load_main_agent_policy,
     normalize_shell_argv,
@@ -208,6 +210,20 @@ def test_path_classification_handles_missing_files_exact_entries_and_symlink_esc
         evaluator.classify_path(workspace / "missing" / ".." / "secrets" / "new.txt").classification
         == "denied"
     )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="real Windows path behavior")
+def test_windows_absolute_string_paths_use_real_host_paths(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    facts = build_builtin_policy(workspace, tmp_path / "home")
+    evaluator = PermissionEvaluator(facts)
+
+    canonical = canonicalize_path(str(workspace), workspace)
+
+    assert canonical == workspace.resolve()
+    assert "__debug_agent_windows_drive__" not in str(canonical)
+    assert evaluator.classify_path(str(workspace)).classification == "trusted"
 
 
 def test_shell_normalization_matching_and_argv_path_classification(tmp_path) -> None:

@@ -304,9 +304,8 @@ def test_persisted_skill_md_content_verifies_against_content_hash(tmp_path) -> N
     skill_dir = workspace / ".debug-agent" / "skills" / "alpha"
     skill_dir.mkdir(parents=True)
     skill_file = skill_dir / "SKILL.md"
-    skill_file.write_text(
-        "---\r\nname: alpha\r\ndescription: Alpha\r\n---\r\nbody\r\n",
-        encoding="utf-8",
+    skill_file.write_bytes(
+        b"---\r\nname: alpha\r\ndescription: Alpha\r\n---\r\nbody\r\n"
     )
     snapshots = SkillRegistry(
         workspace_root=workspace,

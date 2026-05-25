@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from concurrent.futures import TimeoutError
 from pathlib import Path
 
@@ -181,11 +182,18 @@ def test_shell_preserves_windows_cwd_for_runner_while_using_policy_facts(
     events = runtime["events"].list_for_run("run_1")
     started = next(event for event in events if event.kind == "tool_call_started")
     classified_cwd = started.payload["arguments"]["cwd"]
-    assert policy_marker in classified_cwd
-    assert classified_cwd != str(runner.calls[0]["cwd"])
+    if sys.platform == "win32":
+        assert classified_cwd == str(runner.calls[0]["cwd"])
+        assert policy_marker not in classified_cwd
+    else:
+        assert policy_marker in classified_cwd
+        assert classified_cwd != str(runner.calls[0]["cwd"])
     assert approval_provider.requests
     scope_signature = approval_provider.requests[0][1]["scope_signature"]
-    assert policy_marker in scope_signature
+    if sys.platform == "win32":
+        assert policy_marker not in scope_signature
+    else:
+        assert policy_marker in scope_signature
     runtime["db"].close()
 
 
