@@ -105,6 +105,32 @@ the start of the coding task before making file edits. If explicit Plan mode is
 not available, report the plan using the "Before Coding" section, then proceed
 according to the approved repository contracts.
 
+## Progress Checkpoints
+
+- Do not perform the whole milestone implementation as one silent long-running
+  operation.
+- Work in small implementation batches.
+- Before each implementation batch, report:
+  - batch goal
+  - files to edit
+  - expected tests affected
+- Each implementation batch should modify at most 2 files unless the lead
+  explicitly approves a larger batch.
+- After each implementation batch, report:
+  - files changed
+  - tests added or updated
+  - current verification status
+  - next batch
+- If a test fails, do not silently continue into a large fix pass. Report the
+  failing test group, the suspected implementation gap, and the next small fix
+  batch.
+- If you are about to spend significant time implementing, debugging,
+  investigating, or reconciling docs without producing user-visible output,
+  first emit a checkpoint describing the next concrete step.
+- If interrupted after a checkpoint and asked to continue, resume from the last
+  reported checkpoint with a smaller batch. Do not restart the milestone or
+  expand scope unless the lead explicitly redirects you.
+
 ## Guardrails
 
 - Follow `docs/<active-phase>/implementation-plan.md` milestone order as it

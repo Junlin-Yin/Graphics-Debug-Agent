@@ -67,6 +67,28 @@ Default milestone policy:
   checklist updates, and milestone review all agree with the documented
   runnable state.
 
+Progress checkpoints:
+
+- Do not run the milestone loop as one silent long-running transaction.
+- Before dispatching a subagent, report a checkpoint with the subagent role,
+  target milestone, task boundary, expected file or module area, and expected
+  verification scope.
+- After a coding subagent returns, report a checkpoint with changed files,
+  tests run, verification status, and the next review step.
+- After a review subagent returns, report a checkpoint with blocking findings,
+  non-blocking findings, verification gaps, and whether the next step is repair
+  or final lead verification.
+- Before each repair dispatch, report a checkpoint with the exact blocking
+  findings being sent back, the intended repair batch, and the expected narrow
+  verification.
+- If you are about to spend significant time inspecting, reconciling,
+  verifying, or preparing a commit without user-visible output, first emit a
+  checkpoint describing the next concrete step.
+- If a subagent remains silent while Working for too long, interrupt it and ask
+  it to continue from the last checkpoint with a smaller batch. Do not broaden
+  scope, skip review, or treat the interruption as task failure unless the
+  subagent cannot resume.
+
 Milestone loop:
 
 1. Inspect `git status` and record whether the working tree is clean. If

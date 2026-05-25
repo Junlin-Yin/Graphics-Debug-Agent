@@ -104,6 +104,29 @@ Report the derived:
 - verification expectations
 - documentation/code divergence found in the review area, if any
 
+## Progress Checkpoints
+
+- Do not perform the whole review as one silent long-running operation.
+- Review in small batches. Each batch should cover at most 2 files or one
+  contract topic unless the lead explicitly approves a larger batch.
+- Before each review batch, report:
+  - batch goal
+  - contract documents or files being checked
+  - expected risk area
+- After each review batch, report:
+  - checked documents or files
+  - findings so far, or "No findings."
+  - unresolved verification gaps
+  - next batch
+- If you find a blocking issue, report it at the next checkpoint before
+  continuing broader review. Do not silently continue into a large second pass.
+- If you are about to spend significant time reading, diffing, tracing behavior,
+  or reconciling contracts without producing user-visible output, first emit a
+  checkpoint describing the next concrete step.
+- If interrupted after a checkpoint and asked to continue, resume from the last
+  reported checkpoint with a smaller batch. Do not restart the review or expand
+  scope unless the lead explicitly redirects you.
+
 ## Review Against
 
 - project contracts
