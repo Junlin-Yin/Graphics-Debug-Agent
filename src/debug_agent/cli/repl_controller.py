@@ -47,6 +47,7 @@ class ReplController:
     _usage_input_tokens: int | None = None
     _usage_output_tokens: int | None = None
     _usage_total_tokens: int | None = None
+    _context_used_tokens: int | None = None
 
     @classmethod
     def start(
@@ -484,14 +485,27 @@ class ReplController:
             known_input = self._usage_input_tokens or 0
             known_output = self._usage_output_tokens or 0
             self._usage_total_tokens = known_input + known_output
+        estimate = getattr(self.runtime, "latest_context_estimate", None)
+        if isinstance(estimate, dict):
+            total = estimate.get("total_tokens")
+            if isinstance(total, int):
+                self._context_used_tokens = total
 
     def _status_bar_snapshot(self) -> StatusBarSnapshot:
+        context_used = self._context_used_tokens
+        estimate = getattr(self.runtime, "latest_context_estimate", None)
+        if isinstance(estimate, dict) and isinstance(estimate.get("total_tokens"), int):
+            context_used = estimate["total_tokens"]
+        context_window = self._context_window_tokens()
         return StatusBarSnapshot(
             input_tokens=self._usage_input_tokens,
             output_tokens=self._usage_output_tokens,
             total_tokens=self._usage_total_tokens,
             approval_mode=self._approval_mode(),
             model=self._model_name(),
+            context_used_tokens=context_used,
+            context_window_tokens=context_window,
+            context_percent=_context_percent(context_used, context_window),
         )
 
     def _session_close_summary(
@@ -525,6 +539,21 @@ class ReplController:
             return "unknown"
         return str(session.config_snapshot.get("model") or "unknown")
 
+    def _context_window_tokens(self) -> int | None:
+        config_snapshot = getattr(self.runtime, "config_snapshot", None)
+        if not isinstance(config_snapshot, dict):
+            try:
+                config_snapshot = self.runtime.sessions.get(
+                    self.runtime.session_id
+                ).config_snapshot
+            except Exception:
+                return None
+        context = config_snapshot.get("context")
+        if isinstance(context, dict) and isinstance(context.get("window_tokens"), int):
+            return context["window_tokens"]
+        value = config_snapshot.get("window_tokens")
+        return value if isinstance(value, int) else None
+
 
 class ReplStartFailed(RuntimeError):
     def __init__(self, exit_code: int, message: str) -> None:
@@ -539,6 +568,12 @@ def _usage_value(usage: dict[str, Any], *keys: str) -> int | None:
         if isinstance(value, int):
             return value
     return None
+
+
+def _context_percent(used: int | None, window: int | None) -> int | None:
+    if used is None or window is None or window <= 0:
+        return None
+    return int((used / window) * 100)
 
 
 def _required_str(payload: dict[str, Any], key: str) -> str:

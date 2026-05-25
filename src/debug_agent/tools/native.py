@@ -113,9 +113,13 @@ def tool_definitions() -> list[ToolDefinition]:
 
 
 def gated_user_facing_tool_definitions() -> list[ToolDefinition]:
-    # Milestone 2A keeps Phase 1 native tools inside broker/unit harnesses until
-    # the startup skill snapshot gate makes the Phase 1 prompt path authoritative.
-    return []
+    from debug_agent.tools import runtime_control, shell
+
+    return [
+        *tool_definitions(),
+        *shell.tool_definitions(),
+        *runtime_control.tool_definitions(),
+    ]
 
 
 def tool_handlers() -> dict[str, Any]:

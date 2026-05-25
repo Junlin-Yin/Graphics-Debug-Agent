@@ -87,6 +87,7 @@ class ReplRuntime:
         self.workspace_root = workspace_root
         self.turn_counter = 0
         self.conversation: list[dict[str, Any]] = []
+        self.latest_context_estimate: dict[str, Any] | None = None
         self.closed = False
         self._lock = threading.RLock()
 
@@ -109,6 +110,9 @@ class ReplRuntime:
                 agent_stream_callback=agent_stream_callback,
             )
             if result.status == "completed":
+                estimate = result.metadata.get("context_estimate")
+                if isinstance(estimate, dict):
+                    self.latest_context_estimate = estimate
                 self.conversation.append({"role": "user", "content": user_input})
                 self.conversation.append(
                     {"role": "assistant", "content": result.assistant_output or ""}
@@ -362,6 +366,8 @@ class RuntimeOrchestrator:
                 adapter=adapter,
                 tool_definitions=gated_user_facing_tool_definitions(),
                 system_prompt=config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
+                skill_snapshot_store=SkillSnapshotStore(db.connection),
+                run_store=runs,
             )
             agent_result = executor.run_turn(
                 session=session,
@@ -380,7 +386,9 @@ class RuntimeOrchestrator:
                             "session_status": "completed",
                             "run_status": "completed",
                             "prompt_turn_counter": 1,
-                            "latest_model_response_metadata": agent_result.metadata,
+                            "latest_model_response_metadata": _serializable_metadata(
+                                agent_result.metadata
+                            ),
                             "latest_artifact_ids": _artifact_ids(agent_result),
                             "latest_error_summary": None,
                         },
@@ -713,6 +721,8 @@ class RuntimeOrchestrator:
             adapter=adapter,
             tool_definitions=gated_user_facing_tool_definitions(),
             system_prompt=config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
+            skill_snapshot_store=SkillSnapshotStore(db.connection),
+            run_store=runs,
         )
         return ReplStartResult(
             runtime=ReplRuntime(
@@ -937,3 +947,15 @@ def _error_payload(error: dict[str, Any]) -> dict[str, Any]:
         "source": error.get("source", "orchestrator"),
         "recoverable": error.get("recoverable", False),
     }
+
+
+def _serializable_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    serialized = dict(metadata)
+    query_state = serialized.get("query_state")
+    if isinstance(query_state, dict):
+        query_state = dict(query_state)
+        frame = query_state.get("latest_model_context_frame")
+        if hasattr(frame, "to_dict"):
+            query_state["latest_model_context_frame"] = frame.to_dict()
+        serialized["query_state"] = query_state
+    return serialized

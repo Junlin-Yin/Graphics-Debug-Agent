@@ -591,12 +591,22 @@ class PromptToolkitReplView:
 
 
 def _format_status_bar(snapshot: StatusBarSnapshot) -> str:
+    context = "unavailable"
+    if (
+        snapshot.context_used_tokens is not None
+        and snapshot.context_window_tokens is not None
+        and snapshot.context_percent is not None
+    ):
+        context = (
+            f"{format_token_count(snapshot.context_used_tokens)} / "
+            f"{format_token_count(snapshot.context_window_tokens)} "
+            f"({snapshot.context_percent}%)"
+        )
     return (
-        "tokens: "
-        f"{format_token_count(snapshot.input_tokens)} input, "
-        f"{format_token_count(snapshot.output_tokens)} output, "
-        f"{format_token_count(snapshot.total_tokens)} total | "
-        f"mode: {snapshot.approval_mode} | model: {snapshot.model}"
+        f"model: {snapshot.model} | "
+        f"approval: {snapshot.approval_mode} | "
+        f"context: {context} | "
+        f"tokens: {format_token_count(snapshot.total_tokens)} used"
     )
 
 

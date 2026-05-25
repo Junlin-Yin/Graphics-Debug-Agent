@@ -22,6 +22,7 @@ from debug_agent.runtime.contracts import (
     RunContext,
     ToolResult,
 )
+from debug_agent.runtime.model_context import ConversationMessage, ModelContextFrame
 from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
@@ -39,6 +40,54 @@ def _request() -> AgentRunRequest:
                 "input_schema": {"type": "object", "properties": {}, "required": []},
             }
         ],
+        model_config={"provider": "fake"},
+        timeout_seconds=30,
+    )
+
+
+def _frame_request() -> AgentRunRequest:
+    return AgentRunRequest(
+        session_id="sess_1",
+        run_id="run_1",
+        user_input="legacy user must be ignored",
+        system_prompt="legacy system must be ignored",
+        conversation=[{"role": "user", "content": "legacy conversation must be ignored"}],
+        tools=[
+            {
+                "name": "legacy_tool",
+                "description": "Legacy tool must be ignored",
+                "input_schema": {"type": "object", "properties": {}, "required": []},
+            }
+        ],
+        model_context_frame=ModelContextFrame(
+            message_segments=[
+                ConversationMessage(
+                    seq=20,
+                    role="user",
+                    kind="current_user_input",
+                    turn_id="turn-1",
+                    model_call_id=None,
+                    tool_call_id=None,
+                    content="frame user",
+                ),
+                ConversationMessage(
+                    seq=10,
+                    role="system",
+                    kind="main_agent_system_prompt",
+                    turn_id=None,
+                    model_call_id=None,
+                    tool_call_id=None,
+                    content="frame system",
+                ),
+            ],
+            tool_schema_bindings=[
+                {
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "input_schema": {"type": "object", "properties": {}, "required": []},
+                }
+            ],
+        ),
         model_config={"provider": "fake"},
         timeout_seconds=30,
     )
@@ -71,6 +120,40 @@ def test_langchain_adapter_maps_model_success() -> None:
     assert "runtime safety" in adapter.model.messages[0]["content"]
     assert adapter.model.messages[-1]["role"] == "user"
     assert adapter.model.messages[-1]["content"] == "hello"
+
+
+def test_langchain_adapter_materializes_messages_from_model_context_frame() -> None:
+    model = FakeChatModel(response="answer")
+
+    result = LangChainAgentLoopAdapter(model=model).run(_frame_request(), _context())
+
+    assert result.status == "completed"
+    assert model.messages == [
+        {"role": "system", "content": "frame system"},
+        {"role": "user", "content": "frame user"},
+    ]
+    assert "legacy" not in "\n".join(message["content"] for message in model.messages)
+
+
+def test_langchain_adapter_binds_tools_from_model_context_frame() -> None:
+    class BindingModel(FakeChatModel):
+        def __init__(self) -> None:
+            super().__init__(response="bound answer")
+            self.bound_tools = None
+
+        def bind_tools(self, tools):
+            self.bound_tools = tools
+            return self
+
+    model = BindingModel()
+
+    result = LangChainAgentLoopAdapter(model=model, tool_broker=object()).run(
+        _frame_request(),
+        _context(),
+    )
+
+    assert result.status == "completed"
+    assert [tool.name for tool in model.bound_tools] == ["read_file"]
 
 
 def test_langchain_adapter_stream_falls_back_to_non_streaming_invoke() -> None:

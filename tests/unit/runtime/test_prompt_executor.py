@@ -7,9 +7,11 @@ from debug_agent.persistence.checkpoints import CheckpointStore
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
+from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
 from debug_agent.runtime.config import PHASE_0_SYSTEM_PROMPT
 from debug_agent.runtime.contracts import AgentRunResult
+from debug_agent.runtime.model_context import TokenEstimator
 from debug_agent.runtime.prompt_executor import PromptAgentExecutor
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.tools.broker import ToolBroker
@@ -42,6 +44,7 @@ def _runtime(tmp_path, model):
         adapter=adapter,
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
     )
     return (
         workspace,
@@ -99,7 +102,11 @@ def test_prompt_executor_writes_model_events_assistant_event_and_turn_checkpoint
     assert latest_checkpoint.state["session_status"] == "running"
     assert latest_checkpoint.state["run_status"] == "running"
     assert latest_checkpoint.state["prompt_turn_counter"] == 1
-    assert latest_checkpoint.state["latest_model_response_metadata"] == {}
+    checkpoint_metadata = latest_checkpoint.state["latest_model_response_metadata"]
+    assert checkpoint_metadata["context_estimate"] == result.metadata["context_estimate"]
+    assert checkpoint_metadata["query_state"]["continuation_reason"] == (
+        "final_assistant_response"
+    )
     assert sessions.get(session.session_id).status == "running"
     assert runs.get(run.run_id).status == "running"
     assert sessions.get(session.session_id).latest_checkpoint_id == latest_checkpoint.checkpoint_id
@@ -176,6 +183,77 @@ def test_prompt_executor_records_model_completion_before_react_tool_events(
     assert first_model_completed.payload["tool_calls"] == [
         {"id": "read_file_0", "name": "read_file", "args": {"path": "notes.txt"}}
     ]
+    db.close()
+
+
+def test_tool_loop_followup_records_new_context_estimate_before_second_call(
+    tmp_path,
+) -> None:
+    class ToolLoopModel:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.message_counts = []
+
+        def invoke(self, messages):
+            self.calls += 1
+            self.message_counts.append(len(messages))
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "read_file_0",
+                                "name": "read_file",
+                                "args": {"path": "notes.txt"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "notes say hello", "tool_calls": [], "usage": {}},
+            )()
+
+    (
+        workspace,
+        db,
+        _sessions,
+        _runs,
+        _events,
+        _checkpoints,
+        _artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, ToolLoopModel())
+    (workspace / "notes.txt").write_text("hello", encoding="utf-8")
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="read notes",
+        workspace_root=str(workspace),
+    )
+
+    query_state = result.metadata["query_state"]
+    initial_estimate = result.metadata["context_estimate_history"][0]
+    followup_estimate = result.metadata["context_estimate"]
+    assert result.status == "completed"
+    assert result.metadata["continuation_history"] == [
+        "initial_model_call",
+        "tool_result_continuation",
+        "final_assistant_response",
+    ]
+    assert followup_estimate["total_tokens"] > initial_estimate["total_tokens"]
+    assert query_state["latest_context_estimate"]["total_tokens"] == (
+        followup_estimate["total_tokens"]
+    )
+    assert query_state["continuation_reason"] == "final_assistant_response"
     db.close()
 
 
@@ -269,6 +347,7 @@ def test_prompt_executor_passes_session_timeout_to_adapter_request(tmp_path) -> 
         adapter=adapter,
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
     )
 
     result = executor.run_turn(
@@ -280,6 +359,78 @@ def test_prompt_executor_passes_session_timeout_to_adapter_request(tmp_path) -> 
 
     assert result.status == "completed"
     assert adapter.timeout_seconds == 7
+    db.close()
+
+
+def test_prompt_executor_passes_estimated_model_context_frame_identity_to_adapter(
+    tmp_path,
+) -> None:
+    class RecordingAdapter:
+        def __init__(self) -> None:
+            self.request = None
+
+        def run(self, request, context):
+            self.request = request
+            return AgentRunResult(
+                status="completed",
+                assistant_output="answer",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+        def cancel(self, run_id: str) -> None:
+            raise AssertionError("cancel should not be called")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    db = RuntimeDatabase.bootstrap(workspace)
+    sessions = SessionStore(db.connection)
+    runs = RunStore(db.connection)
+    events = EventWriter(db.connection, db.path.parent)
+    checkpoints = CheckpointStore(db.connection)
+    session = sessions.create(
+        workspace_root=workspace,
+        approval_mode="semi-auto",
+        config_snapshot={"provider": "fake", "model": "fake-model", "timeout_seconds": 7},
+        session_id="sess_1",
+    )
+    run = runs.create_prompt_run(session.session_id, run_id="run_1")
+    sessions.set_active_run(session.session_id, run.run_id)
+    adapter = RecordingAdapter()
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=ArtifactStore(db.connection, db.path.parent),
+        adapter=adapter,
+        tool_definitions=tool_definitions(),
+        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+    )
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="hello",
+        workspace_root=str(workspace),
+    )
+
+    assert result.status == "completed"
+    frame = adapter.request.model_context_frame
+    assert frame is not None
+    assert adapter.request.system_prompt == ""
+    assert adapter.request.conversation == []
+    assert adapter.request.user_input == ""
+    assert adapter.request.tools == []
+    estimate = TokenEstimator().estimate_model_context_frame(frame)
+    assert result.metadata["context_estimate"] == estimate.to_dict()
+    assert result.metadata["query_state"]["latest_context_estimate"] == {
+        "total_tokens": estimate.total_tokens,
+        "estimator_version": estimate.estimator_version,
+    }
+    assert result.metadata["query_state"]["continuation_reason"] == "final_assistant_response"
+    assert result.metadata["query_state"]["latest_model_context_frame"] is frame
     db.close()
 
 
@@ -336,6 +487,7 @@ def test_prompt_executor_uses_stream_path_when_callback_is_supplied(tmp_path) ->
         adapter=adapter,
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
     )
     stream_events = []
 
@@ -420,6 +572,7 @@ def test_prompt_executor_does_not_persist_agent_stream_events(tmp_path) -> None:
         adapter=StreamingAdapter(),
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
     )
 
     executor.run_turn(

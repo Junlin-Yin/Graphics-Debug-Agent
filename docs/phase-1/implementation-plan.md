@@ -471,18 +471,18 @@ Objective: make `ModelContextFrame` the actual ordinary task model-call boundary
 
 Deliverables: Phase 1 `AgentRunRequest`, adapter materialization from `ModelContextFrame`, query state, continuation reasons, status-bar context data source, and active skill injection integration.
 
-- [ ] Update `AgentRunRequest` so `model_context_frame` is the complete context truth for Phase 1.
-- [ ] Ensure Phase 0/0.5 `system_prompt`, `conversation`, `user_input`, and `tools` fields are not independent prompt/context truth.
-- [ ] Update adapter materialization to generate provider-legal messages from `ModelContextFrame.message_segments`.
-- [ ] Update adapter materialization to bind provider-native tools from `ModelContextFrame.tool_schema_bindings`.
-- [ ] Ensure `AgentRunRequest.model_context_frame` is the same frame used for token estimation and context decisions.
-- [ ] Implement query state with query id, turn id, continuation reason, active skill records, latest context estimate, and current approval mode.
-- [ ] Add continuation reasons for `initial_model_call`, `tool_result_continuation`, `post_compression_continuation`, `approval_denied_abort`, `compression_failed_abort`, `context_limit_abort`, and `final_assistant_response`.
-- [ ] Update status bar data source so context window usage is based on `ModelContextFrame` estimates.
-- [ ] Add unit tests for tool schema bindings, adapter materialization, `AgentRunRequest.model_context_frame` identity, estimate consistency across prompt composer and adapter request, query state, continuation reasons, and status data source.
-- [ ] Add integration tests proving active `SKILL.md` content appears on the next model call after activation and is not appended to durable conversation.
-- [ ] Remove the runtime-control skill-tool gate introduced in Milestone 3B only after the same integration path proves skill activation, next-call active skill injection, and adapter materialization share one `ModelContextFrame`.
-- [ ] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
+- [x] Update `AgentRunRequest` so `model_context_frame` is the complete context truth for Phase 1.
+- [x] Ensure Phase 0/0.5 `system_prompt`, `conversation`, `user_input`, and `tools` fields are not independent prompt/context truth.
+- [x] Update adapter materialization to generate provider-legal messages from `ModelContextFrame.message_segments`.
+- [x] Update adapter materialization to bind provider-native tools from `ModelContextFrame.tool_schema_bindings`.
+- [x] Ensure `AgentRunRequest.model_context_frame` is the same frame used for token estimation and context decisions.
+- [x] Implement query state with query id, turn id, continuation reason, active skill records, latest context estimate, and current approval mode.
+- [x] Add continuation reasons for `initial_model_call`, `tool_result_continuation`, `post_compression_continuation`, `approval_denied_abort`, `compression_failed_abort`, `context_limit_abort`, and `final_assistant_response`.
+- [x] Update status bar data source so context window usage is based on `ModelContextFrame` estimates.
+- [x] Add unit tests for tool schema bindings, adapter materialization, `AgentRunRequest.model_context_frame` identity, estimate consistency across prompt composer and adapter request, query state, continuation reasons, and status data source.
+- [x] Add integration tests proving active `SKILL.md` content appears on the next model call after activation and is not appended to durable conversation.
+- [x] Remove the runtime-control skill-tool gate introduced in Milestone 3B only after the same integration path proves skill activation, next-call active skill injection, and adapter materialization share one `ModelContextFrame`.
+- [x] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
 
 Modified boundaries: prompt composition, model-call request envelope, adapter materialization, token estimation, query state.
 

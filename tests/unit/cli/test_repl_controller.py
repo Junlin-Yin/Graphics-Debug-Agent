@@ -70,6 +70,7 @@ class FakeRuntime:
         self.workspace_root = "/repo"
         self.approval_mode = "normal"
         self.config_snapshot = {"model": "fake-model"}
+        self.latest_context_estimate = None
         self.sessions = FakeSessions(
             Session(
                 session_id=self.session_id,
@@ -766,6 +767,24 @@ def test_usage_preserves_last_known_counts_when_result_omits_usage() -> None:
     assert view.status_bars[-1].input_tokens == 2
     assert view.status_bars[-1].output_tokens == 4
     assert view.status_bars[-1].total_tokens == 6
+
+
+def test_status_bar_context_uses_runtime_model_context_estimate() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    runtime = FakeRuntime()
+    runtime.latest_context_estimate = {
+        "total_tokens": 1250,
+        "estimator_version": "deterministic-char-v1",
+    }
+    runtime.config_snapshot = {"model": "fake-model", "context": {"window_tokens": 5000}}
+    controller = ReplController(runtime=runtime)
+
+    snapshot = controller.status_bar_snapshot()
+
+    assert snapshot.context_used_tokens == 1250
+    assert snapshot.context_window_tokens == 5000
+    assert snapshot.context_percent == 25
 
 
 def test_final_status_maps_cancelled_and_timeout_display_statuses() -> None:

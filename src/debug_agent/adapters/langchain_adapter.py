@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
 from debug_agent.runtime.contracts import AgentRunRequest, AgentRunResult, RunContext
+from debug_agent.runtime.model_context import ConversationMessage
 from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
@@ -47,7 +48,7 @@ class LangChainAgentLoopAdapter:
             return _error_result("cancelled", "cancelled", "Run was cancelled.")
         messages = _compose_messages(request)
         model = self.model
-        if request.tools and hasattr(model, "bind_tools"):
+        if _request_tool_bindings(request) and hasattr(model, "bind_tools"):
             model = model.bind_tools(
                 _langchain_tools(request, context, tool_broker=self.tool_broker)
         )
@@ -67,7 +68,12 @@ class LangChainAgentLoopAdapter:
                     )
                 invoked_results = self._invoke_tool_calls(request, context, tool_calls)
                 tool_results.extend(result.to_dict() for _, result in invoked_results)
-                messages.extend(_tool_loop_messages(response, invoked_results))
+                tool_loop_messages = _tool_loop_messages(response, invoked_results)
+                refreshed = _refresh_frame_messages(context, tool_loop_messages)
+                if refreshed is None:
+                    messages.extend(tool_loop_messages)
+                else:
+                    messages = refreshed
             return _error_result(
                 "failed",
                 "internal_error",
@@ -90,7 +96,7 @@ class LangChainAgentLoopAdapter:
         if request.run_id in self._cancelled_runs:
             return _error_result("cancelled", "cancelled", "Run was cancelled.")
         model = self.model
-        if request.tools and hasattr(model, "bind_tools"):
+        if _request_tool_bindings(request) and hasattr(model, "bind_tools"):
             model = model.bind_tools(
                 _langchain_tools(request, context, tool_broker=self.tool_broker)
             )
@@ -144,7 +150,12 @@ class LangChainAgentLoopAdapter:
                     on_event=on_event,
                 )
                 tool_results.extend(result.to_dict() for _, result in invoked_results)
-                messages.extend(_tool_loop_messages(response, invoked_results))
+                tool_loop_messages = _tool_loop_messages(response, invoked_results)
+                refreshed = _refresh_frame_messages(context, tool_loop_messages)
+                if refreshed is None:
+                    messages.extend(tool_loop_messages)
+                else:
+                    messages = refreshed
             return _error_result(
                 "failed",
                 "internal_error",
@@ -264,7 +275,7 @@ def _langchain_tools(
                 tool_broker=tool_broker,
             ),
         )
-        for tool in request.tools
+        for tool in _request_tool_bindings(request)
     ]
 
 
@@ -291,14 +302,17 @@ def _tool_callable(
 
 
 def _tool_context(request: AgentRunRequest, context: RunContext) -> dict[str, Any]:
-    return {
+    payload = {
         "workspace_root": context.workspace_root,
         "artifact_root": context.artifact_root,
         "approval_mode": context.approval_mode,
         "cancellation_token": context.cancellation_token,
-        "timeout_seconds": request.timeout_seconds,
         "metadata": context.metadata,
+        **context.metadata,
     }
+    if request.timeout_seconds is not None:
+        payload["timeout_seconds"] = request.timeout_seconds
+    return payload
 
 
 def _supports_native_stream(model: object) -> bool:
@@ -310,13 +324,46 @@ def _supports_native_stream(model: object) -> bool:
 
 
 def _compose_messages(request: AgentRunRequest) -> list[dict[str, str]]:
+    if request.model_context_frame is not None:
+        return [
+            _provider_message_from_segment(segment)
+            for segment in request.model_context_frame.ordered_message_segments()
+        ]
     return [
         {
             "role": "system",
             "content": f"{RUNTIME_SAFETY_PREFIX}\n\n{request.system_prompt}",
         },
-        *request.conversation,
+        *(request.conversation or []),
         {"role": "user", "content": request.user_input},
+    ]
+
+
+def _request_tool_bindings(request: AgentRunRequest) -> list[dict[str, Any]]:
+    if request.model_context_frame is not None:
+        return [dict(binding) for binding in request.model_context_frame.tool_schema_bindings]
+    return [dict(tool) for tool in request.tools or []]
+
+
+def _provider_message_from_segment(segment: ConversationMessage) -> dict[str, str]:
+    content = segment.content
+    if not isinstance(content, str):
+        content = json.dumps(content, ensure_ascii=False, sort_keys=True)
+    return {"role": segment.role, "content": content}
+
+
+def _refresh_frame_messages(
+    context: RunContext,
+    tool_loop_messages: list[object],
+) -> list[dict[str, str]] | None:
+    refresh = context.metadata.get("refresh_model_context_frame")
+    if not callable(refresh):
+        return None
+    refreshed = refresh(tool_loop_messages)
+    frame = refreshed.get("frame") if isinstance(refreshed, dict) else refreshed
+    return [
+        _provider_message_from_segment(segment)
+        for segment in frame.ordered_message_segments()
     ]
 
 

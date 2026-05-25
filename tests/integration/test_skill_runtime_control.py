@@ -8,6 +8,7 @@ from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
+from debug_agent.adapters.langchain_adapter import LangChainAgentLoopAdapter
 from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.policy import build_builtin_policy
 from debug_agent.runtime.prompt_executor import PromptAgentExecutor
@@ -106,31 +107,57 @@ def test_brokered_skill_activation_and_reference_load_in_fake_harness(tmp_path) 
     assert [event.kind for event in runtime["events"].list_for_run("run_1")] == [
         "tool_call_started",
         "tool_call_completed",
+        "skill_activated",
         "tool_call_started",
         "tool_call_completed",
+        "skill_reference_loaded",
     ]
     runtime["db"].close()
 
 
-def test_real_provider_tool_surface_remains_gated_until_model_context_frame(tmp_path) -> None:
+def test_active_skill_injection_shares_adapter_model_context_frame(tmp_path) -> None:
     runtime = _runtime(tmp_path)
 
-    class RecordingAdapter:
+    class ActivatingModel:
         def __init__(self) -> None:
-            self.tools = None
+            self.calls = 0
+            self.messages_by_call = []
 
-        def run(self, request, context):
-            self.tools = request.tools
-            return AgentRunResult(
-                status="completed",
-                assistant_output="ok",
-                tool_results=[],
-                usage={},
-                error=None,
-                metadata={},
-            )
+        def bind_tools(self, tools):
+            self.bound_tool_names = [tool.name for tool in tools]
+            return self
 
-    adapter = RecordingAdapter()
+        def invoke(self, messages):
+            self.calls += 1
+            self.messages_by_call.append(messages)
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "activate_alpha",
+                                "name": "activate_skill",
+                                "args": {"name": "alpha"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "alpha active", "tool_calls": [], "usage": {}},
+            )()
+
+    model = ActivatingModel()
+    broker = ToolBroker(
+        event_writer=runtime["events"],
+        artifact_store=runtime["artifacts"],
+    )
+    adapter = LangChainAgentLoopAdapter(model=model, tool_broker=broker)
     executor = PromptAgentExecutor(
         event_writer=runtime["events"],
         checkpoint_store=CheckpointStore(runtime["db"].connection),
@@ -138,6 +165,8 @@ def test_real_provider_tool_surface_remains_gated_until_model_context_frame(tmp_
         adapter=adapter,
         tool_definitions=gated_user_facing_tool_definitions(),
         system_prompt="system",
+        skill_snapshot_store=runtime["skill_store"],
+        run_store=runtime["runs"],
     )
 
     result = executor.run_turn(
@@ -148,5 +177,13 @@ def test_real_provider_tool_surface_remains_gated_until_model_context_frame(tmp_
     )
 
     assert result.status == "completed"
-    assert adapter.tools == []
+    assert "activate_skill" in model.bound_tool_names
+    second_call_text = "\n".join(message["content"] for message in model.messages_by_call[1])
+    assert "[Runtime supplied active skill context]" in second_call_text
+    assert "skill_id: alpha" in second_call_text
+    assert "Do it." in second_call_text
+    durable_text = runtime["db"].connection.execute(
+        "SELECT active_skills_json FROM runs WHERE run_id = 'run_1'"
+    ).fetchone()[0]
+    assert "Do it." not in durable_text
     runtime["db"].close()

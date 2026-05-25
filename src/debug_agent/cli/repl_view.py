@@ -61,6 +61,9 @@ class StatusBarSnapshot:
     total_tokens: int | None
     approval_mode: str
     model: str
+    context_used_tokens: int | None = None
+    context_window_tokens: int | None = None
+    context_percent: int | None = None
 
 
 @dataclass(frozen=True)

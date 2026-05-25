@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, Self
 
+from debug_agent.runtime.model_context import ModelContextFrame
 from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
@@ -253,12 +254,13 @@ class ToolDefinition:
 class AgentRunRequest:
     session_id: str
     run_id: str
-    user_input: str
-    system_prompt: str
-    conversation: list[dict[str, Any]]
-    tools: list[dict[str, Any]]
     model_config: dict[str, Any]
     timeout_seconds: int | None
+    model_context_frame: ModelContextFrame | None = None
+    user_input: str = ""
+    system_prompt: str = ""
+    conversation: list[dict[str, Any]] | None = None
+    tools: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)

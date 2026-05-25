@@ -108,6 +108,7 @@ def test_one_shot_skill_headers_do_not_mutate_config_snapshots_or_model_input(
 
         def run(self, request, context):
             captured["model_config"] = dict(request.model_config)
+            captured["frame"] = request.model_context_frame.to_dict()
             return AgentRunResult(
                 status="completed",
                 assistant_output="captured",
@@ -126,6 +127,10 @@ def test_one_shot_skill_headers_do_not_mutate_config_snapshots_or_model_input(
     assert result.exit_code == 0
     assert config == original_config
     assert "available_skill_headers" not in captured["model_config"]
+    frame_text = json.dumps(captured["frame"], sort_keys=True)
+    assert "available_skill_headers" in frame_text
+    assert "alpha: Alpha skill" in frame_text
+    assert "SECRET BODY" not in frame_text
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         persisted_config = json.loads(
             conn.execute("SELECT config_snapshot_json FROM sessions").fetchone()[0]
@@ -133,7 +138,7 @@ def test_one_shot_skill_headers_do_not_mutate_config_snapshots_or_model_input(
     assert "available_skill_headers" not in persisted_config
 
 
-def test_one_shot_default_path_does_not_expose_phase1_native_tools_before_gate(
+def test_one_shot_default_path_exposes_phase1_tools_through_model_context_frame(
     tmp_path, monkeypatch
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -147,6 +152,9 @@ def test_one_shot_default_path_does_not_expose_phase1_native_tools_before_gate(
 
         def run(self, request, context):
             captured["tools"] = request.tools
+            captured["tool_schema_bindings"] = (
+                request.model_context_frame.tool_schema_bindings
+            )
             return AgentRunResult(
                 status="completed",
                 assistant_output="captured",
@@ -166,6 +174,16 @@ def test_one_shot_default_path_does_not_expose_phase1_native_tools_before_gate(
 
     assert result.exit_code == 0
     assert captured["tools"] == []
+    assert [tool["name"] for tool in captured["tool_schema_bindings"]] == [
+        "read_file",
+        "list_dir",
+        "search_text",
+        "write_file",
+        "edit_file",
+        "shell_exec",
+        "activate_skill",
+        "load_skill_ref_file",
+    ]
 
 
 def test_one_shot_model_failure_marks_run_and_session_failed(tmp_path) -> None:

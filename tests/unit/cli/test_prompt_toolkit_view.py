@@ -123,6 +123,9 @@ def test_prompt_toolkit_view_renders_welcome_messages_status_and_close_summary()
             total_tokens=None,
             approval_mode="normal",
             model="fake-model",
+            context_used_tokens=1250,
+            context_window_tokens=5000,
+            context_percent=25,
         )
     )
     view.append_user_message("hello")
@@ -154,7 +157,10 @@ def test_prompt_toolkit_view_renders_welcome_messages_status_and_close_summary()
     assert "🤖 System\n\nstatus ok" in rendered
     assert "❌ Error\n\nfailed" in rendered
     assert "turn 1: completed 2s" in rendered
-    assert "tokens: 999 input, 1.0k output, unavailable total" in rendered
+    assert (
+        "model: fake-model | approval: normal | context: 1.2k / 5.0k (25%) | "
+        "tokens: unavailable used"
+    ) in rendered
     assert "session sess_full" not in rendered
 
 
@@ -572,6 +578,9 @@ def test_prompt_toolkit_view_streaming_redraw_preserves_bottom_status_region(
             total_tokens=None,
             approval_mode="normal",
             model="fake-model",
+            context_used_tokens=1250,
+            context_window_tokens=5000,
+            context_percent=25,
         )
     )
 
@@ -585,8 +594,8 @@ def test_prompt_toolkit_view_streaming_redraw_preserves_bottom_status_region(
 
     assert view._current_turn_status_text() == "turn 1: running 2s"
     assert view._status_bar_text() == (
-        "tokens: unavailable input, unavailable output, unavailable total | "
-        "mode: normal | model: fake-model"
+        "model: fake-model | approval: normal | context: 1.2k / 5.0k (25%) | "
+        "tokens: unavailable used"
     )
 
 
@@ -1160,7 +1169,7 @@ def test_prompt_toolkit_view_has_application_layout_regions() -> None:
     assert isinstance(view._application, Application)
     assert view._message_region_text() == ""
     assert view._current_turn_status_text() == ""
-    assert view._status_bar_text().startswith("tokens:")
+    assert view._status_bar_text().startswith("model:")
     assert view._message_region_is_scrollable() is True
     assert view._application.full_screen is True
     assert view._application.mouse_support() is True
