@@ -419,13 +419,13 @@ Objective: introduce the runtime-owned model-call frame and deterministic estima
 
 Deliverables: `ConversationMessage`, `ModelContextFrame`, `CompressionContextFrame` type shape, deterministic token estimator, estimator metadata, and frame-only unit coverage.
 
-- [ ] Define `ConversationMessage` with `seq`, `role`, `kind`, `turn_id`, `model_call_id`, `tool_call_id`, `content`, `artifact_refs`, `estimated_tokens`, and `metadata`.
-- [ ] Define `ModelContextFrame` with `message_segments` and `tool_schema_bindings`.
-- [ ] Define `CompressionContextFrame` for later compression calls, without enabling compression behavior yet.
-- [ ] Implement deterministic `TokenEstimator` for local pre-call estimates, including structural overhead for messages and tool schema bindings.
-- [ ] Record estimator version and input-shape metadata in context estimates so later events and context snapshots can explain which deterministic estimator produced each estimate.
-- [ ] Add unit tests for frame serialization, segment ordering primitives, tool schema binding estimate inclusion, deterministic estimate stability, estimator version metadata, and raw conversation not being used directly for budget decisions.
-- [ ] Verify with canonical command `uv run pytest tests/unit -v`.
+- [x] Define `ConversationMessage` with `seq`, `role`, `kind`, `turn_id`, `model_call_id`, `tool_call_id`, `content`, `artifact_refs`, `estimated_tokens`, and `metadata`.
+- [x] Define `ModelContextFrame` with `message_segments` and `tool_schema_bindings`.
+- [x] Define `CompressionContextFrame` for later compression calls, without enabling compression behavior yet.
+- [x] Implement deterministic `TokenEstimator` for local pre-call estimates, including structural overhead for messages and tool schema bindings.
+- [x] Record estimator version and input-shape metadata in context estimates so later events and context snapshots can explain which deterministic estimator produced each estimate.
+- [x] Add unit tests for frame serialization, segment ordering primitives, tool schema binding estimate inclusion, deterministic estimate stability, estimator version metadata, and raw conversation not being used directly for budget decisions.
+- [x] Verify with canonical command `uv run pytest tests/unit -v`.
 
 Modified boundaries: model context types and deterministic token estimation.
 
