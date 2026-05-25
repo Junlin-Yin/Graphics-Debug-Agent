@@ -159,6 +159,12 @@ def _summarize_payload(payload: dict[str, Any], kind: str | None = None) -> str:
         return _summarize_model_completed(payload)
     if kind == "tool_call_completed":
         return _summarize_tool_completed(payload)
+    if kind == "skill_snapshot_created":
+        return _summarize_skill_snapshot(payload)
+    if kind == "skill_activated":
+        return _summarize_skill_activation(payload)
+    if kind == "skill_reference_loaded":
+        return _summarize_skill_reference_loaded(payload)
     text = str(payload)
     if len(text) <= 240:
         return text
@@ -192,6 +198,43 @@ def _summarize_tool_completed(payload: dict[str, Any]) -> str:
         f"status={payload.get('status', '')}, "
         f"result={_shorten(result_text)}, "
         f"artifact_ids={payload.get('artifact_ids', [])}}}"
+    )
+
+
+def _summarize_skill_snapshot(payload: dict[str, Any]) -> str:
+    return (
+        "{"
+        f"skill={payload.get('skill_name', '')}, "
+        f"mode={payload.get('execution_mode', '')}, "
+        f"scope={payload.get('source_scope', '')}, "
+        f"hash={payload.get('content_hash', '')}, "
+        f"references={payload.get('reference_count', 0)}"
+        "}"
+    )
+
+
+def _summarize_skill_activation(payload: dict[str, Any]) -> str:
+    return (
+        "{"
+        f"skill={payload.get('skill_name', '')}, "
+        f"hash={payload.get('content_hash', '')}, "
+        f"reason={payload.get('activation_reason', '')}, "
+        f"scope={payload.get('scope', '')}"
+        "}"
+    )
+
+
+def _summarize_skill_reference_loaded(payload: dict[str, Any]) -> str:
+    return (
+        "{"
+        f"skill={payload.get('skill_name', '')}, "
+        f"skill_hash={payload.get('skill_content_hash', '')}, "
+        f"reference={payload.get('reference_path', '')}, "
+        f"reference_hash={payload.get('reference_content_hash', '')}, "
+        f"media={payload.get('media_kind', '')}, "
+        f"bytes={payload.get('size_bytes', 0)}, "
+        f"artifact_id={payload.get('artifact_id') or ''}"
+        "}"
     )
 
 

@@ -21,6 +21,16 @@ class FrozenSkillSnapshot:
 
 
 @dataclass(frozen=True)
+class SkillListingRecord:
+    name: str
+    description: str
+    execution_mode: str
+    source_scope: str
+    content_hash: str
+    active: bool
+
+
+@dataclass(frozen=True)
 class FrozenReferenceSnapshot:
     reference_snapshot_id: str
     skill_snapshot_id: str
@@ -119,6 +129,43 @@ class SkillSnapshotStore:
                 f"(mode={execution_mode}, scope={source_scope}, hash={content_hash})"
             )
         return "\n".join(lines)
+
+    def list_for_run(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        active_skills: list[dict],
+    ) -> list[SkillListingRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT skill_name, execution_mode, source_scope, manifest_json,
+                   overall_content_hash
+            FROM skill_snapshots
+            WHERE session_id = ? AND run_id = ?
+            ORDER BY skill_name ASC
+            """,
+            (session_id, run_id),
+        ).fetchall()
+        active_keys = {
+            (record.get("name"), record.get("content_hash"))
+            for record in active_skills
+            if isinstance(record, dict)
+        }
+        records: list[SkillListingRecord] = []
+        for name, execution_mode, source_scope, manifest_json, content_hash in rows:
+            manifest = json.loads(manifest_json)
+            records.append(
+                SkillListingRecord(
+                    name=name,
+                    description=str(manifest["description"]),
+                    execution_mode=execution_mode,
+                    source_scope=source_scope,
+                    content_hash=content_hash,
+                    active=(name, content_hash) in active_keys,
+                )
+            )
+        return records
 
     def get_skill(
         self, *, session_id: str, run_id: str, skill_name: str

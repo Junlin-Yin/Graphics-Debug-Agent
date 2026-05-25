@@ -134,6 +134,29 @@ class ReplRuntime:
             }
             return [f"{key}: {value or ''}" for key, value in fields.items()]
 
+    def skill_lines(self) -> list[str]:
+        with self._lock:
+            run = self.runs.get(self.run_id)
+            records = SkillSnapshotStore(self.db.connection).list_for_run(
+                session_id=self.session_id,
+                run_id=self.run_id,
+                active_skills=run.active_skills,
+            )
+            if not records:
+                return ["Skills: none"]
+            lines = ["Skills:"]
+            for record in records:
+                active = "yes" if record.active else "no"
+                lines.append(
+                    "- "
+                    f"{record.name} | {record.description} | "
+                    f"mode={record.execution_mode} | "
+                    f"scope={record.source_scope} | "
+                    f"hash={record.content_hash} | "
+                    f"active={active}"
+                )
+            return lines
+
     def complete(self) -> None:
         with self._lock:
             if self.closed:
@@ -269,6 +292,7 @@ class RuntimeOrchestrator:
                 workspace_root=self.workspace_root,
                 artifacts=artifacts,
                 connection=db.connection,
+                events=events,
                 session_id=session.session_id,
                 run_id=run.run_id,
             )
@@ -617,6 +641,7 @@ class RuntimeOrchestrator:
             workspace_root=self.workspace_root,
             artifacts=artifacts,
             connection=db.connection,
+            events=events,
             session_id=session.session_id,
             run_id=run.run_id,
         )
@@ -733,6 +758,7 @@ def _snapshot_skills_for_startup(
     workspace_root: Path,
     artifacts: ArtifactStore,
     connection,
+    events: EventWriter,
     session_id: str,
     run_id: str,
 ) -> dict[str, Any] | None:
@@ -743,6 +769,20 @@ def _snapshot_skills_for_startup(
         ).snapshot(session_id=session_id, run_id=run_id)
         store = SkillSnapshotStore(connection)
         store.save_many(snapshots)
+        for snapshot in snapshots:
+            _append_event(
+                events,
+                session_id,
+                run_id,
+                "skill_snapshot_created",
+                {
+                    "skill_name": snapshot.name,
+                    "execution_mode": snapshot.execution_mode,
+                    "source_scope": snapshot.source_scope,
+                    "content_hash": snapshot.overall_content_hash,
+                    "reference_count": len(snapshot.references),
+                },
+            )
         store.available_skill_headers(session_id=session_id, run_id=run_id)
         return None
     except SkillRegistryError as exc:

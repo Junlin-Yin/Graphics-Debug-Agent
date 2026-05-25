@@ -129,6 +129,9 @@ class ReplController:
         if command == "/status":
             self._append_system_message("\n".join(self.runtime.status_lines()))
             return True
+        if command == "/skills":
+            self._append_system_message("\n".join(self.runtime.skill_lines()))
+            return True
         if command == "/exit":
             self.runtime.complete()
             if self.view is not None:
@@ -417,6 +420,9 @@ class ReplController:
     def _handle_plain_slash_command(self, command: str, output: TextIO) -> bool:
         if command == "/status":
             print("\n".join(self.runtime.status_lines()), file=output)
+            return True
+        if command == "/skills":
+            print("\n".join(self.runtime.skill_lines()), file=output)
             return True
         if command == "/exit":
             self.runtime.complete()

@@ -47,7 +47,7 @@ def write_event_log(sessions_root: Path, event: RunEvent) -> None:
         step_id=event.step_id,
         level=_level_for_event(event.kind),
         event=event.kind,
-        message=event.kind,
+        message=_message_for_event(event.kind, event.payload),
         metadata={"payload": event.payload, "event_id": event.event_id},
     )
 
@@ -84,3 +84,25 @@ def _level_for_event(kind: str) -> str:
     if kind == "tool_call_denied":
         return "WARN"
     return "INFO"
+
+
+def _message_for_event(kind: str, payload: dict[str, Any]) -> str:
+    if kind == "skill_snapshot_created":
+        return (
+            "skill_snapshot_created "
+            f"skill={payload.get('skill_name', '')} "
+            f"hash={payload.get('content_hash', '')}"
+        )
+    if kind == "skill_activated":
+        return (
+            "skill_activated "
+            f"skill={payload.get('skill_name', '')} "
+            f"hash={payload.get('content_hash', '')}"
+        )
+    if kind == "skill_reference_loaded":
+        return (
+            "skill_reference_loaded "
+            f"skill={payload.get('skill_name', '')} "
+            f"reference={payload.get('reference_path', '')}"
+        )
+    return kind

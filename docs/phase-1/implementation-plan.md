@@ -394,12 +394,12 @@ Objective: expose frozen skill state to users and traces without adding new runt
 
 Deliverables: local `/skills`, skill snapshot/activation/reference trace rendering, and skill engine-log facts.
 
-- [ ] Implement `/skills` as a local REPL command from the frozen session snapshot.
-- [ ] Ensure `/skills` lists skill name, description, execution mode, source scope, content hash, and active status for the current run, and never reads live skill source files after startup.
-- [ ] Add trace and engine-log facts for skill snapshotting, activation, and reference loading.
-- [ ] Add unit tests for `/skills` rendering from frozen snapshots and active skill state.
-- [ ] Add trace/log tests for skill snapshotting, activation, and reference loading facts.
-- [ ] Verify with canonical command `uv run pytest tests/unit -v`.
+- [x] Implement `/skills` as a local REPL command from the frozen session snapshot.
+- [x] Ensure `/skills` lists skill name, description, execution mode, source scope, content hash, and active status for the current run, and never reads live skill source files after startup.
+- [x] Add trace and engine-log facts for skill snapshotting, activation, and reference loading.
+- [x] Add unit tests for `/skills` rendering from frozen snapshots and active skill state.
+- [x] Add trace/log tests for skill snapshotting, activation, and reference loading facts.
+- [x] Verify with canonical command `uv run pytest tests/unit -v`.
 
 Modified boundaries: REPL local command routing for `/skills`, trace writer, and engine log rendering for skill facts.
 

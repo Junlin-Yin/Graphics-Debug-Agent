@@ -70,6 +70,37 @@ def _persist_session_with_events(tmp_path):
             },
         ),
         (
+            "skill_snapshot_created",
+            {
+                "skill_name": "alpha",
+                "execution_mode": "prompt",
+                "source_scope": "project",
+                "content_hash": "sha256:alpha",
+                "reference_count": 1,
+            },
+        ),
+        (
+            "skill_activated",
+            {
+                "skill_name": "alpha",
+                "content_hash": "sha256:alpha",
+                "activation_reason": "model_requested",
+                "scope": "run",
+            },
+        ),
+        (
+            "skill_reference_loaded",
+            {
+                "skill_name": "alpha",
+                "skill_content_hash": "sha256:alpha",
+                "reference_path": "references/guide.md",
+                "reference_content_hash": "sha256:guide",
+                "media_kind": "text",
+                "size_bytes": 42,
+                "artifact_id": None,
+            },
+        ),
+        (
             "model_call_failed",
             {
                 "error_class": "model_error",
@@ -134,7 +165,7 @@ def test_trace_writer_renders_required_sections_and_metadata(tmp_path) -> None:
 
     content = result.trace_path.read_text(encoding="utf-8")
     assert result.refreshed is True
-    assert "<!-- event_count: 10 -->" in content
+    assert "<!-- event_count: 13 -->" in content
     assert "<!-- latest_event_id: evt_checkpoint -->" in content
     assert "## Session Summary" in content
     assert "## Runs" in content
@@ -152,6 +183,17 @@ def test_trace_writer_renders_required_sections_and_metadata(tmp_path) -> None:
     assert "result=tool answer" in content
     assert "artifact_registered" in content
     assert "art_trace" in content
+    assert "skill_snapshot_created" in content
+    assert "skill=alpha" in content
+    assert "mode=prompt" in content
+    assert "scope=project" in content
+    assert "hash=sha256:alpha" in content
+    assert "references=1" in content
+    assert "skill_activated" in content
+    assert "reason=model_requested" in content
+    assert "skill_reference_loaded" in content
+    assert "reference=references/guide.md" in content
+    assert "reference_hash=sha256:guide" in content
     assert "model_call_failed" in content
     assert "provider failed" in content
     assert "checkpoint_written" in content

@@ -64,6 +64,7 @@ def test_one_shot_success_persists_lifecycle_and_completes_session(tmp_path) -> 
     assert event_kinds == [
         "session_started",
         "run_started",
+        "skill_snapshot_created",
         "user_message",
         "model_call_started",
         "model_call_completed",
@@ -260,6 +261,51 @@ def test_repl_invalid_skill_fails_startup_before_returning_runtime(tmp_path) -> 
         run_status = conn.execute("SELECT status FROM runs").fetchone()[0]
 
     assert (session_status, active_run_id, run_status) == ("failed", None, "failed")
+
+
+def test_repl_skill_lines_render_from_frozen_snapshots_and_active_run_state(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    skill_dir = workspace / ".debug-agent" / "skills" / "alpha"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(
+        "---\nname: alpha\ndescription: Alpha skill\n---\nORIGINAL\n",
+        encoding="utf-8",
+    )
+
+    result = RuntimeOrchestrator(workspace_root=workspace).start_repl(_config())
+
+    assert result.error is None
+    assert result.runtime is not None
+    runtime = result.runtime
+    try:
+        frozen_lines = runtime.skill_lines()
+        frozen_hash = runtime.db.connection.execute(
+            "SELECT overall_content_hash FROM skill_snapshots WHERE skill_name = 'alpha'"
+        ).fetchone()[0]
+        runtime.runs.activate_skill(
+            runtime.run_id,
+            name="alpha",
+            content_hash=frozen_hash,
+        )
+        skill_file.write_text(
+            "---\nname: alpha\ndescription: Mutated skill\n---\nMUTATED\n",
+            encoding="utf-8",
+        )
+        active_lines = runtime.skill_lines()
+    finally:
+        runtime.close()
+
+    assert frozen_lines == [
+        "Skills:",
+        f"- alpha | Alpha skill | mode=prompt | scope=project | hash={frozen_hash} | active=no",
+    ]
+    assert active_lines == [
+        "Skills:",
+        f"- alpha | Alpha skill | mode=prompt | scope=project | hash={frozen_hash} | active=yes",
+    ]
+    assert "Mutated skill" not in active_lines[1]
 
 
 def test_one_shot_model_cancellation_marks_failed_and_releases_ownership(

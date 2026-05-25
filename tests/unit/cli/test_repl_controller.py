@@ -90,6 +90,11 @@ class FakeRuntime:
         self.release_turn = threading.Event()
         self.stream_events: list[AgentStreamEvent] = []
         self.stream_callback_seen = False
+        self.frozen_skill_lines = [
+            "Skills:",
+            "- alpha | Alpha skill | mode=prompt | scope=project | hash=sha256:aaa | active=yes",
+            "- beta | Beta skill | mode=prompt | scope=global | hash=sha256:bbb | active=no",
+        ]
 
     def run_turn(self, user_input: str, agent_stream_callback=None) -> AgentRunResult:
         self.run_inputs.append(user_input)
@@ -104,6 +109,9 @@ class FakeRuntime:
 
     def status_lines(self) -> list[str]:
         return self.status
+
+    def skill_lines(self) -> list[str]:
+        return self.frozen_skill_lines
 
     def complete(self) -> None:
         self.completed = True
@@ -534,6 +542,25 @@ def test_status_slash_command_appends_system_message() -> None:
         ReplViewEvent(
             kind="system_message",
             payload={"message": "session_id: sess_1\napproval_mode: normal"},
+        )
+    ]
+
+
+def test_skills_slash_command_appends_local_frozen_skill_state() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    should_continue = controller.on_slash_command("/skills")
+
+    assert should_continue is True
+    assert runtime.run_inputs == []
+    assert view.events == [
+        ReplViewEvent(
+            kind="system_message",
+            payload={"message": "\n".join(runtime.frozen_skill_lines)},
         )
     ]
 

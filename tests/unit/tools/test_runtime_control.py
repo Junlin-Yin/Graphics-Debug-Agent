@@ -187,7 +187,11 @@ def test_activate_skill_is_audit_only_in_semi_auto_and_uses_frozen_snapshot(tmp_
     assert result.status == "ok"
     assert result.output == f"Skill activated: alpha ({result.metadata['content_hash']})"
     assert not runtime["context"]["approval_provider"].requests
-    assert _event_kinds(runtime) == ["tool_call_started", "tool_call_completed"]
+    assert _event_kinds(runtime) == [
+        "tool_call_started",
+        "tool_call_completed",
+        "skill_activated",
+    ]
     runtime["db"].close()
 
 
@@ -246,6 +250,17 @@ def test_load_skill_ref_file_requires_active_skill_and_valid_relative_reference(
     assert traversal.status == "denied"
     assert absolute.status == "denied"
     assert not runtime["context"]["approval_provider"].requests
+    assert _event_kinds(runtime) == [
+        "tool_call_denied",
+        "tool_call_started",
+        "tool_call_completed",
+        "skill_activated",
+        "tool_call_started",
+        "tool_call_completed",
+        "skill_reference_loaded",
+        "tool_call_denied",
+        "tool_call_denied",
+    ]
     runtime["db"].close()
 
 

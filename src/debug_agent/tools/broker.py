@@ -421,6 +421,12 @@ class ToolBroker:
                 duration_seconds=monotonic() - start,
             ),
         )
+        self._write_runtime_control_observability_event(
+            session_id=session_id,
+            run_id=run_id,
+            tool_name=tool_name,
+            result=result,
+        )
         return result
 
     def _handler_result(
@@ -594,6 +600,48 @@ class ToolBroker:
                 payload=payload,
             )
         )
+
+    def _write_runtime_control_observability_event(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        tool_name: str,
+        result: ToolResult,
+    ) -> None:
+        if result.status != "ok":
+            return
+        metadata = result.metadata if isinstance(result.metadata, dict) else {}
+        if tool_name == "activate_skill":
+            self._write_event(
+                session_id=session_id,
+                run_id=run_id,
+                kind="skill_activated",
+                payload={
+                    "skill_name": metadata.get("skill_name", ""),
+                    "content_hash": metadata.get("content_hash", ""),
+                    "activation_reason": metadata.get("activation_reason", ""),
+                    "scope": metadata.get("scope", ""),
+                },
+            )
+            return
+        if tool_name == "load_skill_ref_file":
+            self._write_event(
+                session_id=session_id,
+                run_id=run_id,
+                kind="skill_reference_loaded",
+                payload={
+                    "skill_name": metadata.get("skill_name", ""),
+                    "skill_content_hash": metadata.get("skill_content_hash", ""),
+                    "reference_path": metadata.get("reference_path", ""),
+                    "reference_content_hash": metadata.get(
+                        "reference_content_hash", ""
+                    ),
+                    "media_kind": metadata.get("media_kind", ""),
+                    "size_bytes": metadata.get("size_bytes", 0),
+                    "artifact_id": metadata.get("artifact_id"),
+                },
+            )
 
 
 def _validate_schema(definition: ToolDefinition, arguments: dict[str, Any]) -> str | None:
