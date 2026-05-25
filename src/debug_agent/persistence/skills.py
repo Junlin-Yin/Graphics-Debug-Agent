@@ -8,6 +8,34 @@ from debug_agent.skills.registry import SkillSnapshot
 
 
 @dataclass(frozen=True)
+class FrozenSkillSnapshot:
+    skill_snapshot_id: str
+    session_id: str
+    run_id: str
+    skill_name: str
+    execution_mode: str
+    manifest: dict
+    skill_md_content: str
+    skill_md_content_hash: str
+    overall_content_hash: str
+
+
+@dataclass(frozen=True)
+class FrozenReferenceSnapshot:
+    reference_snapshot_id: str
+    skill_snapshot_id: str
+    session_id: str
+    run_id: str
+    skill_name: str
+    reference_path: str
+    media_kind: str
+    size_bytes: int
+    content_hash: str
+    inline_text_payload: str | None
+    payload_artifact_id: str | None
+
+
+@dataclass(frozen=True)
 class SkillSnapshotStore:
     connection: sqlite3.Connection
 
@@ -92,3 +120,92 @@ class SkillSnapshotStore:
             )
         return "\n".join(lines)
 
+    def get_skill(
+        self, *, session_id: str, run_id: str, skill_name: str
+    ) -> FrozenSkillSnapshot | None:
+        row = self.connection.execute(
+            """
+            SELECT skill_snapshot_id, session_id, run_id, skill_name,
+                   execution_mode, manifest_json, skill_md_content,
+                   skill_md_content_hash, overall_content_hash
+            FROM skill_snapshots
+            WHERE session_id = ? AND run_id = ? AND skill_name = ?
+            """,
+            (session_id, run_id, skill_name),
+        ).fetchone()
+        if row is None:
+            return None
+        return FrozenSkillSnapshot(
+            skill_snapshot_id=row[0],
+            session_id=row[1],
+            run_id=row[2],
+            skill_name=row[3],
+            execution_mode=row[4],
+            manifest=json.loads(row[5]),
+            skill_md_content=row[6],
+            skill_md_content_hash=row[7],
+            overall_content_hash=row[8],
+        )
+
+    def get_reference(
+        self,
+        *,
+        skill_snapshot_id: str,
+        reference_path: str,
+    ) -> FrozenReferenceSnapshot | None:
+        row = self.connection.execute(
+            """
+            SELECT reference_snapshot_id, skill_snapshot_id, session_id,
+                   run_id, skill_name, reference_path, media_kind,
+                   size_bytes, content_hash, inline_text_payload,
+                   payload_artifact_id
+            FROM skill_reference_snapshots
+            WHERE skill_snapshot_id = ? AND reference_path = ?
+            """,
+            (skill_snapshot_id, reference_path),
+        ).fetchone()
+        if row is None:
+            return None
+        return FrozenReferenceSnapshot(
+            reference_snapshot_id=row[0],
+            skill_snapshot_id=row[1],
+            session_id=row[2],
+            run_id=row[3],
+            skill_name=row[4],
+            reference_path=row[5],
+            media_kind=row[6],
+            size_bytes=row[7],
+            content_hash=row[8],
+            inline_text_payload=row[9],
+            payload_artifact_id=row[10],
+        )
+
+    def list_references(self, *, skill_snapshot_id: str) -> list[FrozenReferenceSnapshot]:
+        rows = self.connection.execute(
+            """
+            SELECT reference_snapshot_id, skill_snapshot_id, session_id,
+                   run_id, skill_name, reference_path, media_kind,
+                   size_bytes, content_hash, inline_text_payload,
+                   payload_artifact_id
+            FROM skill_reference_snapshots
+            WHERE skill_snapshot_id = ?
+            ORDER BY reference_path ASC
+            """,
+            (skill_snapshot_id,),
+        ).fetchall()
+        return [
+            FrozenReferenceSnapshot(
+                reference_snapshot_id=row[0],
+                skill_snapshot_id=row[1],
+                session_id=row[2],
+                run_id=row[3],
+                skill_name=row[4],
+                reference_path=row[5],
+                media_kind=row[6],
+                size_bytes=row[7],
+                content_hash=row[8],
+                inline_text_payload=row[9],
+                payload_artifact_id=row[10],
+            )
+            for row in rows
+        ]

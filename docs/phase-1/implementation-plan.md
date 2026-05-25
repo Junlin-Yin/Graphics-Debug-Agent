@@ -360,23 +360,23 @@ Objective: implement skill activation/reference loading only through `ToolBroker
 
 Deliverables: structured run-scoped active skill records, brokered `activate_skill`, brokered `load_skill_ref_file`, frozen-target validation, skill tool audit facts, and an explicit internal gate that prevents half-functional skill activation from reaching real provider/model loops before Milestone 4C.
 
-- [ ] Implement structured run-scoped active skill records with name, content hash, activation reason, and scope.
-- [ ] Add `activate_skill` runtime-control tool through `ToolBroker`.
-- [ ] Ensure `activate_skill` requires interactive approval in `normal`, is audit-only in `semi-auto` and `yolo`, and returns a short activation result without the skill body.
-- [ ] Ensure unknown skills and missing, corrupt, or hash-mismatched frozen skill snapshots return `ToolResult(status="denied", error_class="config_error")` without prompting for approval.
-- [ ] Ensure repeated activation is idempotent and does not duplicate active skill records.
-- [ ] Add `load_skill_ref_file` runtime-control tool through `ToolBroker`.
-- [ ] Ensure valid active reference loads are audit-only in every approval mode; invalid, inactive, missing, corrupt, or hash-mismatched targets are denied before approval.
-- [ ] Ensure `load_skill_ref_file.path` is a skill-local relative path and path traversal, absolute paths, and paths outside the frozen reference set are denied before approval.
-- [ ] Ensure missing, corrupt, or hash-mismatched frozen reference snapshots return `ToolResult(status="denied", error_class="config_error")`.
-- [ ] Ensure `load_skill_ref_file` reads only frozen reference snapshots, never live source files.
-- [ ] Ensure text references below the inline threshold return text plus metadata, while large text and all non-text references return controlled artifact/reference markers plus metadata.
-- [ ] Keep `activate_skill` and `load_skill_ref_file` exposed only in fake approval/model harnesses until Milestone 4C proves active `SKILL.md` content is visible on the next real model call through `ModelContextFrame`.
-- [ ] Ensure default user-facing provider/model loops cannot activate a skill without the next ordinary model call receiving runtime-supplied active skill context.
-- [ ] Add unit tests for `activate_skill` and `load_skill_ref_file` required schema fields and `additionalProperties=false`.
-- [ ] Add unit tests for activation, idempotent activation, source file mutation after startup, reference loading, relative-path validation, path traversal and absolute-path denial, reference artifacting, and reference load denial cases.
-- [ ] Add integration tests for brokered skill activation and brokered `semi-auto` runtime-control auto-allow through a frozen-config/fake-model harness, and assert that the real provider/model tool surface remains gated until Milestone 4C.
-- [ ] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
+- [x] Implement structured run-scoped active skill records with name, content hash, activation reason, and scope.
+- [x] Add `activate_skill` runtime-control tool through `ToolBroker`.
+- [x] Ensure `activate_skill` requires interactive approval in `normal`, is audit-only in `semi-auto` and `yolo`, and returns a short activation result without the skill body.
+- [x] Ensure unknown skills and missing, corrupt, or hash-mismatched frozen skill snapshots return `ToolResult(status="denied", error_class="config_error")` without prompting for approval.
+- [x] Ensure repeated activation is idempotent and does not duplicate active skill records.
+- [x] Add `load_skill_ref_file` runtime-control tool through `ToolBroker`.
+- [x] Ensure valid active reference loads are audit-only in every approval mode; invalid, inactive, missing, corrupt, or hash-mismatched targets are denied before approval.
+- [x] Ensure `load_skill_ref_file.path` is a skill-local relative path and path traversal, absolute paths, and paths outside the frozen reference set are denied before approval.
+- [x] Ensure missing, corrupt, or hash-mismatched frozen reference snapshots return `ToolResult(status="denied", error_class="config_error")`.
+- [x] Ensure `load_skill_ref_file` reads only frozen reference snapshots, never live source files.
+- [x] Ensure text references below the inline threshold return text plus metadata, while large text and all non-text references return controlled artifact/reference markers plus metadata.
+- [x] Keep `activate_skill` and `load_skill_ref_file` exposed only in fake approval/model harnesses until Milestone 4C proves active `SKILL.md` content is visible on the next real model call through `ModelContextFrame`.
+- [x] Ensure default user-facing provider/model loops cannot activate a skill without the next ordinary model call receiving runtime-supplied active skill context.
+- [x] Add unit tests for `activate_skill` and `load_skill_ref_file` required schema fields and `additionalProperties=false`.
+- [x] Add unit tests for activation, idempotent activation, source file mutation after startup, reference loading, relative-path validation, path traversal and absolute-path denial, reference artifacting, and reference load denial cases.
+- [x] Add integration tests for brokered skill activation and brokered `semi-auto` runtime-control auto-allow through a frozen-config/fake-model harness, and assert that the real provider/model tool surface remains gated until Milestone 4C.
+- [x] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
 
 Modified boundaries: runtime-control tool handlers, run active skill state, broker runtime-control target validation, and skill tool audit facts.
 

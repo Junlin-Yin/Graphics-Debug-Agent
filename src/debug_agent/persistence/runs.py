@@ -133,6 +133,43 @@ class RunStore:
             latest_checkpoint_id=latest_checkpoint_id,
         )
 
+    def activate_skill(
+        self,
+        run_id: str,
+        *,
+        name: str,
+        content_hash: str,
+        activation_reason: str = "model_requested",
+        scope: str = "run",
+    ) -> Run:
+        current = self.get(run_id)
+        active = list(current.active_skills)
+        record = {
+            "name": name,
+            "content_hash": content_hash,
+            "activation_reason": activation_reason,
+            "scope": scope,
+        }
+        for existing in active:
+            if (
+                isinstance(existing, dict)
+                and existing.get("name") == name
+                and existing.get("content_hash") == content_hash
+            ):
+                return current
+        active.append(record)
+        now = utc_now_iso()
+        self.connection.execute(
+            """
+            UPDATE runs
+            SET active_skills_json = ?, updated_at = ?
+            WHERE run_id = ?
+            """,
+            (json.dumps(active, sort_keys=True), now, run_id),
+        )
+        self.connection.commit()
+        return self.get(run_id)
+
     def _mark_terminal(
         self,
         run_id: str,

@@ -96,13 +96,28 @@ class Session:
 
 
 @dataclass(frozen=True)
+class ActiveSkillRecord:
+    name: str
+    content_hash: str
+    activation_reason: str
+    scope: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Self:
+        return cls(**data)
+
+
+@dataclass(frozen=True)
 class Run:
     run_id: str
     session_id: str
     parent_run_id: str | None
     run_type: str
     status: str
-    active_skills: list[str]
+    active_skills: list[dict[str, Any]]
     latest_checkpoint_id: str | None
     context_snapshot_id: str | None
     created_at: str

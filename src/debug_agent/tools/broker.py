@@ -23,8 +23,10 @@ from debug_agent.runtime.policy import (
     scope_signature_for_tool,
 )
 from debug_agent.tools.native import NativeHandlerResult, tool_definitions, tool_error_result, tool_handlers
+from debug_agent.tools import runtime_control as runtime_control_tools
 from debug_agent.tools import shell as shell_tools
 from debug_agent.tools.shell import ShellHandlerResult
+from debug_agent.tools.runtime_control import RuntimeControlHandlerResult
 
 
 LARGE_OUTPUT_THRESHOLD_BYTES = 16 * 1024
@@ -64,6 +66,9 @@ class NormalizedBrokerArguments:
     shell_argv: tuple[str, ...]
     scope_signature: str
     approval_target: str
+    runtime_control_valid: bool = True
+    runtime_control_error_message: str | None = None
+    runtime_control_error_class: str = "config_error"
 
 
 @dataclass(frozen=True)
@@ -82,6 +87,7 @@ class ToolUseContext:
     event_writer: EventWriter
     artifact_store: ArtifactStore
     skill_snapshot_store: Any = None
+    run_store: Any = None
     shell_runner: Any = None
 
 
@@ -91,6 +97,7 @@ class ToolRouter:
     def __init__(self) -> None:
         self._native_handlers = tool_handlers()
         self._shell_handlers = shell_tools.tool_handlers()
+        self._runtime_control_handlers = runtime_control_tools.tool_handlers()
 
     def route(
         self, context: ToolUseContext, arguments: dict[str, Any]
@@ -99,6 +106,10 @@ class ToolRouter:
             return self._native_handlers[context.tool_definition.name](context, arguments)
         if context.tool_definition.category == "shell":
             return self._shell_handlers[context.tool_definition.name](context, arguments)
+        if context.tool_definition.category == "runtime_control":
+            return self._runtime_control_handlers[context.tool_definition.name](
+                context, arguments
+            )
         raise RuntimeError("Tool category is not enabled in this milestone.")
 
 
@@ -114,7 +125,11 @@ class ToolBroker:
         self.event_writer = event_writer
         self.artifact_store = artifact_store
         self.timeout_seconds = timeout_seconds
-        definitions = [*tool_definitions(), *shell_tools.tool_definitions()]
+        definitions = [
+            *tool_definitions(),
+            *shell_tools.tool_definitions(),
+            *runtime_control_tools.tool_definitions(),
+        ]
         self._definitions = {definition.name: definition for definition in definitions}
         self._router = router or ToolRouter()
 
@@ -187,8 +202,30 @@ class ToolBroker:
             arguments=normalized_arguments,
             workspace_root=workspace_root,
             frozen_config=context.get("frozen_config", {}),
+            runtime_context=context,
+            session_id=session_id,
+            run_id=run_id,
+            artifact_store=self.artifact_store,
         )
         normalized_arguments = normalized.arguments
+        if not normalized.runtime_control_valid:
+            result = _denied_result(
+                normalized.runtime_control_error_message
+                or "Invalid runtime-control target.",
+                error_class=normalized.runtime_control_error_class,
+            )
+            self._write_event(
+                session_id=session_id,
+                run_id=run_id,
+                kind="tool_call_denied",
+                payload=_audit_payload(
+                    tool_name=tool_name,
+                    arguments=normalized_arguments,
+                    result=result,
+                    duration_seconds=monotonic() - start,
+                ),
+            )
+            return result
         route_timeout_seconds = timeout_seconds
         if definition.name == "shell_exec":
             route_timeout_seconds = float(normalized_arguments["effective_timeout_seconds"])
@@ -201,6 +238,7 @@ class ToolBroker:
             paths=normalized.paths,
             shell_argv=normalized.shell_argv,
             approval_scope_signature=scope_signature,
+            runtime_control_valid=normalized.runtime_control_valid,
         )
         approval_grants = context.get("approval_grants")
         reusable = _load_reusable_grant(
@@ -306,6 +344,7 @@ class ToolBroker:
             event_writer=self.event_writer,
             artifact_store=self.artifact_store,
             skill_snapshot_store=context.get("skill_snapshot_store"),
+            run_store=context.get("run_store"),
             shell_runner=context.get("shell_runner"),
         )
         self._write_event(
@@ -415,6 +454,21 @@ class ToolBroker:
                 run_id=run_id,
                 tool_name=tool_name,
                 output=output.output or {"stdout": "", "stderr": "", "returncode": 0},
+                metadata=output.metadata or {},
+            )
+        if isinstance(output, RuntimeControlHandlerResult):
+            if output.status == "denied":
+                return _denied_result(
+                    output.error_message or "Runtime-control target denied.",
+                    error_class=output.error_class,
+                )
+            if output.status == "error":
+                return tool_error_result(output.error_message or "Tool failed.", source=tool_name)
+            return self._ok_result(
+                session_id=session_id,
+                run_id=run_id,
+                tool_name=tool_name,
+                output=output.output or {},
                 metadata=output.metadata or {},
             )
         return self._ok_result(
@@ -583,6 +637,10 @@ def _normalize_tool_arguments(
     arguments: dict[str, Any],
     workspace_root: Path,
     frozen_config: dict[str, Any],
+    runtime_context: dict[str, Any],
+    session_id: str,
+    run_id: str,
+    artifact_store: ArtifactStore,
 ) -> NormalizedBrokerArguments:
     if definition.name == "shell_exec":
         return _normalize_shell_arguments(
@@ -590,6 +648,16 @@ def _normalize_tool_arguments(
             arguments=arguments,
             workspace_root=workspace_root,
             frozen_config=frozen_config,
+        )
+    if definition.category == "runtime_control":
+        return _normalize_runtime_control_arguments(
+            definition=definition,
+            arguments=arguments,
+            workspace_root=workspace_root,
+            runtime_context=runtime_context,
+            session_id=session_id,
+            run_id=run_id,
+            artifact_store=artifact_store,
         )
     canonical_path = canonicalize_path(arguments["path"], workspace_root)
     normalized_arguments = dict(arguments)
@@ -605,6 +673,88 @@ def _normalize_tool_arguments(
         shell_argv=(),
         scope_signature=scope_signature,
         approval_target=str(canonical_path),
+    )
+
+
+def _normalize_runtime_control_arguments(
+    *,
+    definition: ToolDefinition,
+    arguments: dict[str, Any],
+    workspace_root: Path,
+    runtime_context: dict[str, Any],
+    session_id: str,
+    run_id: str,
+    artifact_store: ArtifactStore,
+) -> NormalizedBrokerArguments:
+    pseudo_context = ToolUseContext(
+        session_id=session_id,
+        run_id=run_id,
+        workspace_root=workspace_root,
+        artifact_root=Path(runtime_context.get("artifact_root", artifact_store.sessions_root)),
+        approval_mode=runtime_context.get("approval_mode", "normal"),
+        frozen_config=runtime_context.get("frozen_config", {}),
+        tool_definition=definition,
+        frozen_policy=runtime_context.get("policy_facts") or build_builtin_policy(workspace_root),
+        permission_evaluator=runtime_context.get("permission_evaluator")
+        or PermissionEvaluator(
+            runtime_context.get("policy_facts") or build_builtin_policy(workspace_root)
+        ),
+        approval_grants=runtime_context.get("approval_grants"),
+        approval_provider=runtime_context.get("approval_provider") or FakeApprovalProvider("denied"),
+        event_writer=runtime_context["event_writer"]
+        if "event_writer" in runtime_context
+        else None,
+        artifact_store=artifact_store,
+        skill_snapshot_store=runtime_context.get("skill_snapshot_store"),
+        run_store=runtime_context.get("run_store"),
+        shell_runner=runtime_context.get("shell_runner"),
+    )
+    target = runtime_control_tools.validate_target(
+        pseudo_context,
+        definition.name,
+        arguments,
+    )
+    normalized_arguments = dict(arguments)
+    if definition.name == "activate_skill":
+        skill_name = arguments["name"]
+        skill_hash = target.skill.overall_content_hash if target.skill is not None else None
+        scope_signature = scope_signature_for_tool(
+            definition.name,
+            risk_level=definition.risk_level,
+            skill_name=skill_name,
+            skill_content_hash=skill_hash,
+        )
+        return NormalizedBrokerArguments(
+            arguments=normalized_arguments,
+            paths=(),
+            shell_argv=(),
+            scope_signature=scope_signature,
+            approval_target=f"skill {skill_name}",
+            runtime_control_valid=target.valid,
+            runtime_control_error_message=target.error_message,
+            runtime_control_error_class=target.error_class,
+        )
+    skill_name = arguments["skill_name"]
+    reference_path = target.normalized_path or arguments["path"]
+    if target.normalized_path is not None:
+        normalized_arguments["path"] = target.normalized_path
+    scope_signature = scope_signature_for_tool(
+        definition.name,
+        risk_level=definition.risk_level,
+        skill_name=skill_name,
+        skill_content_hash=target.skill.overall_content_hash if target.skill else None,
+        reference_path=reference_path,
+        reference_content_hash=target.reference.content_hash if target.reference else None,
+    )
+    return NormalizedBrokerArguments(
+        arguments=normalized_arguments,
+        paths=(),
+        shell_argv=(),
+        scope_signature=scope_signature,
+        approval_target=f"skill reference {skill_name}:{reference_path}",
+        runtime_control_valid=target.valid,
+        runtime_control_error_message=target.error_message,
+        runtime_control_error_class=target.error_class,
     )
 
 
