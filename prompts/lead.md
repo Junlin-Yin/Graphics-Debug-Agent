@@ -84,10 +84,12 @@ Progress checkpoints:
 - If you are about to spend significant time inspecting, reconciling,
   verifying, or preparing a commit without user-visible output, first emit a
   checkpoint describing the next concrete step.
-- If a subagent remains silent while Working for too long, interrupt it and ask
-  it to continue from the last checkpoint with a smaller batch. Do not broaden
-  scope, skip review, or treat the interruption as task failure unless the
-  subagent cannot resume.
+- If a subagent remains silent while Working for too long, interrupt it and send
+  exactly `continue`. Repeat this interrupt-and-continue retry up to 5 times for the
+  same subagent task. Do not broaden scope, skip review, or treat the
+  interruption as task failure before those 5 retries are exhausted. If the
+  subagent still does not complete normally after the fifth retry, stop and
+  report the subagent as blocked.
 
 Milestone loop:
 
