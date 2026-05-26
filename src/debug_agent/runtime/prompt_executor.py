@@ -106,6 +106,26 @@ class PromptAgentExecutor:
         context_estimate_box: dict[str, Any] = {}
         context_estimate_history: list[dict[str, Any]] = []
         continuation_history: list[str] = ["initial_model_call"]
+
+        def emit_context_estimate(estimate: dict[str, Any]) -> None:
+            _emit_context_estimate_update(agent_stream_callback, estimate)
+
+        def stream_callback(event: AgentStreamEvent) -> None:
+            if agent_stream_callback is None:
+                return
+            if (
+                event.kind == "stream_model_call_completed"
+                and "context_estimate" not in event.payload
+            ):
+                event = AgentStreamEvent(
+                    kind=event.kind,
+                    payload={
+                        **event.payload,
+                        "context_estimate": dict(context_estimate_box["estimate"]),
+                    },
+                )
+            agent_stream_callback(event)
+
         query_state = query_control.start_query(
             session_id=session.session_id,
             run_id=run.run_id,
@@ -145,6 +165,7 @@ class PromptAgentExecutor:
         query_state_box["state"] = query_state
         context_estimate_box["estimate"] = composition.estimate.to_dict()
         context_estimate_history.append(composition.estimate.to_dict())
+        emit_context_estimate(composition.estimate.to_dict())
         optimization = self._maybe_omit_old_tool_results(
             session=session,
             run=run,
@@ -173,6 +194,7 @@ class PromptAgentExecutor:
             query_state_box["state"] = query_state
             context_estimate_box["estimate"] = composition.estimate.to_dict()
             context_estimate_history.append(composition.estimate.to_dict())
+            emit_context_estimate(composition.estimate.to_dict())
             optimization["metadata"]["reduced_to_tokens"] = (
                 composition.estimate.total_tokens
             )
@@ -238,6 +260,7 @@ class PromptAgentExecutor:
             query_state_box["state"] = query_state
             context_estimate_box["estimate"] = composition.estimate.to_dict()
             context_estimate_history.append(composition.estimate.to_dict())
+            emit_context_estimate(composition.estimate.to_dict())
             compression_result["metadata"]["reduced_to_tokens"] = (
                 composition.estimate.total_tokens
             )
@@ -324,6 +347,7 @@ class PromptAgentExecutor:
                     ],
                     optimization_box=optimization_box,
                     prompt_turn_counter=prompt_turn_counter,
+                    agent_stream_callback=agent_stream_callback,
                 ),
             },
             model_event_recorder=lambda kind, payload: self._append_model_event(
@@ -336,7 +360,7 @@ class PromptAgentExecutor:
         if agent_stream_callback is None:
             result = self.adapter.run(request, context)
         else:
-            result = self.adapter.stream(request, context, agent_stream_callback)
+            result = self.adapter.stream(request, context, stream_callback)
         query_state = query_control.record_continuation(
             query_state_box["state"].query_id,
             "final_assistant_response"
@@ -587,6 +611,7 @@ class PromptAgentExecutor:
         current_messages: list[ConversationMessage],
         optimization_box: dict[str, dict[str, Any] | None],
         prompt_turn_counter: int,
+        agent_stream_callback: Callable[[AgentStreamEvent], None] | None,
     ) -> dict[str, Any]:
         state = query_control.record_continuation(
             query_state_box["state"].query_id,
@@ -611,6 +636,10 @@ class PromptAgentExecutor:
         query_state_box["state"] = state
         context_estimate_box["estimate"] = composition.estimate.to_dict()
         context_estimate_history.append(composition.estimate.to_dict())
+        _emit_context_estimate_update(
+            agent_stream_callback,
+            composition.estimate.to_dict(),
+        )
         optimization = self._maybe_omit_old_tool_results(
             session=session,
             run=run,
@@ -638,6 +667,10 @@ class PromptAgentExecutor:
             query_state_box["state"] = state
             context_estimate_box["estimate"] = composition.estimate.to_dict()
             context_estimate_history.append(composition.estimate.to_dict())
+            _emit_context_estimate_update(
+                agent_stream_callback,
+                composition.estimate.to_dict(),
+            )
             optimization["metadata"]["reduced_to_tokens"] = (
                 composition.estimate.total_tokens
             )
@@ -690,6 +723,10 @@ class PromptAgentExecutor:
             query_state_box["state"] = state
             context_estimate_box["estimate"] = composition.estimate.to_dict()
             context_estimate_history.append(composition.estimate.to_dict())
+            _emit_context_estimate_update(
+                agent_stream_callback,
+                composition.estimate.to_dict(),
+            )
             compression_result["metadata"]["reduced_to_tokens"] = (
                 composition.estimate.total_tokens
             )
@@ -1298,6 +1335,20 @@ def _artifact_ids(result: AgentRunResult) -> list[str]:
     for tool_result in result.tool_results:
         artifact_ids.extend(tool_result.get("artifacts", []))
     return artifact_ids
+
+
+def _emit_context_estimate_update(
+    agent_stream_callback: Callable[[AgentStreamEvent], None] | None,
+    estimate: dict[str, Any],
+) -> None:
+    if agent_stream_callback is None:
+        return
+    agent_stream_callback(
+        AgentStreamEvent(
+            kind="stream_context_estimate_updated",
+            payload={"context_estimate": dict(estimate)},
+        )
+    )
 
 
 def _replace_compressed_history(

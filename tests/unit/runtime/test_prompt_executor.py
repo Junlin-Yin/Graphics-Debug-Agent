@@ -1119,7 +1119,11 @@ def test_prompt_executor_uses_stream_path_when_callback_is_supplied(tmp_path) ->
     assert result.status == "completed"
     assert adapter.stream_called is True
     assert adapter.run_called is False
-    assert stream_events == [
+    assert stream_events[0].kind == "stream_context_estimate_updated"
+    assert stream_events[0].payload["context_estimate"] == result.metadata[
+        "context_estimate"
+    ]
+    assert stream_events[1:] == [
         AgentStreamEvent(
             kind="stream_text_delta",
             payload={"model_call_id": "model_1", "text": "answer"},
@@ -1130,6 +1134,78 @@ def test_prompt_executor_uses_stream_path_when_callback_is_supplied(tmp_path) ->
         "assistant_message",
         "checkpoint_written",
     ]
+    db.close()
+
+
+def test_prompt_executor_streams_context_estimate_before_adapter_call(tmp_path) -> None:
+    class RecordingAdapter:
+        def run(self, request, context):
+            raise AssertionError("run should not be called")
+
+        def stream(self, request, context, on_event):
+            assert stream_events
+            assert stream_events[0].kind == "stream_context_estimate_updated"
+            on_event(
+                AgentStreamEvent(
+                    kind="stream_model_call_completed",
+                    payload={
+                        "model_call_id": "model_1",
+                        "is_final": True,
+                        "usage": {},
+                        "duration_ms": 1,
+                    },
+                )
+            )
+            return AgentRunResult(
+                status="completed",
+                assistant_output="answer",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+        def cancel(self, run_id: str) -> None:
+            raise AssertionError("cancel should not be called")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    db = RuntimeDatabase.bootstrap(workspace)
+    sessions = SessionStore(db.connection)
+    runs = RunStore(db.connection)
+    events = EventWriter(db.connection, db.path.parent)
+    checkpoints = CheckpointStore(db.connection)
+    session = sessions.create(
+        workspace_root=workspace,
+        approval_mode="yolo",
+        config_snapshot={"provider": "fake", "timeout_seconds": 7},
+        session_id="sess_1",
+    )
+    run = runs.create_prompt_run(session.session_id, run_id="run_1")
+    adapter = RecordingAdapter()
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=ArtifactStore(db.connection, db.path.parent),
+        adapter=adapter,
+        tool_definitions=tool_definitions(),
+        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+    )
+    stream_events = []
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="hello",
+        workspace_root=str(workspace),
+        agent_stream_callback=stream_events.append,
+    )
+
+    assert result.status == "completed"
+    estimate = result.metadata["context_estimate"]
+    assert stream_events[0].payload["context_estimate"] == estimate
+    assert stream_events[1].payload["context_estimate"] == estimate
     db.close()
 
 
@@ -2281,5 +2357,79 @@ def test_repl_runtime_writes_back_omitted_conversation_and_metadata(tmp_path) ->
     assert runtime.conversation[-1]["metadata"]["consumed_model_call_ids"] == [
         "call-1",
         "call-2",
+    ]
+    db.close()
+
+
+def test_repl_runtime_updates_latest_context_estimate_from_stream_event(tmp_path) -> None:
+    class StreamingAdapter:
+        def run(self, request, context):
+            raise AssertionError("run should not be called")
+
+        def stream(self, request, context, on_event):
+            on_event(
+                AgentStreamEvent(
+                    kind="stream_model_call_completed",
+                    payload={
+                        "model_call_id": "model_1",
+                        "is_final": True,
+                        "usage": {},
+                        "duration_ms": 1,
+                    },
+                )
+            )
+            return AgentRunResult(
+                status="completed",
+                assistant_output="answer",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+        def cancel(self, run_id: str) -> None:
+            raise AssertionError("cancel should not be called")
+
+    (
+        workspace,
+        db,
+        sessions,
+        runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=artifacts,
+        adapter=StreamingAdapter(),
+        tool_definitions=tool_definitions(),
+        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        run_store=runs,
+    )
+    runtime = ReplRuntime(
+        db=db,
+        sessions=sessions,
+        runs=runs,
+        events=events,
+        checkpoints=checkpoints,
+        executor=executor,
+        session_id=session.session_id,
+        run_id=run.run_id,
+        workspace_root=workspace,
+    )
+    stream_events: list[AgentStreamEvent] = []
+
+    result = runtime.run_turn("hello", agent_stream_callback=stream_events.append)
+
+    assert result.status == "completed"
+    assert stream_events[0].kind == "stream_context_estimate_updated"
+    assert runtime.latest_context_estimate == stream_events[0].payload[
+        "context_estimate"
     ]
     db.close()

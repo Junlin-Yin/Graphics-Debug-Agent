@@ -109,6 +109,14 @@ class ReplRuntime:
             self.turn_counter += 1
             session = self.sessions.get(self.session_id)
             run = self.runs.get(self.run_id)
+            def runtime_stream_callback(event: AgentStreamEvent) -> None:
+                if event.kind == "stream_context_estimate_updated":
+                    estimate = event.payload.get("context_estimate")
+                    if isinstance(estimate, dict):
+                        self.latest_context_estimate = dict(estimate)
+                if agent_stream_callback is not None:
+                    agent_stream_callback(event)
+
             result = self.executor.run_turn(
                 session=session,
                 run=run,
@@ -116,7 +124,9 @@ class ReplRuntime:
                 workspace_root=str(self.workspace_root),
                 conversation=self.conversation,
                 prompt_turn_counter=self.turn_counter,
-                agent_stream_callback=agent_stream_callback,
+                agent_stream_callback=runtime_stream_callback
+                if agent_stream_callback is not None
+                else None,
             )
             if result.status == "completed":
                 estimate = result.metadata.get("context_estimate")

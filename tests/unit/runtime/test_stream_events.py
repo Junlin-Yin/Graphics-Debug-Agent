@@ -8,6 +8,7 @@ from debug_agent.runtime.stream_events import AgentStreamEvent
 def test_agent_stream_event_accepts_documented_stream_kinds() -> None:
     for kind in (
         "stream_model_call_started",
+        "stream_context_estimate_updated",
         "stream_text_delta",
         "stream_model_call_completed",
         "stream_tool_call_started",

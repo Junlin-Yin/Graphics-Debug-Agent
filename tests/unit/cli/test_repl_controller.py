@@ -297,6 +297,159 @@ def test_stream_events_are_queued_wakeup_and_drained_on_ui_side() -> None:
     controller.drain_completed_turns()
 
 
+def test_stream_context_estimate_updates_status_bar_before_turn_finish() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    runtime.config_snapshot = {"model": "fake-model", "context": {"window_tokens": 100}}
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_context_estimate_updated",
+            payload={
+                "context_estimate": {
+                    "total_tokens": 31,
+                    "estimator_version": "deterministic-char-v1",
+                },
+            },
+        )
+    )
+
+    assert controller.drain_stream_events() == 1
+    assert view.status_bars[-1].context_used_tokens == 31
+    assert view.status_bars[-1].context_window_tokens == 100
+    assert view.status_bars[-1].context_percent == 31
+
+
+def test_stream_model_call_completion_updates_usage_before_turn_finish() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_model_call_completed",
+            payload={
+                "model_call_id": "model_1",
+                "is_final": False,
+                "usage": {"input_tokens": 3, "output_tokens": 5, "total_tokens": 8},
+                "duration_ms": 1,
+            },
+        )
+    )
+
+    assert controller.drain_stream_events() == 1
+    assert view.status_bars[-1].input_tokens == 3
+    assert view.status_bars[-1].output_tokens == 5
+    assert view.status_bars[-1].total_tokens == 8
+
+
+def test_streamed_turn_finalization_does_not_double_count_aggregate_provider_usage() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_model_call_completed",
+            payload={
+                "model_call_id": "model_1",
+                "is_final": True,
+                "usage": {"input_tokens": 3, "output_tokens": 5, "total_tokens": 8},
+                "duration_ms": 1,
+            },
+        )
+    )
+    assert controller.drain_stream_events() == 1
+
+    controller.on_turn_finished(
+        _result(
+            "completed",
+            assistant_output="answer",
+            usage={"input_tokens": 3, "output_tokens": 5, "total_tokens": 8},
+        )
+    )
+
+    assert view.status_bars[-1].input_tokens == 3
+    assert view.status_bars[-1].output_tokens == 5
+    assert view.status_bars[-1].total_tokens == 8
+
+
+def test_stream_model_call_completion_uses_context_estimate_fallback_when_usage_absent() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_model_call_completed",
+            payload={
+                "model_call_id": "model_1",
+                "is_final": False,
+                "usage": {},
+                "context_estimate": {"total_tokens": 21},
+                "duration_ms": 1,
+            },
+        )
+    )
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_model_call_completed",
+            payload={
+                "model_call_id": "model_2",
+                "is_final": True,
+                "usage": {},
+                "context_estimate": {"total_tokens": 34},
+                "duration_ms": 1,
+            },
+        )
+    )
+
+    assert controller.drain_stream_events() == 2
+    assert view.status_bars[-1].total_tokens == 55
+
+
+def test_streamed_turn_finalization_does_not_double_count_fallback_estimate() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_model_call_completed",
+            payload={
+                "model_call_id": "model_1",
+                "is_final": True,
+                "usage": {},
+                "context_estimate": {"total_tokens": 21},
+                "duration_ms": 1,
+            },
+        )
+    )
+    assert controller.drain_stream_events() == 1
+
+    controller.on_turn_finished(
+        _result(
+            "completed",
+            assistant_output="answer",
+            usage={},
+            metadata={"context_estimate": {"total_tokens": 21}},
+        )
+    )
+
+    assert view.status_bars[-1].total_tokens == 21
+
+
 def test_notify_event_ready_does_not_mutate_view_state() -> None:
     from debug_agent.cli.repl_controller import ReplController
 

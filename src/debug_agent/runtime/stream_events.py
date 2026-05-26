@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 AgentStreamEventKind = Literal[
     "stream_model_call_started",
+    "stream_context_estimate_updated",
     "stream_text_delta",
     "stream_model_call_completed",
     "stream_tool_call_started",
@@ -15,6 +16,7 @@ AgentStreamEventKind = Literal[
 
 AGENT_STREAM_EVENT_KINDS = {
     "stream_model_call_started",
+    "stream_context_estimate_updated",
     "stream_text_delta",
     "stream_model_call_completed",
     "stream_tool_call_started",

@@ -48,6 +48,7 @@ class ReplController:
     _usage_output_tokens: int | None = None
     _usage_total_tokens: int | None = None
     _context_used_tokens: int | None = None
+    _stream_usage_accounted: bool = False
 
     @classmethod
     def start(
@@ -271,6 +272,7 @@ class ReplController:
         self._streamed_model_text.clear()
         self._streamed_tool_blocks.clear()
         self._streamed_output_seen = False
+        self._stream_usage_accounted = False
 
     def update_running_turn_status(self) -> None:
         if not self.is_executing or self._active_turn_id is None or self.view is None:
@@ -322,8 +324,19 @@ class ReplController:
                     )
                 )
                 return
+            if event.kind == "stream_context_estimate_updated":
+                self._update_context_from_estimate(
+                    event.payload.get("context_estimate")
+                )
+                self.view.update_status_bar(self._status_bar_snapshot())
+                return
             if event.kind == "stream_model_call_completed":
                 model_call_id = _required_str(event.payload, "model_call_id")
+                self._update_usage_from_values(
+                    event.payload.get("usage"),
+                    fallback_estimate=event.payload.get("context_estimate"),
+                )
+                self._stream_usage_accounted = True
                 if bool(event.payload.get("is_final")):
                     text = self._streamed_model_text.get(model_call_id)
                     if text:
@@ -334,6 +347,7 @@ class ReplController:
                                 payload={"model_call_id": model_call_id, "text": text},
                             )
                         )
+                self.view.update_status_bar(self._status_bar_snapshot())
                 return
             if event.kind == "stream_tool_call_started":
                 self._record_stream_tool_started(event)
@@ -519,7 +533,21 @@ class ReplController:
         return max(0, int(self.time_fn() - self._active_turn_started_at))
 
     def _update_usage(self, result: AgentRunResult) -> None:
-        usage = result.usage
+        if not self._stream_usage_accounted:
+            self._update_usage_from_values(
+                result.usage,
+                fallback_estimate=result.metadata.get("context_estimate"),
+            )
+        estimate = getattr(self.runtime, "latest_context_estimate", None)
+        self._update_context_from_estimate(estimate)
+
+    def _update_usage_from_values(
+        self,
+        usage_value: object,
+        *,
+        fallback_estimate: object,
+    ) -> None:
+        usage = usage_value if isinstance(usage_value, dict) else {}
         input_tokens = _usage_value(usage, "input_tokens", "prompt_tokens")
         output_tokens = _usage_value(usage, "output_tokens", "completion_tokens")
         total_tokens = _usage_value(usage, "total_tokens")
@@ -534,14 +562,14 @@ class ReplController:
             known_output = self._usage_output_tokens or 0
             self._usage_total_tokens = known_input + known_output
         else:
-            estimate = result.metadata.get("context_estimate")
-            if isinstance(estimate, dict):
-                fallback_total = estimate.get("total_tokens")
+            if isinstance(fallback_estimate, dict):
+                fallback_total = fallback_estimate.get("total_tokens")
                 if isinstance(fallback_total, int):
                     self._usage_total_tokens = (
                         self._usage_total_tokens or 0
                     ) + fallback_total
-        estimate = getattr(self.runtime, "latest_context_estimate", None)
+
+    def _update_context_from_estimate(self, estimate: object) -> None:
         if isinstance(estimate, dict):
             total = estimate.get("total_tokens")
             if isinstance(total, int):
