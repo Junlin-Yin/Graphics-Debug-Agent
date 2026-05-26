@@ -607,21 +607,21 @@ Objective: expose Phase 1 local command and status surfaces before adding intera
 
 Deliverables: `/tools`, consolidated local slash-command assertions, unsupported command handling, CLI approval-mode option parsing for one-shot and REPL initial mode, approval-mode status source, and exact Phase 1 status bar format.
 
-- [ ] Add `/tools` as a local REPL command listing current runtime-visible tools, category, risk, access, approval behavior, enabled status, and disabled reason.
-- [ ] Ensure `/tools` reflects current frozen session config, active approval mode, path policy, and shell policy.
-- [ ] Ensure `/skills`, `/tools`, and `/compress` are local and never sent to the model.
-- [ ] Ensure `/compress` during active execution is suppressed without runtime side effects.
-- [ ] Keep `/agents`, `/models`, and `/compact` unsupported in Phase 1.
-- [ ] Add CLI approval-mode option parsing and validation for exactly `normal`, `semi-auto`, and `yolo` on one-shot and REPL startup.
-- [ ] Ensure REPL default approval mode remains `normal`, one-shot default approval mode remains `normal`, explicit REPL startup values become the initial session approval mode, and explicit one-shot values are frozen into query/tool context.
-- [ ] Ensure REPL startup approval-mode selection does not implement or replace 6B idle-state `Ctrl+Y` cycling.
-- [ ] Add the deferred one-shot `semi-auto` skill activation integration test now that the CLI approval-mode option exists.
-- [ ] Add a REPL startup `semi-auto` skill activation integration test that proves runtime-control activation is audit-only and does not request interactive approval.
-- [ ] Update status bar to the exact Phase 1 format `model: <model> | approval: <approval> | context: <used> / <window> (<pct>) | tokens: <used> used`.
-- [ ] Update status bar context before model calls, after omission/compression, and after provider usage or deterministic estimate fallback.
-- [ ] Add unit tests for `/tools`, unsupported commands, local `/skills`/`/tools`/`/compress` routing, one-shot and REPL approval-mode option parsing/defaults, and exact status bar format.
-- [ ] Add integration tests for `/tools`, `/skills`, `/compress` local routing and one-shot/REPL approval-mode selection where deterministic injected I/O can verify behavior without manual TTY interaction.
-- [ ] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
+- [x] Add `/tools` as a local REPL command listing current runtime-visible tools, category, risk, access, approval behavior, enabled status, and disabled reason.
+- [x] Ensure `/tools` reflects current frozen session config, active approval mode, path policy, and shell policy.
+- [x] Ensure `/skills`, `/tools`, and `/compress` are local and never sent to the model.
+- [x] Ensure `/compress` during active execution is suppressed without runtime side effects.
+- [x] Keep `/agents`, `/models`, and `/compact` unsupported in Phase 1.
+- [x] Add CLI approval-mode option parsing and validation for exactly `normal`, `semi-auto`, and `yolo` on one-shot and REPL startup.
+- [x] Ensure REPL default approval mode remains `normal`, one-shot default approval mode remains `normal`, explicit REPL startup values become the initial session approval mode, and explicit one-shot values are frozen into query/tool context.
+- [x] Ensure REPL startup approval-mode selection does not implement or replace 6B idle-state `Ctrl+Y` cycling.
+- [x] Add the deferred one-shot `semi-auto` skill activation integration test now that the CLI approval-mode option exists.
+- [x] Add a REPL startup `semi-auto` skill activation integration test that proves runtime-control activation is audit-only and does not request interactive approval.
+- [x] Update status bar to the exact Phase 1 format `model: <model> | approval: <approval> | context: <used> / <window> (<pct>) | tokens: <used> used`.
+- [x] Update status bar context before model calls, after omission/compression, and after provider usage or deterministic estimate fallback.
+- [x] Add unit tests for `/tools`, unsupported commands, local `/skills`/`/tools`/`/compress` routing, one-shot and REPL approval-mode option parsing/defaults, and exact status bar format.
+- [x] Add integration tests for `/tools`, `/skills`, `/compress` local routing and one-shot/REPL approval-mode selection where deterministic injected I/O can verify behavior without manual TTY interaction.
+- [x] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
 
 Modified boundaries: REPL local command routing, CLI approval-mode parsing, REPL initial approval-mode selection, status data source, and status bar rendering.
 

@@ -53,16 +53,21 @@ class LangChainAgentLoopAdapter:
                 _langchain_tools(request, context, tool_broker=self.tool_broker)
         )
         tool_results: list[dict[str, Any]] = []
+        aggregate_usage: dict[str, Any] = {}
         try:
             for _ in range(MAX_TOOL_CALL_ITERATIONS):
                 response = _invoke_model(model, messages, request, context)
+                aggregate_usage = _aggregate_usage(
+                    aggregate_usage,
+                    getattr(response, "usage", {}) or {},
+                )
                 tool_calls = _tool_calls(response)
                 if not tool_calls:
                     return AgentRunResult(
                         status="completed",
                         assistant_output=_response_content(response),
                         tool_results=tool_results,
-                        usage=getattr(response, "usage", {}) or {},
+                        usage=aggregate_usage,
                         error=None,
                         metadata={},
                     )
@@ -108,6 +113,7 @@ class LangChainAgentLoopAdapter:
 
         messages = _compose_messages(request)
         tool_results: list[dict[str, Any]] = []
+        aggregate_usage: dict[str, Any] = {}
         try:
             for model_call_index in range(MAX_TOOL_CALL_ITERATIONS):
                 model_call_id = f"model_call_{model_call_index + 1}"
@@ -119,6 +125,7 @@ class LangChainAgentLoopAdapter:
                     model_call_id=model_call_id,
                     on_event=on_event,
                 )
+                aggregate_usage = _aggregate_usage(aggregate_usage, response.usage)
                 tool_calls = _normalized_stream_tool_calls(
                     _tool_calls(response),
                     model_call_id=model_call_id,
@@ -142,7 +149,7 @@ class LangChainAgentLoopAdapter:
                         status="completed",
                         assistant_output=response.text,
                         tool_results=tool_results,
-                        usage=response.usage,
+                        usage=aggregate_usage,
                         error=None,
                         metadata={},
                     )
@@ -874,6 +881,19 @@ def _streaming_fallback(result: AgentRunResult) -> AgentRunResult:
         error=result.error,
         metadata={**result.metadata, "streaming_fallback": True},
     )
+
+
+def _aggregate_usage(current: dict[str, Any], usage: dict[str, Any]) -> dict[str, Any]:
+    if not usage:
+        return current
+    aggregate = dict(current)
+    for key, value in usage.items():
+        if isinstance(value, int):
+            previous = aggregate.get(key)
+            aggregate[key] = (previous if isinstance(previous, int) else 0) + value
+        else:
+            aggregate[key] = value
+    return aggregate
 
 
 def _tool_duration_ms(result: dict[str, Any], started_at: float) -> int:

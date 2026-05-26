@@ -51,6 +51,68 @@ fake_response = "integration answer"
         assert checkpoint_kinds == ["turn", "terminal"]
 
 
+def test_debug_agent_one_shot_semi_auto_skill_activation_is_audit_only(
+    tmp_path,
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    config_dir = home / ".debug-agent"
+    config_dir.mkdir(parents=True)
+    workspace.mkdir()
+    skill_dir = workspace / ".debug-agent" / "skills" / "alpha"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: alpha
+description: Alpha prompt skill
+---
+
+Use alpha.
+""",
+        encoding="utf-8",
+    )
+    (config_dir / "config.toml").write_text(
+        """
+[defaults]
+provider = "fake"
+model = "fake-model"
+fake_response = "skill activated"
+fake_tool_calls = [
+  {name = "activate_skill", args = {name = "alpha"}, id = "call_alpha"}
+]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    executable = str(Path(sys.executable).parent / "debug-agent")
+    result = subprocess.run(
+        [executable, "--approval-mode", "semi-auto", "-p", "activate alpha"],
+        cwd=workspace,
+        env=_subprocess_env(home),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "skill activated\n"
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        assert (
+            conn.execute("SELECT approval_mode FROM sessions").fetchone()[0]
+            == "semi-auto"
+        )
+        event_kinds = [
+            row[0] for row in conn.execute("SELECT kind FROM run_events ORDER BY rowid")
+        ]
+        active_skills_json = conn.execute(
+            "SELECT active_skills_json FROM runs"
+        ).fetchone()[0]
+    assert "skill_activated" in event_kinds
+    assert "approval_requested" not in event_kinds
+    assert "approval_decision_recorded" not in event_kinds
+    assert "alpha" in active_skills_json
+
+
 def test_debug_agent_one_shot_model_cancellation_records_terminal_failure(
     tmp_path,
 ) -> None:

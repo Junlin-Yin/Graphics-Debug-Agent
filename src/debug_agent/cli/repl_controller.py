@@ -54,12 +54,14 @@ class ReplController:
         cls,
         *,
         config_snapshot: dict[str, Any],
+        approval_mode: str = "normal",
         workspace_root: str | None = None,
         view: ReplView | None = None,
         wakeup_callback: Callable[[], None] | None = None,
     ) -> ReplController:
         result = RuntimeOrchestrator(workspace_root=workspace_root).start_repl(
-            config_snapshot
+            config_snapshot,
+            approval_mode=approval_mode,
         )
         if result.error is not None or result.runtime is None:
             raise ReplStartFailed(result.error.exit_code, result.error.message)
@@ -133,6 +135,9 @@ class ReplController:
         if command == "/skills":
             self._append_system_message("\n".join(self.runtime.skill_lines()))
             return True
+        if command == "/tools":
+            self._append_system_message("\n".join(self.runtime.tool_lines()))
+            return True
         if command == "/compress":
             result = self.runtime.manual_compress()
             estimate = result.metadata.get("context_estimate")
@@ -164,7 +169,7 @@ class ReplController:
                 self.view.show_session_closed(self._session_close_summary("closed"))
             self.exit_code = 0
             return False
-        self._append_system_message(f"Unsupported Phase 0 slash command: {command}")
+        self._append_system_message(f"Unsupported Phase 1 slash command: {command}")
         return True
 
     def on_interrupt(self) -> None:
@@ -225,7 +230,7 @@ class ReplController:
     def on_turn_finished(self, result: AgentRunResult) -> None:
         turn_id = self._active_turn_id or self._turn_counter or 1
         elapsed_seconds = self._elapsed_seconds()
-        self._update_usage(result.usage)
+        self._update_usage(result)
         should_reenable_input = True
         if result.status == "completed":
             if result.metadata.get("streaming_fallback"):
@@ -450,6 +455,9 @@ class ReplController:
         if command == "/skills":
             print("\n".join(self.runtime.skill_lines()), file=output)
             return True
+        if command == "/tools":
+            print("\n".join(self.runtime.tool_lines()), file=output)
+            return True
         if command == "/compress":
             result = self.runtime.manual_compress()
             if result.status == "completed":
@@ -467,7 +475,7 @@ class ReplController:
         if command == "/exit":
             self.runtime.complete()
             return False
-        print(f"Unsupported Phase 0 slash command: {command}", file=output)
+        print(f"Unsupported Phase 1 slash command: {command}", file=output)
         return True
 
     def _append_result_events(self, result: AgentRunResult) -> None:
@@ -510,7 +518,8 @@ class ReplController:
             return 0
         return max(0, int(self.time_fn() - self._active_turn_started_at))
 
-    def _update_usage(self, usage: dict[str, Any]) -> None:
+    def _update_usage(self, result: AgentRunResult) -> None:
+        usage = result.usage
         input_tokens = _usage_value(usage, "input_tokens", "prompt_tokens")
         output_tokens = _usage_value(usage, "output_tokens", "completion_tokens")
         total_tokens = _usage_value(usage, "total_tokens")
@@ -519,11 +528,19 @@ class ReplController:
         if output_tokens is not None:
             self._usage_output_tokens = output_tokens
         if total_tokens is not None:
-            self._usage_total_tokens = total_tokens
+            self._usage_total_tokens = (self._usage_total_tokens or 0) + total_tokens
         elif input_tokens is not None or output_tokens is not None:
             known_input = self._usage_input_tokens or 0
             known_output = self._usage_output_tokens or 0
             self._usage_total_tokens = known_input + known_output
+        else:
+            estimate = result.metadata.get("context_estimate")
+            if isinstance(estimate, dict):
+                fallback_total = estimate.get("total_tokens")
+                if isinstance(fallback_total, int):
+                    self._usage_total_tokens = (
+                        self._usage_total_tokens or 0
+                    ) + fallback_total
         estimate = getattr(self.runtime, "latest_context_estimate", None)
         if isinstance(estimate, dict):
             total = estimate.get("total_tokens")

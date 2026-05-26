@@ -97,6 +97,8 @@ def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
             snapshot["fake_cancelled"] = config_defaults["fake_cancelled"]
         if "fake_stream_chunks" in config_defaults:
             snapshot["fake_stream_chunks"] = config_defaults["fake_stream_chunks"]
+        if "fake_tool_calls" in config_defaults:
+            snapshot["fake_tool_calls"] = config_defaults["fake_tool_calls"]
         return ConfigLoadResult(snapshot=snapshot, error=None, defaults=defaults)
 
     if provider != "anthropic":

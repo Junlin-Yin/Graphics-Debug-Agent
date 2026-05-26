@@ -961,6 +961,139 @@ def test_langchain_adapter_feeds_tool_results_back_to_model() -> None:
     ]
 
 
+def test_langchain_adapter_aggregates_usage_across_tool_loop_model_calls() -> None:
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="ok",
+                output="file text",
+                error=None,
+                artifacts=[],
+                metadata={},
+                redacted_output=None,
+            )
+
+    class ToolLoopModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "read_file_0",
+                                "name": "read_file",
+                                "args": {"path": "a.txt"},
+                            }
+                        ],
+                        "usage": {
+                            "input_tokens": 2,
+                            "output_tokens": 3,
+                            "total_tokens": 5,
+                        },
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {
+                    "content": "done",
+                    "tool_calls": [],
+                    "usage": {
+                        "input_tokens": 7,
+                        "output_tokens": 11,
+                        "total_tokens": 18,
+                    },
+                },
+            )()
+
+    result = LangChainAgentLoopAdapter(
+        model=ToolLoopModel(),
+        tool_broker=RecordingBroker(),
+    ).run(_request(), _context())
+
+    assert result.status == "completed"
+    assert result.usage == {
+        "input_tokens": 9,
+        "output_tokens": 14,
+        "total_tokens": 23,
+    }
+
+
+def test_langchain_adapter_stream_aggregates_usage_across_tool_loop_model_calls() -> None:
+    events = []
+
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="ok",
+                output="file text",
+                error=None,
+                artifacts=[],
+                metadata={},
+                redacted_output=None,
+            )
+
+    class ToolLoopStreamingModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stream(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                yield type(
+                    "Chunk",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "read_file_0",
+                                "name": "read_file",
+                                "args": {"path": "a.txt"},
+                            }
+                        ],
+                        "usage": {
+                            "input_tokens": 2,
+                            "output_tokens": 3,
+                            "total_tokens": 5,
+                        },
+                    },
+                )()
+                return
+            yield type(
+                "Chunk",
+                (),
+                {
+                    "content": "done",
+                    "tool_calls": [],
+                    "usage": {
+                        "input_tokens": 7,
+                        "output_tokens": 11,
+                        "total_tokens": 18,
+                    },
+                },
+            )()
+
+    result = LangChainAgentLoopAdapter(
+        model=ToolLoopStreamingModel(),
+        tool_broker=RecordingBroker(),
+    ).stream(_request(), _context(), events.append)
+
+    assert result.status == "completed"
+    assert result.usage == {
+        "input_tokens": 9,
+        "output_tokens": 14,
+        "total_tokens": 23,
+    }
+
+
 def test_langchain_adapter_stops_after_phase_0_tool_call_iteration_limit() -> None:
     class RepeatingToolModel:
         def __init__(self) -> None:

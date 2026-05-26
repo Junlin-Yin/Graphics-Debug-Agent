@@ -35,12 +35,47 @@ def test_main_one_shot_prints_fake_answer_and_returns_zero(
     assert (workspace / ".sessions" / "runtime.db").is_file()
 
 
+def test_main_one_shot_accepts_explicit_approval_mode(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home.mkdir()
+    workspace.mkdir()
+    _write_fake_config(home, "hello from semi-auto")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(workspace)
+
+    exit_code = main(["--approval-mode", "semi-auto", "-p", "hello"])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out == "hello from semi-auto\n"
+
+
+def test_main_rejects_invalid_one_shot_approval_mode(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home.mkdir()
+    workspace.mkdir()
+    _write_fake_config(home)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(workspace)
+
+    exit_code = main(["--approval-mode", "auto", "-p", "hello"])
+
+    assert exit_code == 2
+    assert "approval mode must be one of: normal, semi-auto, yolo" in capsys.readouterr().err
+    assert not (workspace / ".sessions" / "runtime.db").exists()
+
+
 def test_main_returns_usage_error_for_missing_or_unsupported_args(capsys) -> None:
     assert main(["status"]) == 2
     assert main(["unknown", "sess_1"]) == 2
     usage = capsys.readouterr().err
     assert "Usage:" in usage
-    assert "debug-agent  # REPL" in usage
+    assert "debug-agent [--approval-mode normal|semi-auto|yolo]  # REPL" in usage
 
 
 def test_main_returns_config_error_without_creating_session(

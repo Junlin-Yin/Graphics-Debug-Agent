@@ -20,7 +20,13 @@ from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeBootstrapError, RuntimeDatabase
 from debug_agent.runtime.config import PHASE_0_SYSTEM_PROMPT
-from debug_agent.runtime.contracts import AgentRunResult, Checkpoint, RunEvent, utc_now_iso
+from debug_agent.runtime.contracts import (
+    APPROVAL_MODES,
+    AgentRunResult,
+    Checkpoint,
+    RunEvent,
+    utc_now_iso,
+)
 from debug_agent.runtime.policy import load_main_agent_policy, policy_facts_to_snapshot
 from debug_agent.runtime.prompt_executor import (
     PromptAgentExecutor,
@@ -213,6 +219,15 @@ class ReplRuntime:
                 )
             return lines
 
+    def tool_lines(self) -> list[str]:
+        with self._lock:
+            session = self.sessions.get(self.session_id)
+            return format_tool_listing(
+                gated_user_facing_tool_definitions(),
+                approval_mode=session.approval_mode,
+                config_snapshot=session.config_snapshot,
+            )
+
     def complete(self) -> None:
         with self._lock:
             if self.closed:
@@ -292,7 +307,27 @@ class RuntimeOrchestrator:
     def __init__(self, *, workspace_root: str | Path | None = None) -> None:
         self.workspace_root = resolve_workspace_root(workspace_root)
 
-    def run_one_shot(self, prompt: str, config_snapshot: dict[str, Any]) -> OneShotResult:
+    def run_one_shot(
+        self,
+        prompt: str,
+        config_snapshot: dict[str, Any],
+        *,
+        approval_mode: str = "normal",
+    ) -> OneShotResult:
+        if approval_mode not in APPROVAL_MODES:
+            return OneShotResult(
+                exit_code=2,
+                assistant_output=None,
+                error={
+                    "error_class": "config_error",
+                    "message": "approval mode must be one of: normal, semi-auto, yolo",
+                    "source": "orchestrator",
+                    "recoverable": False,
+                },
+                message="approval mode must be one of: normal, semi-auto, yolo",
+                session_id=None,
+                run_id=None,
+            )
         policy_result = self._freeze_policy(config_snapshot)
         if isinstance(policy_result, OneShotResult):
             return policy_result
@@ -311,7 +346,7 @@ class RuntimeOrchestrator:
             try:
                 session = sessions.create(
                     workspace_root=self.workspace_root,
-                    approval_mode="normal",
+                    approval_mode=approval_mode,
                     config_snapshot=config_snapshot,
                 )
             except StoreError as exc:
@@ -625,7 +660,26 @@ class RuntimeOrchestrator:
         finally:
             db.close()
 
-    def start_repl(self, config_snapshot: dict[str, Any]) -> ReplStartResult:
+    def start_repl(
+        self,
+        config_snapshot: dict[str, Any],
+        *,
+        approval_mode: str = "normal",
+    ) -> ReplStartResult:
+        if approval_mode not in APPROVAL_MODES:
+            return ReplStartResult(
+                runtime=None,
+                error=ReplStartError(
+                    exit_code=2,
+                    message="approval mode must be one of: normal, semi-auto, yolo",
+                    error={
+                        "error_class": "config_error",
+                        "message": "approval mode must be one of: normal, semi-auto, yolo",
+                        "source": "orchestrator",
+                        "recoverable": False,
+                    },
+                ),
+            )
         policy_result = self._freeze_policy(config_snapshot)
         if isinstance(policy_result, OneShotResult):
             return ReplStartResult(
@@ -663,7 +717,7 @@ class RuntimeOrchestrator:
         try:
             session = sessions.create(
                 workspace_root=self.workspace_root,
-                approval_mode="normal",
+                approval_mode=approval_mode,
                 config_snapshot=config_snapshot,
             )
         except StoreError as exc:
@@ -856,6 +910,117 @@ def _snapshot_skills_for_startup(
             "source": exc.source,
             "recoverable": exc.recoverable,
         }
+
+
+def format_tool_listing(
+    tool_definitions: list[Any],
+    *,
+    approval_mode: str,
+    config_snapshot: dict[str, Any],
+) -> list[str]:
+    policy = config_snapshot.get("policy")
+    shell_allow: list[Any] = []
+    shell_deny: list[Any] = []
+    path_trust: list[str] = []
+    path_deny: list[str] = []
+    if isinstance(policy, dict):
+        path_trust = _policy_raw_values(policy.get("user_path_trust"))
+        path_deny = [
+            *_policy_raw_values(policy.get("builtin_path_deny")),
+            *_policy_raw_values(policy.get("user_path_deny")),
+        ]
+        shell = policy.get("user_shell")
+        if isinstance(shell, dict):
+            if isinstance(shell.get("allow"), list):
+                shell_allow = shell["allow"]
+            if isinstance(shell.get("deny"), list):
+                shell_deny = shell["deny"]
+    lines = [
+        "Tools:",
+        f"Approval mode: {approval_mode}",
+        f"Path policy: trusted={_format_policy_values(path_trust)}; denied={_format_policy_values(path_deny)}",
+        f"Shell policy: allow={_format_shell_prefixes(shell_allow)}; deny={_format_shell_prefixes(shell_deny)}",
+    ]
+    for definition in tool_definitions:
+        access = ", ".join(definition.access or [definition.risk_level])
+        approval = _tool_approval_behavior(
+            name=definition.name,
+            category=definition.category,
+            risk_level=definition.risk_level,
+            approval_mode=approval_mode,
+        )
+        enabled, disabled_reason = _tool_enabled_status(
+            category=definition.category,
+            shell_allow=shell_allow,
+        )
+        status = "enabled" if enabled else "disabled"
+        if disabled_reason:
+            label = "note" if enabled else "disabled reason"
+            status = f"{status} | {label}: {disabled_reason}"
+        lines.append(
+            f"- {definition.name} | category: {definition.category} | "
+            f"risk: {definition.risk_level} | access: {access} | "
+            f"approval: {approval} | {status}"
+        )
+    return lines
+
+
+def _policy_raw_values(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    values: list[str] = []
+    for item in value:
+        if isinstance(item, dict) and isinstance(item.get("raw"), str):
+            values.append(item["raw"])
+    return values
+
+
+def _format_policy_values(values: list[str]) -> str:
+    return ", ".join(values) if values else "none"
+
+
+def _format_shell_prefixes(prefixes: list[Any]) -> str:
+    rendered: list[str] = []
+    for prefix in prefixes:
+        if isinstance(prefix, list) and all(isinstance(item, str) for item in prefix):
+            rendered.append(" ".join(prefix))
+    return ", ".join(rendered) if rendered else "none"
+
+
+def _tool_approval_behavior(
+    *,
+    name: str,
+    category: str,
+    risk_level: str,
+    approval_mode: str,
+) -> str:
+    if name == "load_skill_ref_file":
+        return "audit-only when target is valid"
+    if risk_level == "runtime_control":
+        return "ask" if approval_mode == "normal" else "audit-only"
+    if approval_mode == "yolo":
+        return "auto-allow"
+    if approval_mode == "semi-auto":
+        if risk_level == "read":
+            return "auto-allow"
+        return "auto-allow in trusted paths; ask outside trusted paths"
+    if risk_level == "read":
+        return "auto-allow in trusted paths; ask outside trusted paths"
+    if category == "shell":
+        return "ask"
+    return "ask"
+
+
+def _tool_enabled_status(
+    *,
+    category: str,
+    shell_allow: list[Any],
+) -> tuple[bool, str | None]:
+    if category != "shell":
+        return True, None
+    if shell_allow:
+        return True, "limited by shell allowlist"
+    return True, None
 
 def _mark_failed_terminal(
     *,

@@ -99,6 +99,11 @@ class FakeRuntime:
             "- beta (global) [inactive]",
             "Beta skill",
         ]
+        self.runtime_tool_lines = [
+            "Tools:",
+            "- read_file | category: native | risk: read | access: read | approval: auto-allow | enabled",
+            "- activate_skill | category: runtime_control | risk: runtime_control | access: runtime_control | approval: ask | enabled",
+        ]
         self.compress_result = _result(
             "completed",
             assistant_output="Context compressed: reduced from 100 to 40 tokens; retained 1 recent model calls.",
@@ -132,6 +137,9 @@ class FakeRuntime:
 
     def skill_lines(self) -> list[str]:
         return self.frozen_skill_lines
+
+    def tool_lines(self) -> list[str]:
+        return self.runtime_tool_lines
 
     def manual_compress(self) -> AgentRunResult:
         self.compress_calls += 1
@@ -592,6 +600,63 @@ def test_skills_slash_command_appends_local_frozen_skill_state() -> None:
     ]
 
 
+def test_tools_slash_command_appends_local_runtime_tool_state() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    should_continue = controller.on_slash_command("/tools")
+
+    assert should_continue is True
+    assert runtime.run_inputs == []
+    assert view.events == [
+        ReplViewEvent(
+            kind="system_message",
+            payload={"message": "\n".join(runtime.runtime_tool_lines)},
+        )
+    ]
+
+
+def test_runtime_tool_listing_includes_policy_and_mode_context() -> None:
+    from debug_agent.runtime.contracts import ToolDefinition
+    from debug_agent.runtime.orchestrator import format_tool_listing
+
+    lines = format_tool_listing(
+        [
+            ToolDefinition(
+                name="shell_exec",
+                description="Run shell.",
+                input_schema={"type": "object"},
+                category="shell",
+                risk_level="execute",
+                access=["execute"],
+            )
+        ],
+        approval_mode="semi-auto",
+        config_snapshot={
+            "context": {"window_tokens": 1000},
+            "policy": {
+                "builtin_path_deny": [{"raw": ".sessions/"}],
+                "user_path_trust": [{"raw": "../trusted/"}],
+                "user_path_deny": [{"raw": "secrets/"}],
+                "user_shell": {"allow": [["git"]], "deny": [["rm"]]},
+            },
+        },
+    )
+
+    rendered = "\n".join(lines)
+    assert "Approval mode: semi-auto" in rendered
+    assert "Path policy: trusted=../trusted/; denied=.sessions/, secrets/" in rendered
+    assert "Shell policy: allow=git; deny=rm" in rendered
+    assert (
+        "- shell_exec | category: shell | risk: execute | access: execute | "
+        "approval: auto-allow in trusted paths; ask outside trusted paths | "
+        "enabled | note: limited by shell allowlist"
+    ) in rendered
+
+
 def test_compress_slash_command_uses_runtime_manual_compress() -> None:
     from debug_agent.cli.repl_controller import ReplController
 
@@ -687,6 +752,26 @@ def test_active_slash_status_is_suppressed_without_runtime_side_effects() -> Non
     assert runtime.failed_results == []
 
 
+def test_active_slash_compress_and_tools_are_suppressed_without_runtime_side_effects() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+    controller.is_executing = True
+
+    compress_should_continue = controller.on_slash_command("/compress")
+    tools_should_continue = controller.on_slash_command("/tools")
+
+    assert compress_should_continue is True
+    assert tools_should_continue is True
+    assert runtime.compress_calls == 0
+    assert runtime.run_inputs == []
+    assert view.events == []
+    assert runtime.completed is False
+    assert runtime.failed_results == []
+
+
 def test_active_slash_exit_and_unknown_command_are_suppressed() -> None:
     from debug_agent.cli.repl_controller import ReplController
 
@@ -705,6 +790,25 @@ def test_active_slash_exit_and_unknown_command_are_suppressed() -> None:
     assert controller.exit_code == 0
     assert view.closed_summaries == []
     assert view.events == []
+
+
+def test_unsupported_phase_1_commands_are_reported_without_model_call() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    assert controller.on_slash_command("/agents") is True
+    assert controller.on_slash_command("/models") is True
+    assert controller.on_slash_command("/compact") is True
+
+    assert runtime.run_inputs == []
+    assert [event.payload["message"] for event in view.events] == [
+        "Unsupported Phase 1 slash command: /agents",
+        "Unsupported Phase 1 slash command: /models",
+        "Unsupported Phase 1 slash command: /compact",
+    ]
 
 
 def test_welcome_snapshot_uses_contract_session_id_not_artifact_directory() -> None:
@@ -869,6 +973,58 @@ def test_usage_preserves_last_known_counts_when_result_omits_usage() -> None:
     assert view.status_bars[-1].input_tokens == 2
     assert view.status_bars[-1].output_tokens == 4
     assert view.status_bars[-1].total_tokens == 6
+
+
+def test_provider_total_tokens_are_accumulated_across_model_calls() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_turn_finished(
+        _result(
+            "completed",
+            assistant_output="one",
+            usage={"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+        )
+    )
+    controller.on_turn_finished(
+        _result(
+            "completed",
+            assistant_output="two",
+            usage={"input_tokens": 7, "output_tokens": 11, "total_tokens": 18},
+        )
+    )
+
+    assert view.status_bars[-1].total_tokens == 23
+
+
+def test_usage_falls_back_to_deterministic_context_estimate_when_provider_usage_absent() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_turn_finished(
+        _result(
+            "completed",
+            assistant_output="one",
+            usage={},
+            metadata={"context_estimate": {"total_tokens": 11}},
+        )
+    )
+    controller.on_turn_finished(
+        _result(
+            "completed",
+            assistant_output="two",
+            usage={},
+            metadata={"context_estimate": {"total_tokens": 13}},
+        )
+    )
+
+    assert view.status_bars[-1].total_tokens == 24
 
 
 def test_status_bar_context_uses_runtime_model_context_estimate() -> None:

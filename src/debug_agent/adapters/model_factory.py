@@ -47,9 +47,11 @@ class FakeChatModel:
             raise KeyboardInterrupt("fake model cancelled")
         if self.error is not None:
             raise self.error
+        tool_calls = list(self.tool_calls)
+        self.tool_calls = []
         return FakeModelResponse(
             content=self.response,
-            tool_calls=self.tool_calls,
+            tool_calls=tool_calls,
             usage=self.usage,
         )
 
@@ -80,6 +82,7 @@ class ModelFactory:
             return ModelFactoryResult(
                 model=FakeChatModel(
                     response=config_snapshot.get("fake_response", "fake response"),
+                    tool_calls=config_snapshot.get("fake_tool_calls"),
                     stream_chunks=config_snapshot.get("fake_stream_chunks"),
                     error=RuntimeError(fake_error) if fake_error else None,
                     timeout=bool(config_snapshot.get("fake_timeout", False)),

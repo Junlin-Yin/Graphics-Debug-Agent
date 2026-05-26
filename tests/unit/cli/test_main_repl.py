@@ -79,6 +79,48 @@ def test_main_repl_accepts_two_turns_status_and_exit(
     assert checkpoint_kinds == ["turn", "turn", "terminal"]
 
 
+def test_main_repl_accepts_explicit_initial_approval_mode(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home.mkdir()
+    workspace.mkdir()
+    _write_fake_config(home, "unused")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr("sys.stdin", io.StringIO("/status\n/exit\n"))
+
+    exit_code = main(["--approval-mode", "semi-auto"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "approval_mode: semi-auto" in captured.out
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        assert (
+            conn.execute("SELECT approval_mode FROM sessions").fetchone()[0]
+            == "semi-auto"
+        )
+
+
+def test_main_repl_rejects_invalid_initial_approval_mode(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home.mkdir()
+    workspace.mkdir()
+    _write_fake_config(home, "unused")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(workspace)
+
+    exit_code = main(["--approval-mode", "auto"])
+
+    assert exit_code == 2
+    assert "approval mode must be one of: normal, semi-auto, yolo" in capsys.readouterr().err
+    assert not (workspace / ".sessions" / "runtime.db").exists()
+
+
 def test_repl_status_and_exit_do_not_call_model(tmp_path, monkeypatch, capsys) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"

@@ -13,6 +13,7 @@ from debug_agent.runtime.contracts import AgentRunResult
 def run_repl(
     config_snapshot: dict[str, Any],
     *,
+    approval_mode: str = "normal",
     input_stream: TextIO | None = None,
     output_stream: TextIO | None = None,
     error_stream: TextIO | None = None,
@@ -26,6 +27,7 @@ def run_repl(
     try:
         controller = ReplController.start(
             config_snapshot=config_snapshot,
+            approval_mode=approval_mode,
             workspace_root=workspace_root,
         )
     except ReplStartFailed as exc:

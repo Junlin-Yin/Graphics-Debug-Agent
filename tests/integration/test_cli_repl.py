@@ -289,6 +289,85 @@ def test_injected_io_repl_uses_plain_repl_view(tmp_path, monkeypatch) -> None:
         assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "completed"
 
 
+def test_injected_io_repl_local_tools_skills_and_compress_do_not_call_model(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    output = io.StringIO()
+
+    exit_code = run_repl(
+        _fake_config_snapshot("model must not run"),
+        input_stream=io.StringIO("/tools\n/skills\n/compress\n/exit\n"),
+        output_stream=output,
+        error_stream=io.StringIO(),
+        workspace_root=workspace,
+    )
+
+    rendered = output.getvalue()
+    assert exit_code == 0
+    assert "Tools:" in rendered
+    assert "read_file | category: native" in rendered
+    assert "inactive" in rendered or "Skills: none" in rendered
+    assert "No compressible history." in rendered
+    assert "model must not run" not in rendered
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM run_events WHERE kind LIKE 'model_call_%'"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_repl_startup_semi_auto_skill_activation_is_audit_only(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    skill_dir = workspace / ".debug-agent" / "skills" / "alpha"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: alpha
+description: Alpha prompt skill
+---
+
+Use alpha.
+""",
+        encoding="utf-8",
+    )
+    output = io.StringIO()
+    config = _fake_config_snapshot("activated")
+    config["fake_tool_calls"] = [
+        {"name": "activate_skill", "args": {"name": "alpha"}, "id": "call_alpha"}
+    ]
+
+    exit_code = run_repl(
+        config,
+        approval_mode="semi-auto",
+        input_stream=io.StringIO("activate alpha\n/exit\n"),
+        output_stream=output,
+        error_stream=io.StringIO(),
+        workspace_root=workspace,
+    )
+
+    assert exit_code == 0
+    assert "activated" in output.getvalue()
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        assert (
+            conn.execute("SELECT approval_mode FROM sessions").fetchone()[0]
+            == "semi-auto"
+        )
+        event_kinds = [
+            row[0] for row in conn.execute("SELECT kind FROM run_events ORDER BY rowid")
+        ]
+        active_skills_json = conn.execute(
+            "SELECT active_skills_json FROM runs"
+        ).fetchone()[0]
+    assert "skill_activated" in event_kinds
+    assert "approval_requested" not in event_kinds
+    assert "approval_decision_recorded" not in event_kinds
+    assert "alpha" in active_skills_json
+
+
 def test_tty_repl_selects_prompt_toolkit_view(tmp_path, monkeypatch) -> None:
     constructed: list[type[object]] = []
     passed_output_streams: list[object] = []
