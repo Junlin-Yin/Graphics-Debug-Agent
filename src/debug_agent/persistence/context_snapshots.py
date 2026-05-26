@@ -144,7 +144,7 @@ class ContextSnapshotStore:
         artifact_refs: list[str],
         token_estimate: dict,
     ) -> ContextSnapshot:
-        if trigger not in {"compression", "omission | compression"}:
+        if trigger not in {"manual", "compression", "omission | compression"}:
             raise ValueError("compression snapshot trigger must be compression-related")
         context_snapshot_id = f"ctx_{uuid4().hex}"
         created_at = utc_now_iso()

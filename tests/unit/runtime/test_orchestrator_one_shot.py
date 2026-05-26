@@ -207,6 +207,112 @@ def test_one_shot_model_failure_marks_run_and_session_failed(tmp_path) -> None:
     assert "session_failed" in event_kinds
 
 
+def test_one_shot_context_limit_exceeded_records_context_fact_before_terminal_failure(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = _config("should not be called")
+    config["system_prompt"] = "system " * 100
+    config["context"] = {
+        "window_tokens": 40,
+        "omit_old_tool_results_at_ratio": 1.0,
+        "compress_history_at_ratio": 1.0,
+        "retain_recent_model_calls": 4,
+        "compression_reserved_output_tokens": 10,
+    }
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot("hello", config)
+
+    expected_message = (
+        "Context window still exceeds the limit after compression. "
+        "The current turn was aborted."
+    )
+    assert result.exit_code == 1
+    assert result.error["error_class"] == "context_limit_exceeded"
+    assert result.message == expected_message
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "failed"
+        assert conn.execute("SELECT status FROM runs").fetchone()[0] == "failed"
+        event_kinds = [
+            row[0] for row in conn.execute("SELECT kind FROM run_events ORDER BY rowid")
+        ]
+        checkpoint_kinds = [
+            row[0] for row in conn.execute("SELECT kind FROM checkpoints ORDER BY rowid")
+        ]
+    assert "context_limit_exceeded" in event_kinds
+    assert event_kinds.index("context_limit_exceeded") < event_kinds.index("run_failed")
+    assert checkpoint_kinds[:2] == ["context", "error"]
+
+
+def test_one_shot_compression_failed_records_context_fact_before_terminal_failure(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    original_run_turn = orchestrator_module.PromptAgentExecutor.run_turn
+
+    def compression_failed_run_turn(self, *, session, run, **_kwargs):
+        failure = self._record_compression_failed(
+            session=session,
+            run=run,
+            reason="oldest_group_too_large",
+            prompt_turn_counter=1,
+            token_estimate={"before": {"total_tokens": 1000}},
+        )
+        return AgentRunResult(
+            status="failed",
+            assistant_output=None,
+            tool_results=[],
+            usage={},
+            error={
+                "error_class": "compression_failed",
+                "message": failure["message"],
+            },
+            metadata={
+                "failure_scope": "turn",
+                "context_optimization": failure["metadata"],
+            },
+        )
+
+    monkeypatch.setattr(
+        orchestrator_module.PromptAgentExecutor,
+        "run_turn",
+        compression_failed_run_turn,
+    )
+    try:
+        result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
+            "hello", _config("unused")
+        )
+    finally:
+        monkeypatch.setattr(
+            orchestrator_module.PromptAgentExecutor,
+            "run_turn",
+            original_run_turn,
+        )
+
+    expected_message = (
+        "Context compression could not fit the oldest eligible history group. "
+        "The current turn was aborted. Start a new session to continue with a "
+        "fresh context window."
+    )
+    assert result.exit_code == 1
+    assert result.error["error_class"] == "compression_failed"
+    assert result.message == expected_message
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "failed"
+        assert conn.execute("SELECT status FROM runs").fetchone()[0] == "failed"
+        event_kinds = [
+            row[0] for row in conn.execute("SELECT kind FROM run_events ORDER BY rowid")
+        ]
+        checkpoint_kinds = [
+            row[0] for row in conn.execute("SELECT kind FROM checkpoints ORDER BY rowid")
+        ]
+    assert "compression_failed" in event_kinds
+    assert event_kinds.index("compression_failed") < event_kinds.index("run_failed")
+    assert checkpoint_kinds[:2] == ["context", "error"]
+
+
 def test_one_shot_invalid_skill_fails_before_model_call_and_releases_ownership(
     tmp_path, monkeypatch
 ) -> None:

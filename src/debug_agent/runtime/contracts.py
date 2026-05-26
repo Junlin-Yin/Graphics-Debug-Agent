@@ -40,6 +40,7 @@ RUN_EVENT_KINDS = frozenset(
         "skill_reference_loaded",
         "context_optimized",
         "compression_failed",
+        "context_limit_exceeded",
         "checkpoint_written",
         "artifact_registered",
     }

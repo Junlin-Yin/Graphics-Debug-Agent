@@ -225,7 +225,7 @@ def test_omitted_tool_output_remains_recoverable_from_artifact(tmp_path) -> None
             "config_snapshot": {
                 **runtime["session"].config_snapshot,
                 "context": {
-                    "window_tokens": 120,
+                        "window_tokens": 500,
                     "omit_old_tool_results_at_ratio": 0.1,
                     "retain_recent_model_calls": 1,
                 },

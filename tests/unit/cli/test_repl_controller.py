@@ -99,6 +99,22 @@ class FakeRuntime:
             "- beta (global) [inactive]",
             "Beta skill",
         ]
+        self.compress_result = _result(
+            "completed",
+            assistant_output="Context compressed: reduced from 100 to 40 tokens; retained 1 recent model calls.",
+            metadata={
+                "conversation_writeback": [
+                    {
+                        "seq": 1,
+                        "role": "system",
+                        "kind": "context_summary",
+                        "content": "{}",
+                    }
+                ],
+                "context_estimate": {"total_tokens": 40},
+            },
+        )
+        self.compress_calls = 0
 
     def run_turn(self, user_input: str, agent_stream_callback=None) -> AgentRunResult:
         self.run_inputs.append(user_input)
@@ -116,6 +132,13 @@ class FakeRuntime:
 
     def skill_lines(self) -> list[str]:
         return self.frozen_skill_lines
+
+    def manual_compress(self) -> AgentRunResult:
+        self.compress_calls += 1
+        estimate = self.compress_result.metadata.get("context_estimate")
+        if isinstance(estimate, dict):
+            self.latest_context_estimate = estimate
+        return self.compress_result
 
     def complete(self) -> None:
         self.completed = True
@@ -567,6 +590,85 @@ def test_skills_slash_command_appends_local_frozen_skill_state() -> None:
             payload={"message": "\n".join(runtime.frozen_skill_lines)},
         )
     ]
+
+
+def test_compress_slash_command_uses_runtime_manual_compress() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    should_continue = controller.on_slash_command("/compress")
+
+    assert should_continue is True
+    assert runtime.compress_calls == 1
+    assert runtime.run_inputs == []
+    assert runtime.latest_context_estimate == {"total_tokens": 40}
+    assert view.events == [
+        ReplViewEvent(
+            kind="system_message",
+            payload={
+                "message": (
+                    "Context compressed: reduced from 100 to 40 tokens; "
+                    "retained 1 recent model calls."
+                )
+            },
+        )
+    ]
+
+
+def test_compress_slash_noop_displays_exact_message_without_turn() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    runtime.compress_result = _result(
+        "completed",
+        assistant_output="No compressible history.",
+        metadata={"conversation_writeback": [], "context_estimate": {"total_tokens": 12}},
+    )
+    controller = ReplController(runtime=runtime, view=view)
+
+    should_continue = controller.on_slash_command("/compress")
+
+    assert should_continue is True
+    assert runtime.compress_calls == 1
+    assert runtime.run_inputs == []
+    assert view.events == [
+        ReplViewEvent(
+            kind="system_message",
+            payload={"message": "No compressible history."},
+        )
+    ]
+
+
+def test_compress_slash_turn_scoped_failure_keeps_session_open() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    expected_message = (
+        "Context compression could not fit the oldest eligible history group. "
+        "The current turn was aborted. Start a new session to continue with a "
+        "fresh context window."
+    )
+    view = FakeView()
+    runtime = FakeRuntime()
+    runtime.compress_result = _result(
+        "failed",
+        error={"error_class": "compression_failed", "message": expected_message},
+        metadata={"failure_scope": "turn"},
+    )
+    controller = ReplController(runtime=runtime, view=view)
+
+    should_continue = controller.on_slash_command("/compress")
+
+    assert should_continue is True
+    assert runtime.compress_calls == 1
+    assert runtime.failed_results == []
+    assert runtime.closed is False
+    assert controller.exit_code == 0
+    assert view.errors == [expected_message]
+    assert view.input_enabled[-1] is True
 
 
 def test_active_slash_status_is_suppressed_without_runtime_side_effects() -> None:

@@ -133,6 +133,31 @@ class ReplController:
         if command == "/skills":
             self._append_system_message("\n".join(self.runtime.skill_lines()))
             return True
+        if command == "/compress":
+            result = self.runtime.manual_compress()
+            estimate = result.metadata.get("context_estimate")
+            if isinstance(estimate, dict):
+                total = estimate.get("total_tokens")
+                if isinstance(total, int):
+                    self._context_used_tokens = total
+            if result.status == "completed":
+                self._append_system_message(result.assistant_output or "")
+                if self.view is not None:
+                    self.view.update_status_bar(self._status_bar_snapshot())
+                return True
+            if _is_turn_scoped_failure(result):
+                message = result.error["message"] if result.error else "Compression failed."
+                if self.view is not None:
+                    self.view.show_error(message)
+                    self.view.set_input_enabled(True)
+                return True
+            self.runtime.fail(result)
+            self.exit_code = 1
+            message = result.error["message"] if result.error else "Compression failed."
+            if self.view is not None:
+                self.view.show_error(message)
+                self.view.set_input_enabled(False)
+            return False
         if command == "/exit":
             self.runtime.complete()
             if self.view is not None:
@@ -425,6 +450,20 @@ class ReplController:
         if command == "/skills":
             print("\n".join(self.runtime.skill_lines()), file=output)
             return True
+        if command == "/compress":
+            result = self.runtime.manual_compress()
+            if result.status == "completed":
+                print(result.assistant_output or "", file=output)
+                return True
+            if _is_turn_scoped_failure(result):
+                message = result.error["message"] if result.error else "Compression failed."
+                print(message, file=output)
+                return True
+            self.runtime.fail(result)
+            self.exit_code = 1
+            message = result.error["message"] if result.error else "Compression failed."
+            print(message, file=output)
+            return False
         if command == "/exit":
             self.runtime.complete()
             return False

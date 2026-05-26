@@ -1304,7 +1304,7 @@ def test_prompt_executor_omits_old_tool_results_and_persists_context_snapshot(
             "config_snapshot": {
                 **session.config_snapshot,
                 "context": {
-                    "window_tokens": 120,
+                    "window_tokens": 500,
                     "omit_old_tool_results_at_ratio": 0.1,
                     "retain_recent_model_calls": 1,
                 },
@@ -1693,6 +1693,355 @@ def test_prompt_executor_compression_failure_aborts_without_conversation_mutatio
     db.close()
 
 
+def test_prompt_executor_context_limit_exceeded_aborts_without_model_call(
+    tmp_path,
+) -> None:
+    class FailingAdapter:
+        def run(self, request, context):
+            raise AssertionError("ordinary model call should not run over context limit")
+
+        def cancel(self, run_id: str) -> None:
+            raise AssertionError("cancel should not be called")
+
+    (
+        workspace,
+        db,
+        _sessions,
+        runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=artifacts,
+        adapter=FailingAdapter(),
+        tool_definitions=[],
+        system_prompt="system " * 100,
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        run_store=runs,
+        compression_model=None,
+    )
+    session = type(session)(
+        **{
+            **session.to_dict(),
+            "config_snapshot": {
+                **session.config_snapshot,
+                "context": {
+                    "window_tokens": 40,
+                    "omit_old_tool_results_at_ratio": 1.0,
+                    "compress_history_at_ratio": 1.0,
+                    "retain_recent_model_calls": 4,
+                    "compression_reserved_output_tokens": 10,
+                },
+            },
+        }
+    )
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="continue",
+        workspace_root=str(workspace),
+        conversation=[],
+    )
+
+    expected_message = (
+        "Context window still exceeds the limit after compression. "
+        "The current turn was aborted."
+    )
+    assert result.status == "failed"
+    assert result.error == {
+        "error_class": "context_limit_exceeded",
+        "message": expected_message,
+    }
+    assert result.metadata["failure_scope"] == "turn"
+    assert result.metadata["context_estimate"]["total_tokens"] > 40
+    persisted = events.list_for_run(run.run_id)
+    assert [event.kind for event in persisted] == [
+        "user_message",
+        "context_limit_exceeded",
+        "checkpoint_written",
+    ]
+    assert persisted[1].payload["message"] == expected_message
+    assert persisted[1].payload["error_class"] == "context_limit_exceeded"
+    context_checkpoint = checkpoints.latest_for_run(run.run_id)
+    assert context_checkpoint.kind == "context"
+    assert context_checkpoint.state["error_class"] == "context_limit_exceeded"
+    assert context_checkpoint.state["session_status"] == "running"
+    assert context_checkpoint.state["run_status"] == "running"
+    assert runs.get(run.run_id).status == "running"
+    db.close()
+
+
+def test_prompt_executor_manual_compress_noop_does_not_call_model_or_snapshot(
+    tmp_path,
+) -> None:
+    compression_calls = 0
+
+    def compression_model(_frame):
+        nonlocal compression_calls
+        compression_calls += 1
+        return "{}"
+
+    (
+        _workspace,
+        db,
+        _sessions,
+        runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=artifacts,
+        adapter=LangChainAgentLoopAdapter(model=FakeChatModel(response="unused")),
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        run_store=runs,
+        compression_model=compression_model,
+    )
+
+    result = executor.manual_compress(
+        session=session,
+        run=run,
+        conversation=[],
+        prompt_turn_counter=1,
+    )
+
+    assert result.status == "completed"
+    assert result.assistant_output == "No compressible history."
+    assert compression_calls == 0
+    assert "conversation_writeback" not in result.metadata
+    assert db.connection.execute(
+        "SELECT COUNT(*) FROM context_snapshots WHERE run_id = ?",
+        (run.run_id,),
+    ).fetchone()[0] == 0
+    assert events.list_for_run(run.run_id) == []
+    assert checkpoints.latest_for_run(run.run_id) is None
+    db.close()
+
+
+def test_prompt_executor_manual_compress_success_writes_snapshot_and_message(
+    tmp_path,
+) -> None:
+    (
+        _workspace,
+        db,
+        _sessions,
+        runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=artifacts,
+        adapter=LangChainAgentLoopAdapter(model=FakeChatModel(response="unused")),
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        run_store=runs,
+        compression_model=lambda _frame: json.dumps(
+            {
+                "task_goal": "continue debugging",
+                "completed_work": ["manual compression ran"],
+                "inspected_or_modified_files": [],
+                "remaining_work": [],
+                "next_plan": [],
+                "key_decisions": [],
+                "constraints": [],
+            }
+        ),
+    )
+    session = type(session)(
+        **{
+            **session.to_dict(),
+            "config_snapshot": {
+                **session.config_snapshot,
+                "context": {
+                    "window_tokens": 420,
+                    "omit_old_tool_results_at_ratio": 1.0,
+                    "compress_history_at_ratio": 1.0,
+                    "retain_recent_model_calls": 1,
+                    "compression_reserved_output_tokens": 40,
+                },
+            },
+        }
+    )
+
+    result = executor.manual_compress(
+        session=session,
+        run=run,
+        conversation=[
+            {
+                "seq": 1,
+                "role": "assistant",
+                "kind": "assistant_output",
+                "turn_id": "turn-1",
+                "model_call_id": "call-1",
+                "content": "old output " * 40,
+                "estimated_tokens": 120,
+            },
+            {
+                "seq": 2,
+                "role": "assistant",
+                "kind": "assistant_output",
+                "turn_id": "turn-2",
+                "model_call_id": "call-2",
+                "content": "Consumed old output.",
+                "estimated_tokens": 10,
+                "metadata": {"consumed_model_call_ids": ["call-1"]},
+            },
+        ],
+        prompt_turn_counter=1,
+    )
+
+    assert result.status == "completed"
+    assert result.assistant_output.startswith("Context compressed: reduced from ")
+    assert " to " in result.assistant_output
+    assert result.metadata["context_optimization"]["trigger"] == "manual"
+    assert result.metadata["conversation_writeback"][0]["kind"] == "context_summary"
+    assert db.connection.execute(
+        "SELECT trigger FROM context_snapshots WHERE run_id = ?",
+        (run.run_id,),
+    ).fetchone()[0] == "manual"
+    assert [event.kind for event in events.list_for_run(run.run_id)] == [
+        "model_call_started",
+        "model_call_completed",
+        "context_optimized",
+    ]
+    assert checkpoints.latest_for_run(run.run_id).kind == "context"
+    db.close()
+
+
+def test_prompt_executor_manual_compress_oldest_group_failure_preserves_boundary(
+    tmp_path,
+) -> None:
+    compression_calls = 0
+
+    def compression_model(_frame):
+        nonlocal compression_calls
+        compression_calls += 1
+        return "{}"
+
+    (
+        _workspace,
+        db,
+        _sessions,
+        runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=artifacts,
+        adapter=LangChainAgentLoopAdapter(model=FakeChatModel(response="unused")),
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        run_store=runs,
+        compression_model=compression_model,
+    )
+    session = type(session)(
+        **{
+            **session.to_dict(),
+            "config_snapshot": {
+                **session.config_snapshot,
+                "context": {
+                    "window_tokens": 800,
+                    "omit_old_tool_results_at_ratio": 1.0,
+                    "compress_history_at_ratio": 1.0,
+                    "retain_recent_model_calls": 1,
+                    "compression_reserved_output_tokens": 40,
+                },
+            },
+        }
+    )
+    conversation = [
+        {
+            "seq": 1,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-1",
+            "model_call_id": "call-1",
+            "content": "old output",
+            "estimated_tokens": 1000,
+        },
+        {
+            "seq": 2,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-2",
+            "model_call_id": "call-2",
+            "content": "Consumed old output.",
+            "estimated_tokens": 10,
+            "metadata": {"consumed_model_call_ids": ["call-1"]},
+        },
+    ]
+
+    result = executor.manual_compress(
+        session=session,
+        run=run,
+        conversation=conversation,
+        prompt_turn_counter=1,
+    )
+
+    expected_message = (
+        "Context compression could not fit the oldest eligible history group. "
+        "The current turn was aborted. Start a new session to continue with a "
+        "fresh context window."
+    )
+    assert result.status == "failed"
+    assert result.error == {
+        "error_class": "compression_failed",
+        "message": expected_message,
+    }
+    assert result.metadata["failure_scope"] == "turn"
+    assert [message["content"] for message in result.metadata["conversation_writeback"]] == [
+        message["content"] for message in conversation
+    ]
+    assert all(
+        message["kind"] != "context_summary"
+        for message in result.metadata["conversation_writeback"]
+    )
+    assert compression_calls == 0
+    assert db.connection.execute(
+        "SELECT COUNT(*) FROM context_snapshots WHERE run_id = ?",
+        (run.run_id,),
+    ).fetchone()[0] == 0
+    persisted = events.list_for_run(run.run_id)
+    assert [event.kind for event in persisted] == [
+        "compression_failed",
+        "checkpoint_written",
+    ]
+    assert persisted[0].payload["message"] == expected_message
+    assert checkpoints.latest_for_run(run.run_id).state["latest_error_summary"] == (
+        expected_message
+    )
+    assert runs.get(run.run_id).status == "running"
+    db.close()
+
+
 def test_omission_plus_compression_writes_only_final_snapshot(tmp_path) -> None:
     class RecordingAdapter:
         def run(self, request, context):
@@ -1854,7 +2203,7 @@ def test_repl_runtime_writes_back_omitted_conversation_and_metadata(tmp_path) ->
             "config_snapshot": {
                 **session.config_snapshot,
                 "context": {
-                    "window_tokens": 120,
+                        "window_tokens": 500,
                     "omit_old_tool_results_at_ratio": 0.1,
                     "retain_recent_model_calls": 1,
                 },

@@ -153,6 +153,25 @@ class ReplRuntime:
                 )
             return result
 
+    def manual_compress(self) -> AgentRunResult:
+        with self._lock:
+            session = self.sessions.get(self.session_id)
+            run = self.runs.get(self.run_id)
+            result = self.executor.manual_compress(
+                session=session,
+                run=run,
+                conversation=self.conversation,
+                prompt_turn_counter=self.turn_counter,
+            )
+            estimate = result.metadata.get("context_estimate")
+            if isinstance(estimate, dict):
+                self.latest_context_estimate = estimate
+            if result.status == "completed":
+                writeback = result.metadata.get("conversation_writeback")
+                if isinstance(writeback, list):
+                    self.conversation = [dict(message) for message in writeback]
+            return result
+
     def status_lines(self) -> list[str]:
         with self._lock:
             session = self.sessions.get(self.session_id)
@@ -873,7 +892,9 @@ def _mark_failed_terminal(
                         "prompt_turn_counter": agent_result.metadata.get(
                             "prompt_turn_counter", 0
                         ),
-                        "latest_model_response_metadata": agent_result.metadata,
+                        "latest_model_response_metadata": _serializable_metadata(
+                            agent_result.metadata
+                        ),
                         "latest_artifact_ids": [],
                         "latest_error_summary": error["message"],
                     },

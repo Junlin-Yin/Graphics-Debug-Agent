@@ -576,20 +576,20 @@ Objective: finish compression by adding manual `/compress` and hard context-limi
 
 Deliverables: manual `/compress`, no-op and success messages, manual compression failure transaction boundaries, context-limit failure, one-shot terminal behavior, and REPL turn-scoped abort behavior.
 
-- [ ] For manual `/compress`, reuse the Milestone 5B `compression_failed` boundary before calling the model when the derived budget is invalid or the oldest eligible group cannot fit.
-- [ ] For oldest-eligible-group compression failure, display the exact message `Context compression could not fit the oldest eligible history group. The current turn was aborted. Start a new session to continue with a fresh context window.`
-- [ ] Do not add Phase 1 recovery commands, forced history deletion, map-reduce compression, or repeated compression calls to work around compression failure.
-- [ ] Implement manual `/compress` while idle using the same rolling summary machinery, skipping old-tool-result omission and ignoring the threshold when evictable history exists.
-- [ ] Ensure `/compress` is a no-op with the exact system message `No compressible history.` when durable conversation is empty or no group is evictable.
-- [ ] Ensure `/compress` no-op branches do not call the compression model, write a context snapshot, or mutate `ReplRuntime.conversation`.
-- [ ] Ensure successful manual and automatic compression display a REPL system message with reduced-from and reduced-to estimates.
-- [ ] Ensure manual `/compress` failure writes `compression_failed` and a `context` checkpoint, writes no context snapshot, mutates no conversation, and keeps the long-lived REPL session/run running.
-- [ ] Ensure one-shot `compression_failed` writes the same compression event and `context` checkpoint fact before terminalizing the one-shot run/session as `failed` with `error_class="compression_failed"` and exiting non-zero.
-- [ ] Ensure all `compression_failed` branches display the documented English UI message for the failure class; oldest-eligible-group failure must display `Context compression could not fit the oldest eligible history group. The current turn was aborted. Start a new session to continue with a fresh context window.`
-- [ ] Implement `context_limit_exceeded` when rebuilt `ModelContextFrame` still exceeds `window_tokens`; REPL turns abort with a `context` checkpoint and the exact UI/event message `Context window still exceeds the limit after compression. The current turn was aborted.` without terminalizing session/run, while one-shot writes the same event/checkpoint before terminal failure.
-- [ ] Add unit tests for oldest-group failure, manual no-op without model call/snapshot/conversation mutation, manual success, manual failure transaction boundary, one-shot `compression_failed` terminal behavior, compression-failure UI messages, and context-limit failure including the exact UI/event message.
-- [ ] Add integration tests for manual `/compress` success/no-op/failure where deterministic injected I/O can verify behavior without manual TTY interaction.
-- [ ] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
+- [x] For manual `/compress`, reuse the Milestone 5B `compression_failed` boundary before calling the model when the derived budget is invalid or the oldest eligible group cannot fit.
+- [x] For oldest-eligible-group compression failure, display the exact message `Context compression could not fit the oldest eligible history group. The current turn was aborted. Start a new session to continue with a fresh context window.`
+- [x] Do not add Phase 1 recovery commands, forced history deletion, map-reduce compression, or repeated compression calls to work around compression failure.
+- [x] Implement manual `/compress` while idle using the same rolling summary machinery, skipping old-tool-result omission and ignoring the threshold when evictable history exists.
+- [x] Ensure `/compress` is a no-op with the exact system message `No compressible history.` when durable conversation is empty or no group is evictable.
+- [x] Ensure `/compress` no-op branches do not call the compression model, write a context snapshot, or mutate `ReplRuntime.conversation`.
+- [x] Ensure successful manual and automatic compression display a REPL system message with reduced-from and reduced-to estimates.
+- [x] Ensure manual `/compress` failure writes `compression_failed` and a `context` checkpoint, writes no context snapshot, mutates no conversation, and keeps the long-lived REPL session/run running.
+- [x] Ensure one-shot `compression_failed` writes the same compression event and `context` checkpoint fact before terminalizing the one-shot run/session as `failed` with `error_class="compression_failed"` and exiting non-zero.
+- [x] Ensure all `compression_failed` branches display the documented English UI message for the failure class; oldest-eligible-group failure must display `Context compression could not fit the oldest eligible history group. The current turn was aborted. Start a new session to continue with a fresh context window.`
+- [x] Implement `context_limit_exceeded` when rebuilt `ModelContextFrame` still exceeds `window_tokens`; REPL turns abort with a `context` checkpoint and the exact UI/event message `Context window still exceeds the limit after compression. The current turn was aborted.` without terminalizing session/run, while one-shot writes the same event/checkpoint before terminal failure.
+- [x] Add unit tests for oldest-group failure, manual no-op without model call/snapshot/conversation mutation, manual success, manual failure transaction boundary, one-shot `compression_failed` terminal behavior, compression-failure UI messages, and context-limit failure including the exact UI/event message.
+- [x] Add integration tests for manual `/compress` success/no-op/failure where deterministic injected I/O can verify behavior without manual TTY interaction.
+- [x] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
 
 Modified boundaries: context manager compression failure path, `/compress`, context checkpoints, one-shot/REPL context failure behavior, and local command routing needed for `/compress`.
 

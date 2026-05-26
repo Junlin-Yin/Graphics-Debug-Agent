@@ -32,6 +32,11 @@ from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
 LARGE_MODEL_CONTENT_THRESHOLD_BYTES = 16 * 1024
+CONTEXT_LIMIT_EXCEEDED_MESSAGE = (
+    "Context window still exceeds the limit after compression. "
+    "The current turn was aborted."
+)
+NO_COMPRESSIBLE_HISTORY_MESSAGE = "No compressible history."
 
 
 class CompressionFailedAbort(Exception):
@@ -58,6 +63,7 @@ class CompressionFailedAbort(Exception):
                 "message": self.message,
             },
             metadata={
+                "failure_scope": "turn",
                 "compression_failed_abort": True,
                 "context_optimization": self.metadata,
                 "conversation_writeback": self.conversation_writeback,
@@ -205,7 +211,7 @@ class PromptAgentExecutor:
                         "error_class": "compression_failed",
                         "message": compression_result["message"],
                     },
-                    metadata={},
+                    metadata={"failure_scope": "turn"},
                 ),
                 context_estimate=context_estimate_box["estimate"],
                 context_estimate_history=context_estimate_history,
@@ -257,6 +263,31 @@ class PromptAgentExecutor:
                 optimization=optimization,
                 after_estimate=composition.estimate.to_dict(),
                 prompt_turn_counter=prompt_turn_counter,
+            )
+        context_limit_result = self._maybe_record_context_limit_exceeded(
+            session=session,
+            run=self._latest_run(run),
+            estimate=composition.estimate.to_dict(),
+            prompt_turn_counter=prompt_turn_counter,
+            optimization=optimization_box["optimization"],
+        )
+        if context_limit_result is not None:
+            query_state = query_control.record_continuation(
+                query_state.query_id,
+                "context_limit_abort",
+            )
+            continuation_history.append(query_state.continuation_reason)
+            query_state_box["state"] = query_state
+            return _with_context_metadata(
+                context_limit_result,
+                context_estimate=context_estimate_box["estimate"],
+                context_estimate_history=context_estimate_history,
+                continuation_history=continuation_history,
+                query_state=query_state,
+                context_optimization=None
+                if optimization_box["optimization"] is None
+                else optimization_box["optimization"]["metadata"],
+                conversation_writeback=None,
             )
         request = AgentRunRequest(
             session_id=session.session_id,
@@ -383,6 +414,121 @@ class PromptAgentExecutor:
             payload={"checkpoint_id": checkpoint.checkpoint_id, "kind": checkpoint.kind},
         )
         return result
+
+    def manual_compress(
+        self,
+        *,
+        session: Session,
+        run: Run,
+        conversation: list[dict[str, Any]] | None = None,
+        prompt_turn_counter: int = 0,
+    ) -> AgentRunResult:
+        retained_messages = _conversation_messages(conversation or [])
+        if not retained_messages:
+            return AgentRunResult(
+                status="completed",
+                assistant_output=NO_COMPRESSIBLE_HISTORY_MESSAGE,
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+        query_control = self.query_control or QueryControlPlane()
+        query_state = query_control.start_query(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            turn_id=f"manual-compress-{prompt_turn_counter}",
+            approval_mode=session.approval_mode,
+            active_skill_records=run.active_skills,
+        )
+        composition = self._compose_frame(
+            session=session,
+            run=run,
+            retained_messages=retained_messages,
+            current_messages=[],
+        )
+        query_state = query_control.record_context_estimate(
+            query_state.query_id,
+            frame=composition.frame,
+            estimate_total_tokens=composition.estimate.total_tokens,
+            estimator_version=composition.estimate.estimator_version,
+        )
+        compression_result = self._maybe_compress(
+            session=session,
+            run=self._latest_run(run),
+            query_control=query_control,
+            query_state=query_state,
+            retained_messages=retained_messages,
+            current_messages=[],
+            initial_estimate=composition.estimate.to_dict(),
+            prompt_turn_counter=prompt_turn_counter,
+            prior_optimization=None,
+            manual=True,
+        )
+        if compression_result is None:
+            return AgentRunResult(
+                status="completed",
+                assistant_output=NO_COMPRESSIBLE_HISTORY_MESSAGE,
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={
+                    "context_estimate": composition.estimate.to_dict(),
+                },
+            )
+        if compression_result.get("failed"):
+            return AgentRunResult(
+                status="failed",
+                assistant_output=None,
+                tool_results=[],
+                usage={},
+                error={
+                    "error_class": "compression_failed",
+                    "message": compression_result["message"],
+                },
+                metadata={
+                    "failure_scope": "turn",
+                    "context_estimate": composition.estimate.to_dict(),
+                    "context_optimization": compression_result["metadata"],
+                    "conversation_writeback": [message.to_dict() for message in retained_messages],
+                },
+            )
+        retained_after = compression_result["retained_messages"]
+        after_composition = self._compose_frame(
+            session=session,
+            run=self._latest_run(run),
+            retained_messages=retained_after,
+            current_messages=[],
+        )
+        compression_result["metadata"]["reduced_to_tokens"] = (
+            after_composition.estimate.total_tokens
+        )
+        compression_result["metadata"]["message"] = (
+            "Context compressed: reduced from "
+            f"{compression_result['metadata']['reduced_from_tokens']} to "
+            f"{compression_result['metadata']['reduced_to_tokens']} tokens; "
+            f"retained {compression_result['metadata']['retain_recent_model_calls']} "
+            "recent model calls."
+        )
+        self._persist_compression(
+            session=session,
+            run=run,
+            optimization=compression_result,
+            after_estimate=after_composition.estimate.to_dict(),
+            prompt_turn_counter=prompt_turn_counter,
+        )
+        return AgentRunResult(
+            status="completed",
+            assistant_output=compression_result["metadata"]["message"],
+            tool_results=[],
+            usage={},
+            error=None,
+            metadata={
+                "context_estimate": after_composition.estimate.to_dict(),
+                "context_optimization": compression_result["metadata"],
+                "conversation_writeback": [message.to_dict() for message in retained_after],
+            },
+        )
 
     def _save_checkpoint(
         self,
@@ -629,6 +775,7 @@ class PromptAgentExecutor:
         initial_estimate: dict[str, Any],
         prompt_turn_counter: int,
         prior_optimization: dict[str, Any] | None,
+        manual: bool = False,
     ) -> dict[str, Any] | None:
         context_settings = session.config_snapshot.get("context", {})
         window_tokens = int(context_settings.get("window_tokens", 200000))
@@ -641,6 +788,13 @@ class PromptAgentExecutor:
         )
         if self.compression_model is None:
             return None
+        if manual and not _has_evictable_history(
+            retained_messages=retained_messages,
+            current_messages=current_messages,
+            retain_recent_model_calls=retain_recent_model_calls,
+            query_control=query_control,
+        ):
+            return None
         manager = ContextManager(query_control=query_control)
         try:
             plan = manager.prepare_compression(
@@ -651,7 +805,9 @@ class PromptAgentExecutor:
                 compression_reserved_output_tokens=reserved_output_tokens,
             )
         except CompressionError as exc:
-            if exc.reason in {"no_evictable_history", "invalid_budget"} and (
+            if exc.reason == "no_evictable_history":
+                return None
+            if not manual and exc.reason == "invalid_budget" and (
                 initial_estimate["total_tokens"] <= compress_ratio * window_tokens
             ):
                 return None
@@ -669,6 +825,7 @@ class PromptAgentExecutor:
         should_compress = (
             initial_estimate["total_tokens"] > compress_ratio * window_tokens
             or eligible_tokens > plan.budget_tokens
+            or manual
         )
         if not should_compress:
             return None
@@ -738,11 +895,11 @@ class PromptAgentExecutor:
             plan=plan,
             summary_json=summary_json,
         )
-        trigger = "compression"
+        trigger = "manual" if manual else "compression"
         omitted_count = 0
         if prior_optimization is not None:
             prior_metadata = prior_optimization.get("metadata", {})
-            if prior_metadata.get("trigger") == "omission":
+            if not manual and prior_metadata.get("trigger") == "omission":
                 trigger = "omission | compression"
                 omitted_count = int(prior_metadata.get("omitted_tool_result_count", 0))
         artifact_refs = sorted(
@@ -827,6 +984,76 @@ class PromptAgentExecutor:
                 "message": message,
             },
         }
+
+    def _maybe_record_context_limit_exceeded(
+        self,
+        *,
+        session: Session,
+        run: Run,
+        estimate: dict[str, Any],
+        prompt_turn_counter: int,
+        optimization: dict[str, Any] | None,
+    ) -> AgentRunResult | None:
+        context_settings = session.config_snapshot.get("context", {})
+        window_tokens = int(context_settings.get("window_tokens", 200000))
+        estimated_tokens = int(estimate.get("total_tokens", 0))
+        if estimated_tokens <= window_tokens:
+            return None
+        applied: list[str] = []
+        if optimization is not None:
+            trigger = optimization.get("metadata", {}).get("trigger")
+            if trigger == "omission | compression":
+                applied = ["omission", "compression"]
+            elif trigger in {"omission", "compression", "manual"}:
+                applied = [str(trigger)]
+        self._append_event(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            kind="context_limit_exceeded",
+            payload={
+                "error_class": "context_limit_exceeded",
+                "estimated_tokens": estimated_tokens,
+                "window_tokens": window_tokens,
+                "optimization_applied": applied,
+                "message": CONTEXT_LIMIT_EXCEEDED_MESSAGE,
+            },
+        )
+        checkpoint = self._save_checkpoint(
+            session=session,
+            run=run,
+            kind="context",
+            state={
+                "session_status": session.status,
+                "run_status": run.status,
+                "prompt_turn_counter": prompt_turn_counter,
+                "context_snapshot_id": run.context_snapshot_id,
+                "active_skill_records": run.active_skills,
+                "latest_artifact_ids": [],
+                "latest_error_summary": CONTEXT_LIMIT_EXCEEDED_MESSAGE,
+                "error_class": "context_limit_exceeded",
+                "estimated_tokens": estimated_tokens,
+                "window_tokens": window_tokens,
+                "token_estimate": dict(estimate),
+            },
+            summary=CONTEXT_LIMIT_EXCEEDED_MESSAGE,
+        )
+        self._append_event(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            kind="checkpoint_written",
+            payload={"checkpoint_id": checkpoint.checkpoint_id, "kind": checkpoint.kind},
+        )
+        return AgentRunResult(
+            status="failed",
+            assistant_output=None,
+            tool_results=[],
+            usage={},
+            error={
+                "error_class": "context_limit_exceeded",
+                "message": CONTEXT_LIMIT_EXCEEDED_MESSAGE,
+            },
+            metadata={"failure_scope": "turn"},
+        )
 
     def _persist_omission(
         self,
@@ -1117,6 +1344,27 @@ def _replace_compressed_history(
             ),
         )
     return sorted(retained_after, key=lambda message: message.seq)
+
+
+def _has_evictable_history(
+    *,
+    retained_messages: list[ConversationMessage],
+    current_messages: list[ConversationMessage],
+    retain_recent_model_calls: int,
+    query_control: QueryControlPlane,
+) -> bool:
+    groups = query_control.derive_model_call_groups(retained_messages)
+    suffix = query_control.compute_non_evictable_raw_suffix(
+        retained_messages,
+        retain_recent_model_calls=retain_recent_model_calls,
+        current_messages=current_messages,
+    )
+    return any(
+        group.status == "closed"
+        and group.consumed_by_later_model_call
+        and group.model_call_id not in suffix.model_call_group_ids
+        for group in groups
+    )
 
 
 def _compression_failure_message(reason: str) -> str:

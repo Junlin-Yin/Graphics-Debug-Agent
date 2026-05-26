@@ -12,6 +12,7 @@ from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
 from debug_agent.runtime.contracts import AgentRunResult
+from debug_agent.runtime.orchestrator import ReplRuntime
 from debug_agent.runtime.prompt_executor import PromptAgentExecutor
 from debug_agent.tools.broker import ToolBroker
 from debug_agent.tools.native import tool_definitions
@@ -37,6 +38,7 @@ def _runtime(tmp_path):
     return {
         "workspace": workspace,
         "db": db,
+        "sessions": sessions,
         "runs": runs,
         "events": events,
         "checkpoints": checkpoints,
@@ -214,6 +216,154 @@ def test_automatic_compression_failure_preserves_conversation(tmp_path) -> None:
     runtime["db"].close()
 
 
+def test_manual_compress_success_updates_repl_runtime_conversation(tmp_path) -> None:
+    runtime = _runtime(tmp_path)
+    session = _with_context(runtime["session"], window_tokens=420, ratio=1.0)
+    runtime["session"] = session
+    _persist_session_config(runtime, session)
+    executor = PromptAgentExecutor(
+        event_writer=runtime["events"],
+        checkpoint_store=runtime["checkpoints"],
+        artifact_store=runtime["artifacts"],
+        adapter=LangChainAgentLoopAdapter(model=FakeChatModel(response="unused")),
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=runtime["skill_store"],
+        run_store=runtime["runs"],
+        compression_model=lambda _frame: _summary_output("manual compression"),
+    )
+    repl_runtime = _repl_runtime(runtime, executor)
+    repl_runtime.conversation = _compressible_conversation()
+
+    result = repl_runtime.manual_compress()
+
+    assert result.status == "completed"
+    assert result.assistant_output.startswith("Context compressed: reduced from ")
+    assert repl_runtime.conversation[0]["kind"] == "context_summary"
+    assert "manual compression" in repl_runtime.conversation[0]["content"]
+    assert runtime["runs"].get(runtime["run"].run_id).context_snapshot_id is not None
+    assert runtime["db"].connection.execute(
+        "SELECT trigger FROM context_snapshots WHERE run_id = ?",
+        (runtime["run"].run_id,),
+    ).fetchone()[0] == "manual"
+    runtime["db"].close()
+
+
+def test_manual_compress_noop_does_not_write_snapshot(tmp_path) -> None:
+    runtime = _runtime(tmp_path)
+    executor = PromptAgentExecutor(
+        event_writer=runtime["events"],
+        checkpoint_store=runtime["checkpoints"],
+        artifact_store=runtime["artifacts"],
+        adapter=LangChainAgentLoopAdapter(model=FakeChatModel(response="unused")),
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=runtime["skill_store"],
+        run_store=runtime["runs"],
+        compression_model=lambda _frame: _summary_output("should not run"),
+    )
+    repl_runtime = _repl_runtime(runtime, executor)
+
+    result = repl_runtime.manual_compress()
+
+    assert result.status == "completed"
+    assert result.assistant_output == "No compressible history."
+    assert repl_runtime.conversation == []
+    assert runtime["db"].connection.execute(
+        "SELECT COUNT(*) FROM context_snapshots"
+    ).fetchone()[0] == 0
+    assert runtime["events"].list_for_run(runtime["run"].run_id) == []
+    runtime["db"].close()
+
+
+def test_manual_compress_noop_with_no_evictable_group_does_not_mutate_conversation(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path)
+    compression_calls = 0
+
+    def compression_model(_frame):
+        nonlocal compression_calls
+        compression_calls += 1
+        return _summary_output("should not run")
+
+    executor = PromptAgentExecutor(
+        event_writer=runtime["events"],
+        checkpoint_store=runtime["checkpoints"],
+        artifact_store=runtime["artifacts"],
+        adapter=LangChainAgentLoopAdapter(model=FakeChatModel(response="unused")),
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=runtime["skill_store"],
+        run_store=runtime["runs"],
+        compression_model=compression_model,
+    )
+    repl_runtime = _repl_runtime(runtime, executor)
+    repl_runtime.conversation = [
+        {
+            "seq": 1,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-1",
+            "model_call_id": "call-1",
+            "content": "recent answer",
+            "estimated_tokens": 10,
+        }
+    ]
+    original_ref = repl_runtime.conversation
+    original = [dict(message) for message in repl_runtime.conversation]
+
+    result = repl_runtime.manual_compress()
+
+    assert result.status == "completed"
+    assert result.assistant_output == "No compressible history."
+    assert "conversation_writeback" not in result.metadata
+    assert compression_calls == 0
+    assert repl_runtime.conversation is original_ref
+    assert repl_runtime.conversation == original
+    assert runtime["db"].connection.execute(
+        "SELECT COUNT(*) FROM context_snapshots"
+    ).fetchone()[0] == 0
+    assert runtime["events"].list_for_run(runtime["run"].run_id) == []
+    runtime["db"].close()
+
+
+def test_manual_compress_failure_preserves_repl_runtime_conversation(tmp_path) -> None:
+    runtime = _runtime(tmp_path)
+    session = _with_context(runtime["session"], window_tokens=420, ratio=1.0)
+    runtime["session"] = session
+    _persist_session_config(runtime, session)
+    executor = PromptAgentExecutor(
+        event_writer=runtime["events"],
+        checkpoint_store=runtime["checkpoints"],
+        artifact_store=runtime["artifacts"],
+        adapter=LangChainAgentLoopAdapter(model=FakeChatModel(response="unused")),
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=runtime["skill_store"],
+        run_store=runtime["runs"],
+        compression_model=lambda _frame: "",
+    )
+    repl_runtime = _repl_runtime(runtime, executor)
+    repl_runtime.conversation = _compressible_conversation()
+    original = [dict(message) for message in repl_runtime.conversation]
+
+    result = repl_runtime.manual_compress()
+
+    assert result.status == "failed"
+    assert result.error["error_class"] == "compression_failed"
+    assert result.metadata["failure_scope"] == "turn"
+    assert repl_runtime.conversation == original
+    assert runtime["runs"].get(runtime["run"].run_id).status == "running"
+    assert runtime["db"].connection.execute(
+        "SELECT COUNT(*) FROM context_snapshots"
+    ).fetchone()[0] == 0
+    assert "compression_failed" in {
+        event.kind for event in runtime["events"].list_for_run(runtime["run"].run_id)
+    }
+    runtime["db"].close()
+
+
 def _with_context(session, *, window_tokens: int, ratio: float):
     return type(session)(
         **{
@@ -230,6 +380,28 @@ def _with_context(session, *, window_tokens: int, ratio: float):
             },
         }
     )
+
+
+def _repl_runtime(runtime, executor):
+    return ReplRuntime(
+        db=runtime["db"],
+        sessions=runtime["sessions"],
+        runs=runtime["runs"],
+        events=runtime["events"],
+        checkpoints=runtime["checkpoints"],
+        executor=executor,
+        session_id=runtime["session"].session_id,
+        run_id=runtime["run"].run_id,
+        workspace_root=runtime["workspace"],
+    )
+
+
+def _persist_session_config(runtime, session) -> None:
+    runtime["db"].connection.execute(
+        "UPDATE sessions SET config_snapshot_json = ? WHERE session_id = ?",
+        (json.dumps(session.config_snapshot, sort_keys=True), session.session_id),
+    )
+    runtime["db"].connection.commit()
 
 
 def _compressible_conversation(*, old_tokens: int = 120, old_repeats: int = 40):

@@ -175,6 +175,8 @@ class ContextManager:
             and group.consumed_by_later_model_call
             and group.model_call_id not in suffix.model_call_group_ids
         ]
+        if not eligible_groups:
+            raise CompressionError("no_evictable_history")
         previous_summary_estimate = 0
         if previous_summary is not None:
             previous_summary_estimate = self._token_estimator.estimate_compression_context_frame(
@@ -200,8 +202,6 @@ class ContextManager:
         )
         if budget_tokens <= 0:
             raise CompressionError("invalid_budget")
-        if not eligible_groups:
-            raise CompressionError("no_evictable_history")
 
         messages_by_seq = {message.seq: message for message in retained_messages}
         selected_group_ids: list[str] = []
