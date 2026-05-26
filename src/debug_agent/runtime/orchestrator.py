@@ -22,7 +22,10 @@ from debug_agent.persistence.sqlite import RuntimeBootstrapError, RuntimeDatabas
 from debug_agent.runtime.config import PHASE_0_SYSTEM_PROMPT
 from debug_agent.runtime.contracts import AgentRunResult, Checkpoint, RunEvent, utc_now_iso
 from debug_agent.runtime.policy import load_main_agent_policy, policy_facts_to_snapshot
-from debug_agent.runtime.prompt_executor import PromptAgentExecutor
+from debug_agent.runtime.prompt_executor import (
+    PromptAgentExecutor,
+    make_compression_model_callable,
+)
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.runtime.workspace import resolve_workspace_root
 from debug_agent.skills.registry import SkillRegistry, SkillRegistryError
@@ -399,6 +402,7 @@ class RuntimeOrchestrator:
                 system_prompt=config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
                 skill_snapshot_store=SkillSnapshotStore(db.connection),
                 run_store=runs,
+                compression_model=make_compression_model_callable(model_result.model),
             )
             agent_result = executor.run_turn(
                 session=session,
@@ -754,6 +758,7 @@ class RuntimeOrchestrator:
             system_prompt=config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
             skill_snapshot_store=SkillSnapshotStore(db.connection),
             run_store=runs,
+            compression_model=make_compression_model_callable(model_result.model),
         )
         return ReplStartResult(
             runtime=ReplRuntime(

@@ -532,33 +532,33 @@ Objective: add automatic rolling compression on top of `ModelContextFrame` and o
 
 Deliverables: compression frame construction, compression prompt/schema, compression parser, automatic compression trigger/batch selection, compression model-call audit, compression failure event/checkpoint handling for automatic pre-call compression, compression context snapshots, and context checkpoints.
 
-- [ ] Implement `CompressionContextFrame` construction from previous summary, bounded evicted model-call groups, and compression instruction/schema prompt.
-- [ ] Exclude main agent system prompt, available skill headers, tool schema bindings, active `SKILL.md` bodies, retained recent raw messages, live/unconsumed suffix, and runtime-owned active skill/artifact/policy/approval facts from compression calls.
-- [ ] Keep Milestone 5B reviewable through internal checkpoints: first land compression frame construction and parser tests without automatic replacement, then land automatic trigger/batch selection behind a fake pre-call harness, then land automatic failure boundaries, then land snapshot/checkpoint persistence and enable automatic compression on the real pre-call path.
-- [ ] Internal checkpoint 1 runnable state: compression frame construction and parser behavior are unit-test-only, with no ordinary runtime behavior change and no automatic replacement path enabled.
-- [ ] Internal checkpoint 2 runnable state: automatic trigger and batch selection are exercised only through a fake pre-call harness; the real pre-call path still does not run automatic compression.
-- [ ] Internal checkpoint 3 runnable state: automatic compression failure abort boundaries are implemented and testable, while automatic compression success replacement remains gated from the real pre-call path.
-- [ ] Internal checkpoint 4 runnable state: snapshot/checkpoint persistence is wired and automatic compression is enabled on the real pre-call path only after success and failure transaction tests pass.
-- [ ] Implement compression instructions that preserve current task goal, completed milestones, inspected or modified files, remaining work, next plan, key decisions, constraints, and visible artifact/skill/reference/approval/policy facts only when already visible in previous summary or evicted history.
-- [ ] Derive `compression_evicted_history_budget` from `window_tokens`, previous summary estimate, compression prompt estimate, fixed overhead, and `compression_reserved_output_tokens`.
-- [ ] Trigger automatic compression when post-omission candidate tokens are strictly greater than `compress_history_at_ratio * window_tokens` or eligible evictable history exceeds the derived budget.
-- [ ] Select oldest eligible groups in chronological order without skipping older eligible groups.
-- [ ] Ensure runtime constructs and estimates a compression input that fits within `window_tokens` while respecting `compression_reserved_output_tokens` before calling the compression model.
-- [ ] Run at most one compression model call per pre-call optimization pass.
-- [ ] Ensure compression model calls are runtime-owned, tool-less, audited with `purpose="compression"`, and do not append assistant answers to durable conversation.
-- [ ] Parse compression output using the Phase 1 continuity summary JSON rules: required core fields are present and correctly typed, optional `visible_*` fields default to `[]`, extra fields are ignored, and empty, non-object, missing-required, or wrong-type output fails with `compression_failed`.
-- [ ] Before enabling automatic compression on the real pre-call path, implement automatic `compression_failed` handling for compression model failure, empty output, invalid continuity summary output, inability to construct compression input within `window_tokens` while respecting `compression_reserved_output_tokens`, and oldest eligible group not fitting within the derived compression input budget.
-- [ ] Ensure automatic `compression_failed` writes the compression failure event and a `context` checkpoint, aborts the current REPL turn without terminalizing the long-lived session/run, and terminalizes one-shot only after recording the same event/checkpoint facts.
-- [ ] Ensure automatic compression model failure writes `model_call_failed` with `purpose="compression"` before writing `compression_failed`.
-- [ ] Replace previous summary and selected evicted groups with the new canonical JSON summary.
-- [ ] Persist compression context snapshots with trigger `compression` or `omission | compression`.
-- [ ] Ensure an omission-plus-compression pass writes only one final context snapshot.
-- [ ] Artifact context snapshot payloads larger than 16 KiB through `payload_artifact_id`.
-- [ ] Display a REPL system message with reduced-from and reduced-to estimates after successful automatic compression.
-- [ ] Ensure no runtime code resumes or reconstructs working state from context snapshots in Phase 1.
-- [ ] Add unit tests for automatic compression triggers, proactive budget triggers, compression input fit checks, continuity summary parser behavior, compression frame exclusions, automatic failure transactions, model-call audit events, snapshot triggers, automatic compression success message, context snapshot 16 KiB artifacting, and omission-plus-compression single-snapshot behavior.
-- [ ] Add integration tests for automatic compression before initial model calls and before tool-loop follow-up calls, including at least one automatic `compression_failed` branch that proves no half-mutated conversation state remains.
-- [ ] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
+- [x] Implement `CompressionContextFrame` construction from previous summary, bounded evicted model-call groups, and compression instruction/schema prompt.
+- [x] Exclude main agent system prompt, available skill headers, tool schema bindings, active `SKILL.md` bodies, retained recent raw messages, live/unconsumed suffix, and runtime-owned active skill/artifact/policy/approval facts from compression calls.
+- [x] Keep Milestone 5B reviewable through internal checkpoints: first land compression frame construction and parser tests without automatic replacement, then land automatic trigger/batch selection behind a fake pre-call harness, then land automatic failure boundaries, then land snapshot/checkpoint persistence and enable automatic compression on the real pre-call path.
+- [x] Internal checkpoint 1 runnable state: compression frame construction and parser behavior are unit-test-only, with no ordinary runtime behavior change and no automatic replacement path enabled.
+- [x] Internal checkpoint 2 runnable state: automatic trigger and batch selection are exercised only through a fake pre-call harness; the real pre-call path still does not run automatic compression.
+- [x] Internal checkpoint 3 runnable state: automatic compression failure abort boundaries are implemented and testable, while automatic compression success replacement remains gated from the real pre-call path.
+- [x] Internal checkpoint 4 runnable state: snapshot/checkpoint persistence is wired and automatic compression is enabled on the real pre-call path only after success and failure transaction tests pass.
+- [x] Implement compression instructions that preserve current task goal, completed milestones, inspected or modified files, remaining work, next plan, key decisions, constraints, and visible artifact/skill/reference/approval/policy facts only when already visible in previous summary or evicted history.
+- [x] Derive `compression_evicted_history_budget` from `window_tokens`, previous summary estimate, compression prompt estimate, fixed overhead, and `compression_reserved_output_tokens`.
+- [x] Trigger automatic compression when post-omission candidate tokens are strictly greater than `compress_history_at_ratio * window_tokens` or eligible evictable history exceeds the derived budget.
+- [x] Select oldest eligible groups in chronological order without skipping older eligible groups.
+- [x] Ensure runtime constructs and estimates a compression input that fits within `window_tokens` while respecting `compression_reserved_output_tokens` before calling the compression model.
+- [x] Run at most one compression model call per pre-call optimization pass.
+- [x] Ensure compression model calls are runtime-owned, tool-less, audited with `purpose="compression"`, and do not append assistant answers to durable conversation.
+- [x] Parse compression output using the Phase 1 continuity summary JSON rules: required core fields are present and correctly typed, optional `visible_*` fields default to `[]`, extra fields are ignored, and empty, non-object, missing-required, or wrong-type output fails with `compression_failed`.
+- [x] Before enabling automatic compression on the real pre-call path, implement automatic `compression_failed` handling for compression model failure, empty output, invalid continuity summary output, inability to construct compression input within `window_tokens` while respecting `compression_reserved_output_tokens`, and oldest eligible group not fitting within the derived compression input budget.
+- [x] Ensure automatic `compression_failed` writes the compression failure event and a `context` checkpoint, aborts the current REPL turn without terminalizing the long-lived session/run, and terminalizes one-shot only after recording the same event/checkpoint facts.
+- [x] Ensure automatic compression model failure writes `model_call_failed` with `purpose="compression"` before writing `compression_failed`.
+- [x] Replace previous summary and selected evicted groups with the new canonical JSON summary.
+- [x] Persist compression context snapshots with trigger `compression` or `omission | compression`.
+- [x] Ensure an omission-plus-compression pass writes only one final context snapshot.
+- [x] Artifact context snapshot payloads larger than 16 KiB through `payload_artifact_id`.
+- [x] Display a REPL system message with reduced-from and reduced-to estimates after successful automatic compression.
+- [x] Ensure no runtime code resumes or reconstructs working state from context snapshots in Phase 1.
+- [x] Add unit tests for automatic compression triggers, proactive budget triggers, compression input fit checks, continuity summary parser behavior, compression frame exclusions, automatic failure transactions, model-call audit events, snapshot triggers, automatic compression success message, context snapshot 16 KiB artifacting, and omission-plus-compression single-snapshot behavior.
+- [x] Add integration tests for automatic compression before initial model calls and before tool-loop follow-up calls, including at least one automatic `compression_failed` branch that proves no half-mutated conversation state remains.
+- [x] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
 
 Modified boundaries: context manager compression success path, compression model-call path, context snapshots, and context checkpoints.
 

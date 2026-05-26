@@ -4,6 +4,7 @@ from debug_agent.runtime.model_context import (
     ModelContextFrame,
     TokenEstimator,
 )
+from debug_agent.runtime.context_manager import ContextManager, CompressionError
 
 
 def test_conversation_message_round_trips_through_json_safe_dict() -> None:
@@ -187,7 +188,165 @@ def test_estimator_accepts_frame_not_raw_conversation_list() -> None:
         raise AssertionError("raw conversation list was accepted for budget estimate")
 
 
-def test_compression_context_frame_is_serializable_shape_only() -> None:
+def test_compression_context_frame_builds_only_previous_summary_evicted_history_and_instruction() -> None:
+    previous = ConversationMessage(
+        seq=1,
+        role="system",
+        kind="context_summary",
+        turn_id=None,
+        model_call_id=None,
+        tool_call_id=None,
+        content='{"task_goal":"debug"}',
+    )
+    old = ConversationMessage(
+        seq=2,
+        role="assistant",
+        kind="assistant_output",
+        turn_id="turn-1",
+        model_call_id="call-1",
+        tool_call_id=None,
+        content="old inspected file.py",
+        estimated_tokens=8,
+    )
+    consumed = ConversationMessage(
+        seq=3,
+        role="assistant",
+        kind="assistant_output",
+        turn_id="turn-2",
+        model_call_id="call-2",
+        tool_call_id=None,
+        content="consumed call-1",
+        estimated_tokens=5,
+        metadata={"consumed_model_call_ids": ["call-1"]},
+    )
+    retained_recent = ConversationMessage(
+        seq=4,
+        role="assistant",
+        kind="assistant_output",
+        turn_id="turn-3",
+        model_call_id="call-3",
+        tool_call_id=None,
+        content="recent raw",
+        estimated_tokens=6,
+        metadata={"consumed_model_call_ids": ["call-2"]},
+    )
+    current = ConversationMessage(
+        seq=5,
+        role="user",
+        kind="current_user_input",
+        turn_id="turn-4",
+        model_call_id=None,
+        tool_call_id=None,
+        content="current request",
+    )
+
+    plan = ContextManager().prepare_compression(
+        retained_messages=[previous, old, consumed, retained_recent],
+        current_messages=[current],
+        retain_recent_model_calls=1,
+        window_tokens=1200,
+        compression_reserved_output_tokens=100,
+    )
+    frame = plan.frame
+
+    assert frame.previous_summary == '{"task_goal":"debug"}'
+    assert [message.seq for message in frame.evicted_messages] == [2, 3]
+    assert "current request" not in str(frame.to_dict())
+    assert "recent raw" not in str(frame.to_dict())
+    assert frame.instruction_segment.kind == "compression_instruction"
+    assert CompressionContextFrame.from_dict(frame.to_dict()) == frame
+
+
+def test_compression_budget_failure_is_reported_before_model_call() -> None:
+    old = ConversationMessage(
+        seq=1,
+        role="assistant",
+        kind="assistant_output",
+        turn_id="turn-1",
+        model_call_id="call-1",
+        tool_call_id=None,
+        content="old",
+        estimated_tokens=200,
+    )
+    consumed = ConversationMessage(
+        seq=2,
+        role="assistant",
+        kind="assistant_output",
+        turn_id="turn-2",
+        model_call_id="call-2",
+        tool_call_id=None,
+        content="consumed",
+        estimated_tokens=10,
+        metadata={"consumed_model_call_ids": ["call-1"]},
+    )
+
+    try:
+        ContextManager().prepare_compression(
+            retained_messages=[old, consumed],
+            current_messages=[],
+            retain_recent_model_calls=0,
+            window_tokens=260,
+            compression_reserved_output_tokens=10,
+        )
+    except CompressionError as exc:
+        assert exc.reason == "oldest_group_too_large"
+    else:
+        raise AssertionError("oldest group fit failure was not reported")
+
+
+def test_parse_continuity_summary_defaults_visible_fields_and_canonicalizes_json() -> None:
+    summary = ContextManager().parse_continuity_summary(
+        """
+        {
+          "task_goal": "fix compression",
+          "completed_work": ["read docs"],
+          "inspected_or_modified_files": ["src/debug_agent/runtime/context_manager.py"],
+          "remaining_work": [],
+          "next_plan": ["run tests"],
+          "key_decisions": ["snapshots are not recovery truth"],
+          "constraints": ["no manual command"],
+          "extra": "ignored"
+        }
+        """
+    )
+
+    assert summary == {
+        "task_goal": "fix compression",
+        "completed_work": ["read docs"],
+        "inspected_or_modified_files": ["src/debug_agent/runtime/context_manager.py"],
+        "remaining_work": [],
+        "next_plan": ["run tests"],
+        "key_decisions": ["snapshots are not recovery truth"],
+        "constraints": ["no manual command"],
+        "visible_artifact_refs": [],
+        "visible_active_skills": [],
+        "visible_loaded_skill_reference_files": [],
+        "visible_policy_or_approval_facts": [],
+    }
+    assert ContextManager().canonical_summary_json(summary).startswith(
+        '{"completed_work":["read docs"]'
+    )
+
+
+def test_parse_continuity_summary_rejects_empty_non_object_missing_and_wrong_types() -> None:
+    manager = ContextManager()
+
+    for output in [
+        "",
+        "[]",
+        '{"task_goal": "x"}',
+        '{"task_goal": [], "completed_work": [], "inspected_or_modified_files": [], "remaining_work": [], "next_plan": [], "key_decisions": [], "constraints": []}',
+        '{"task_goal": "x", "completed_work": ["ok", 1], "inspected_or_modified_files": [], "remaining_work": [], "next_plan": [], "key_decisions": [], "constraints": []}',
+    ]:
+        try:
+            manager.parse_continuity_summary(output)
+        except CompressionError as exc:
+            assert exc.reason == "invalid_output"
+        else:
+            raise AssertionError(f"invalid summary parsed: {output}")
+
+
+def test_compression_context_frame_round_trips() -> None:
     frame = CompressionContextFrame(
         previous_summary="summary",
         evicted_messages=[

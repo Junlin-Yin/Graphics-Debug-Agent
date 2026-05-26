@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
+from time import monotonic
 
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.checkpoints import CheckpointStore
@@ -23,14 +24,45 @@ from debug_agent.runtime.contracts import (
     utc_now_iso,
 )
 from debug_agent.persistence.skills import SkillSnapshotStore
-from debug_agent.runtime.context_manager import ContextManager
-from debug_agent.runtime.model_context import ConversationMessage
+from debug_agent.runtime.context_manager import CompressionError, ContextManager
+from debug_agent.runtime.model_context import CompressionContextFrame, ConversationMessage
 from debug_agent.runtime.prompt_composer import PromptComposer, PromptCompositionRequest
 from debug_agent.runtime.query_control import QueryControlPlane
 from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
 LARGE_MODEL_CONTENT_THRESHOLD_BYTES = 16 * 1024
+
+
+class CompressionFailedAbort(Exception):
+    def __init__(
+        self,
+        *,
+        message: str,
+        metadata: dict[str, Any],
+        conversation_writeback: list[dict[str, Any]],
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.metadata = metadata
+        self.conversation_writeback = conversation_writeback
+
+    def to_result(self) -> AgentRunResult:
+        return AgentRunResult(
+            status="failed",
+            assistant_output=None,
+            tool_results=[],
+            usage={},
+            error={
+                "error_class": "compression_failed",
+                "message": self.message,
+            },
+            metadata={
+                "compression_failed_abort": True,
+                "context_optimization": self.metadata,
+                "conversation_writeback": self.conversation_writeback,
+            },
+        )
 
 
 @dataclass(frozen=True)
@@ -44,6 +76,7 @@ class PromptAgentExecutor:
     skill_snapshot_store: SkillSnapshotStore
     run_store: RunStore | None = None
     query_control: QueryControlPlane | None = None
+    compression_model: Callable[[Any], str] | None = None
 
     def run_turn(
         self,
@@ -143,6 +176,81 @@ class PromptAgentExecutor:
                 f"{optimization['metadata']['reduced_to_tokens']} tokens by "
                 "omitting earlier tool results."
             )
+            optimization_box["optimization"] = optimization
+        compression_result = self._maybe_compress(
+            session=session,
+            run=self._latest_run(run),
+            query_control=query_control,
+            query_state=query_state,
+            retained_messages=retained_messages,
+            current_messages=current_messages,
+            initial_estimate=composition.estimate.to_dict(),
+            prompt_turn_counter=prompt_turn_counter,
+            prior_optimization=optimization_box["optimization"],
+        )
+        if compression_result is not None and compression_result.get("failed"):
+            query_state = query_control.record_continuation(
+                query_state.query_id,
+                "compression_failed_abort",
+            )
+            continuation_history.append(query_state.continuation_reason)
+            query_state_box["state"] = query_state
+            return _with_context_metadata(
+                AgentRunResult(
+                    status="failed",
+                    assistant_output=None,
+                    tool_results=[],
+                    usage={},
+                    error={
+                        "error_class": "compression_failed",
+                        "message": compression_result["message"],
+                    },
+                    metadata={},
+                ),
+                context_estimate=context_estimate_box["estimate"],
+                context_estimate_history=context_estimate_history,
+                continuation_history=continuation_history,
+                query_state=query_state,
+                context_optimization=compression_result["metadata"],
+                conversation_writeback=[message.to_dict() for message in retained_messages],
+            )
+        if compression_result is not None:
+            retained_messages = compression_result["retained_messages"]
+            retained_messages_box["messages"] = retained_messages
+            composition = self._compose_frame(
+                session=session,
+                run=self._latest_run(run),
+                retained_messages=retained_messages,
+                current_messages=current_messages,
+            )
+            query_state = query_control.record_context_estimate(
+                query_state.query_id,
+                frame=composition.frame,
+                estimate_total_tokens=composition.estimate.total_tokens,
+                estimator_version=composition.estimate.estimator_version,
+            )
+            query_state_box["state"] = query_state
+            context_estimate_box["estimate"] = composition.estimate.to_dict()
+            context_estimate_history.append(composition.estimate.to_dict())
+            compression_result["metadata"]["reduced_to_tokens"] = (
+                composition.estimate.total_tokens
+            )
+            compression_result["metadata"]["message"] = (
+                "Context compressed: reduced from "
+                f"{compression_result['metadata']['reduced_from_tokens']} to "
+                f"{compression_result['metadata']['reduced_to_tokens']} tokens; "
+                f"retained {compression_result['metadata']['retain_recent_model_calls']} "
+                "recent model calls."
+            )
+            self._persist_compression(
+                session=session,
+                run=run,
+                optimization=compression_result,
+                after_estimate=composition.estimate.to_dict(),
+                prompt_turn_counter=prompt_turn_counter,
+            )
+            optimization_box["optimization"] = compression_result
+        elif optimization is not None:
             self._persist_omission(
                 session=session,
                 run=run,
@@ -150,7 +258,6 @@ class PromptAgentExecutor:
                 after_estimate=composition.estimate.to_dict(),
                 prompt_turn_counter=prompt_turn_counter,
             )
-            optimization_box["optimization"] = optimization
         request = AgentRunRequest(
             session_id=session.session_id,
             run_id=run.run_id,
@@ -207,6 +314,9 @@ class PromptAgentExecutor:
         )
         continuation_history.append(query_state.continuation_reason)
         query_state_box["state"] = query_state
+        compression_failed_abort = (
+            result.metadata.get("compression_failed_abort") is True
+        )
         result = _with_context_metadata(
             result,
             context_estimate=context_estimate_box["estimate"],
@@ -214,15 +324,17 @@ class PromptAgentExecutor:
             continuation_history=continuation_history,
             query_state=query_state,
             context_optimization=None
-            if optimization_box["optimization"] is None
+            if compression_failed_abort or optimization_box["optimization"] is None
             else optimization_box["optimization"]["metadata"],
             conversation_writeback=None
-            if optimization_box["optimization"] is None
+            if compression_failed_abort or optimization_box["optimization"] is None
             else [
                 message.to_dict()
                 for message in optimization_box["optimization"]["retained_messages"]
             ],
         )
+        if result.metadata.get("compression_failed_abort") is True:
+            return result
         if result.status == "completed":
             self._append_event(
                 session_id=session.session_id,
@@ -335,6 +447,9 @@ class PromptAgentExecutor:
             "tool_result_continuation",
         )
         continuation_history.append(state.continuation_reason)
+        pre_optimization_retained_messages = [
+            message for message in retained_messages_box["messages"]
+        ]
         composition = self._compose_frame(
             session=session,
             run=self._latest_run(run),
@@ -386,6 +501,68 @@ class PromptAgentExecutor:
                 f"{optimization['metadata']['reduced_to_tokens']} tokens by "
                 "omitting earlier tool results."
             )
+            optimization_box["optimization"] = optimization
+        compression_result = self._maybe_compress(
+            session=session,
+            run=self._latest_run(run),
+            query_control=query_control,
+            query_state=state,
+            retained_messages=retained_messages_box["messages"],
+            current_messages=current_messages,
+            initial_estimate=composition.estimate.to_dict(),
+            prompt_turn_counter=prompt_turn_counter,
+            prior_optimization=optimization_box["optimization"],
+        )
+        if compression_result is not None and compression_result.get("failed"):
+            state = query_control.record_continuation(
+                state.query_id,
+                "compression_failed_abort",
+            )
+            continuation_history.append(state.continuation_reason)
+            query_state_box["state"] = state
+            raise CompressionFailedAbort(
+                message=compression_result["message"],
+                metadata=compression_result["metadata"],
+                conversation_writeback=[
+                    message.to_dict() for message in pre_optimization_retained_messages
+                ],
+            )
+        if compression_result is not None:
+            retained_messages_box["messages"] = compression_result["retained_messages"]
+            composition = self._compose_frame(
+                session=session,
+                run=self._latest_run(run),
+                retained_messages=retained_messages_box["messages"],
+                current_messages=current_messages,
+            )
+            state = query_control.record_context_estimate(
+                state.query_id,
+                frame=composition.frame,
+                estimate_total_tokens=composition.estimate.total_tokens,
+                estimator_version=composition.estimate.estimator_version,
+            )
+            query_state_box["state"] = state
+            context_estimate_box["estimate"] = composition.estimate.to_dict()
+            context_estimate_history.append(composition.estimate.to_dict())
+            compression_result["metadata"]["reduced_to_tokens"] = (
+                composition.estimate.total_tokens
+            )
+            compression_result["metadata"]["message"] = (
+                "Context compressed: reduced from "
+                f"{compression_result['metadata']['reduced_from_tokens']} to "
+                f"{compression_result['metadata']['reduced_to_tokens']} tokens; "
+                f"retained {compression_result['metadata']['retain_recent_model_calls']} "
+                "recent model calls."
+            )
+            self._persist_compression(
+                session=session,
+                run=run,
+                optimization=compression_result,
+                after_estimate=composition.estimate.to_dict(),
+                prompt_turn_counter=prompt_turn_counter,
+            )
+            optimization_box["optimization"] = compression_result
+        elif optimization is not None:
             self._persist_omission(
                 session=session,
                 run=run,
@@ -393,7 +570,6 @@ class PromptAgentExecutor:
                 after_estimate=composition.estimate.to_dict(),
                 prompt_turn_counter=prompt_turn_counter,
             )
-            optimization_box["optimization"] = optimization
         return {
             "frame": composition.frame,
             "estimate": composition.estimate.to_dict(),
@@ -438,6 +614,217 @@ class PromptAgentExecutor:
                 "reduced_from_tokens": initial_estimate["total_tokens"],
                 "reduced_to_tokens": None,
                 "message": "",
+            },
+        }
+
+    def _maybe_compress(
+        self,
+        *,
+        session: Session,
+        run: Run,
+        query_control: QueryControlPlane,
+        query_state: Any,
+        retained_messages: list[ConversationMessage],
+        current_messages: list[ConversationMessage],
+        initial_estimate: dict[str, Any],
+        prompt_turn_counter: int,
+        prior_optimization: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        context_settings = session.config_snapshot.get("context", {})
+        window_tokens = int(context_settings.get("window_tokens", 200000))
+        compress_ratio = float(context_settings.get("compress_history_at_ratio", 0.80))
+        retain_recent_model_calls = int(
+            context_settings.get("retain_recent_model_calls", 4)
+        )
+        reserved_output_tokens = int(
+            context_settings.get("compression_reserved_output_tokens", 10000)
+        )
+        if self.compression_model is None:
+            return None
+        manager = ContextManager(query_control=query_control)
+        try:
+            plan = manager.prepare_compression(
+                retained_messages=retained_messages,
+                current_messages=current_messages,
+                retain_recent_model_calls=retain_recent_model_calls,
+                window_tokens=window_tokens,
+                compression_reserved_output_tokens=reserved_output_tokens,
+            )
+        except CompressionError as exc:
+            if exc.reason in {"no_evictable_history", "invalid_budget"} and (
+                initial_estimate["total_tokens"] <= compress_ratio * window_tokens
+            ):
+                return None
+            return self._record_compression_failed(
+                session=session,
+                run=run,
+                reason=exc.reason,
+                prompt_turn_counter=prompt_turn_counter,
+                token_estimate={"before": dict(initial_estimate)},
+            )
+
+        eligible_tokens = sum(
+            message.estimated_tokens or 0 for message in plan.evicted_messages
+        )
+        should_compress = (
+            initial_estimate["total_tokens"] > compress_ratio * window_tokens
+            or eligible_tokens > plan.budget_tokens
+        )
+        if not should_compress:
+            return None
+        self._append_model_event(
+            session=session,
+            run=run,
+            kind="model_call_started",
+            payload={
+                "provider": session.config_snapshot.get("provider"),
+                "model": session.config_snapshot.get("model"),
+                "purpose": "compression",
+                "tool_schema_bindings": [],
+            },
+        )
+        started_at = monotonic()
+        try:
+            output = self.compression_model(plan.frame)
+        except Exception as exc:
+            self._append_model_event(
+                session=session,
+                run=run,
+                kind="model_call_failed",
+                payload={
+                    "error_class": "model_error",
+                    "message": str(exc),
+                    "source": "model",
+                    "recoverable": True,
+                    "duration": monotonic() - started_at,
+                    "purpose": "compression",
+                },
+            )
+            return self._record_compression_failed(
+                session=session,
+                run=run,
+                reason="model_failure",
+                prompt_turn_counter=prompt_turn_counter,
+                token_estimate={"before": dict(initial_estimate)},
+            )
+        self._append_model_event(
+            session=session,
+            run=run,
+            kind="model_call_completed",
+            payload={
+                "usage": {},
+                "metadata": {"purpose": "compression"},
+                "duration": monotonic() - started_at,
+                "content": output,
+                "tool_calls": [],
+                "artifact_ids": [],
+                "redacted_output": None,
+                "purpose": "compression",
+            },
+        )
+        try:
+            summary = manager.parse_continuity_summary(output)
+        except CompressionError as exc:
+            return self._record_compression_failed(
+                session=session,
+                run=run,
+                reason=exc.reason,
+                prompt_turn_counter=prompt_turn_counter,
+                token_estimate={"before": dict(initial_estimate)},
+            )
+        summary_json = manager.canonical_summary_json(summary)
+        retained_after = _replace_compressed_history(
+            retained_messages=retained_messages,
+            plan=plan,
+            summary_json=summary_json,
+        )
+        trigger = "compression"
+        omitted_count = 0
+        if prior_optimization is not None:
+            prior_metadata = prior_optimization.get("metadata", {})
+            if prior_metadata.get("trigger") == "omission":
+                trigger = "omission | compression"
+                omitted_count = int(prior_metadata.get("omitted_tool_result_count", 0))
+        artifact_refs = sorted(
+            {
+                artifact_ref
+                for message in plan.evicted_messages
+                for artifact_ref in message.artifact_refs
+            }
+        )
+        return {
+            "retained_messages": retained_after,
+            "snapshot_messages": retained_after,
+            "summary": summary_json,
+            "artifact_refs": artifact_refs,
+            "before_estimate": dict(initial_estimate),
+            "compression_estimate": plan.estimate.to_dict(),
+            "metadata": {
+                "trigger": trigger,
+                "omitted_tool_result_count": omitted_count,
+                "evicted_message_count": len(plan.evicted_messages),
+                "evicted_model_call_group_count": len(plan.selected_model_call_group_ids),
+                "selected_model_call_group_ids": list(plan.selected_model_call_group_ids),
+                "retain_recent_model_calls": retain_recent_model_calls,
+                "reduced_from_tokens": initial_estimate["total_tokens"],
+                "reduced_to_tokens": None,
+                "message": "",
+            },
+        }
+
+    def _record_compression_failed(
+        self,
+        *,
+        session: Session,
+        run: Run,
+        reason: str,
+        prompt_turn_counter: int,
+        token_estimate: dict[str, Any],
+    ) -> dict[str, Any]:
+        message = _compression_failure_message(reason)
+        self._append_event(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            kind="compression_failed",
+            payload={
+                "error_class": "compression_failed",
+                "reason": reason,
+                "message": message,
+                "token_estimate": token_estimate,
+            },
+        )
+        checkpoint = self._save_checkpoint(
+            session=session,
+            run=run,
+            kind="context",
+            state={
+                "session_status": session.status,
+                "run_status": run.status,
+                "prompt_turn_counter": prompt_turn_counter,
+                "context_snapshot_id": run.context_snapshot_id,
+                "active_skill_records": run.active_skills,
+                "latest_artifact_ids": [],
+                "latest_error_summary": message,
+                "error_class": "compression_failed",
+                "reason": reason,
+                "token_estimate": token_estimate,
+            },
+            summary=message,
+        )
+        self._append_event(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            kind="checkpoint_written",
+            payload={"checkpoint_id": checkpoint.checkpoint_id, "kind": checkpoint.kind},
+        )
+        return {
+            "failed": True,
+            "message": message,
+            "metadata": {
+                "trigger": "compression",
+                "failed": True,
+                "reason": reason,
+                "message": message,
             },
         }
 
@@ -508,6 +895,92 @@ class PromptAgentExecutor:
                 "context_snapshot_id": snapshot.context_snapshot_id,
                 "checkpoint_id": checkpoint.checkpoint_id,
                 "omitted_tool_result_count": metadata["omitted_tool_result_count"],
+                "artifact_refs": optimization["artifact_refs"],
+                "reduced_from_tokens": metadata["reduced_from_tokens"],
+                "reduced_to_tokens": metadata["reduced_to_tokens"],
+                "token_estimate": {
+                    "before": dict(optimization["before_estimate"]),
+                    "after": dict(after_estimate),
+                },
+            },
+        )
+
+    def _persist_compression(
+        self,
+        *,
+        session: Session,
+        run: Run,
+        optimization: dict[str, Any],
+        after_estimate: dict[str, Any],
+        prompt_turn_counter: int,
+    ) -> None:
+        metadata = optimization["metadata"]
+        snapshot_store = ContextSnapshotStore(
+            connection=self.artifact_store.connection,
+            artifact_store=self.artifact_store,
+        )
+        context_settings = session.config_snapshot.get("context", {})
+        snapshot = snapshot_store.save_compression_snapshot(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            trigger=metadata["trigger"],
+            source_checkpoint_id=run.latest_checkpoint_id,
+            active_skill_records=run.active_skills,
+            summary=optimization["summary"],
+            retained_messages=[
+                message.to_dict() for message in optimization["snapshot_messages"]
+            ],
+            omitted_tool_result_count=metadata["omitted_tool_result_count"],
+            evicted_message_count=metadata["evicted_message_count"],
+            evicted_model_call_group_count=metadata["evicted_model_call_group_count"],
+            artifact_refs=optimization["artifact_refs"],
+            token_estimate={
+                "before": dict(optimization["before_estimate"]),
+                "after": dict(after_estimate),
+                "compression_input": dict(optimization["compression_estimate"]),
+                "window_tokens": int(context_settings.get("window_tokens", 200000)),
+                "compress_history_at_ratio": float(
+                    context_settings.get("compress_history_at_ratio", 0.80)
+                ),
+            },
+        )
+        if self.run_store is not None:
+            self.run_store.update_context_snapshot(
+                run.run_id,
+                context_snapshot_id=snapshot.context_snapshot_id,
+            )
+        checkpoint = self._save_checkpoint(
+            session=session,
+            run=run,
+            kind="context",
+            state={
+                "session_status": session.status,
+                "run_status": run.status,
+                "prompt_turn_counter": prompt_turn_counter,
+                "context_snapshot_id": snapshot.context_snapshot_id,
+                "active_skill_records": run.active_skills,
+                "latest_artifact_ids": optimization["artifact_refs"],
+                "latest_error_summary": None,
+                "token_estimate": {
+                    "before": dict(optimization["before_estimate"]),
+                    "after": dict(after_estimate),
+                },
+            },
+            summary="Context compressed.",
+        )
+        self._append_event(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            kind="context_optimized",
+            payload={
+                "trigger": metadata["trigger"],
+                "context_snapshot_id": snapshot.context_snapshot_id,
+                "checkpoint_id": checkpoint.checkpoint_id,
+                "omitted_tool_result_count": metadata["omitted_tool_result_count"],
+                "evicted_message_count": metadata["evicted_message_count"],
+                "evicted_model_call_group_count": metadata[
+                    "evicted_model_call_group_count"
+                ],
                 "artifact_refs": optimization["artifact_refs"],
                 "reduced_from_tokens": metadata["reduced_from_tokens"],
                 "reduced_to_tokens": metadata["reduced_to_tokens"],
@@ -598,6 +1071,96 @@ def _artifact_ids(result: AgentRunResult) -> list[str]:
     for tool_result in result.tool_results:
         artifact_ids.extend(tool_result.get("artifacts", []))
     return artifact_ids
+
+
+def _replace_compressed_history(
+    *,
+    retained_messages: list[ConversationMessage],
+    plan: Any,
+    summary_json: str,
+) -> list[ConversationMessage]:
+    evicted_ids = {message.seq for message in plan.evicted_messages}
+    previous_summary_id = (
+        None if plan.previous_summary_message is None else plan.previous_summary_message.seq
+    )
+    insertion_seq = min(evicted_ids)
+    summary_inserted = False
+    retained_after: list[ConversationMessage] = []
+    for message in retained_messages:
+        if message.seq == previous_summary_id or message.seq in evicted_ids:
+            if not summary_inserted and message.seq >= insertion_seq:
+                retained_after.append(
+                    ConversationMessage(
+                        seq=insertion_seq,
+                        role="system",
+                        kind="context_summary",
+                        turn_id=None,
+                        model_call_id=None,
+                        tool_call_id=None,
+                        content=summary_json,
+                    )
+                )
+                summary_inserted = True
+            continue
+        retained_after.append(message)
+    if not summary_inserted:
+        retained_after.insert(
+            0,
+            ConversationMessage(
+                seq=insertion_seq,
+                role="system",
+                kind="context_summary",
+                turn_id=None,
+                model_call_id=None,
+                tool_call_id=None,
+                content=summary_json,
+            ),
+        )
+    return sorted(retained_after, key=lambda message: message.seq)
+
+
+def _compression_failure_message(reason: str) -> str:
+    if reason == "oldest_group_too_large":
+        return (
+            "Context compression could not fit the oldest eligible history group. "
+            "The current turn was aborted. Start a new session to continue with a "
+            "fresh context window."
+        )
+    return "Context compression failed. The current turn was aborted."
+
+
+def make_compression_model_callable(model: object) -> Callable[[CompressionContextFrame], str]:
+    def _call(frame: CompressionContextFrame) -> str:
+        messages: list[dict[str, str]] = []
+        if frame.previous_summary is not None:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": frame.previous_summary,
+                }
+            )
+        for message in frame.evicted_messages:
+            messages.append(_provider_message_from_conversation(message))
+        messages.append(_provider_message_from_conversation(frame.instruction_segment))
+        response = model.invoke(messages)
+        content = getattr(response, "content", response)
+        if isinstance(content, str):
+            return content
+        return json.dumps(content, ensure_ascii=False, sort_keys=True)
+
+    return _call
+
+
+def _provider_message_from_conversation(message: ConversationMessage) -> dict[str, str]:
+    content = message.content
+    if not isinstance(content, str):
+        content = json.dumps(content, ensure_ascii=False, sort_keys=True)
+    if message.artifact_refs:
+        content = (
+            f"{content}\n\nArtifact references: "
+            f"{', '.join(message.artifact_refs)}"
+        )
+    return {"role": message.role, "content": content}
 
 
 def _conversation_messages(conversation: list[dict[str, Any]]) -> list[ConversationMessage]:

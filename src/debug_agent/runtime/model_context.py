@@ -170,6 +170,42 @@ class TokenEstimator:
             },
         )
 
+    def estimate_compression_context_frame(
+        self,
+        frame: CompressionContextFrame,
+    ) -> TokenEstimate:
+        if not isinstance(frame, CompressionContextFrame):
+            raise TypeError("TokenEstimator requires a CompressionContextFrame input")
+
+        messages = list(frame.evicted_messages) + [frame.instruction_segment]
+        previous_summary_tokens = 0
+        if frame.previous_summary is not None:
+            previous_summary_tokens = self._estimate_message(
+                ConversationMessage(
+                    seq=0,
+                    role="system",
+                    kind="previous_context_summary",
+                    turn_id=None,
+                    model_call_id=None,
+                    tool_call_id=None,
+                    content=frame.previous_summary,
+                )
+            )
+        message_tokens = previous_summary_tokens + sum(
+            self._estimate_message(message) for message in messages
+        )
+        return TokenEstimate(
+            total_tokens=self.FRAME_STRUCTURAL_TOKENS + message_tokens,
+            estimator_version=self.VERSION,
+            input_shape={
+                "frame_type": "compression_context",
+                "previous_summary_present": frame.previous_summary is not None,
+                "evicted_message_count": len(frame.evicted_messages),
+                "message_kinds": [message.kind for message in messages],
+                "message_roles": [message.role for message in messages],
+            },
+        )
+
     def _estimate_message(self, message: ConversationMessage) -> int:
         metadata_text = _stable_json(message.metadata)
         artifact_text = _stable_json(message.artifact_refs)

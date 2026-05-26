@@ -85,6 +85,9 @@ class LangChainAgentLoopAdapter:
         except KeyboardInterrupt as exc:
             return _error_result("cancelled", "cancelled", str(exc), source="model")
         except Exception as exc:
+            compression_failed = _compression_failed_abort_result(exc)
+            if compression_failed is not None:
+                return compression_failed
             return _error_result("failed", "model_error", str(exc), source="model")
 
     def stream(
@@ -169,6 +172,9 @@ class LangChainAgentLoopAdapter:
         except KeyboardInterrupt as exc:
             return _error_result("cancelled", "cancelled", str(exc), source="model")
         except Exception as exc:
+            compression_failed = _compression_failed_abort_result(exc)
+            if compression_failed is not None:
+                return compression_failed
             return _error_result("failed", "model_error", str(exc), source="model")
 
     def cancel(self, run_id: str) -> None:
@@ -898,3 +904,17 @@ def _error_result(
         },
         metadata=metadata or {},
     )
+
+
+def _compression_failed_abort_result(exc: Exception) -> AgentRunResult | None:
+    to_result = getattr(exc, "to_result", None)
+    if not callable(to_result):
+        return None
+    result = to_result()
+    if not isinstance(result, AgentRunResult):
+        return None
+    if not isinstance(result.error, dict):
+        return None
+    if result.error.get("error_class") != "compression_failed":
+        return None
+    return result

@@ -39,6 +39,7 @@ RUN_EVENT_KINDS = frozenset(
         "skill_activated",
         "skill_reference_loaded",
         "context_optimized",
+        "compression_failed",
         "checkpoint_written",
         "artifact_registered",
     }
@@ -60,6 +61,8 @@ ERROR_CLASSES = frozenset(
         "internal_error",
         "timeout",
         "cancelled",
+        "compression_failed",
+        "context_limit_exceeded",
     }
 )
 

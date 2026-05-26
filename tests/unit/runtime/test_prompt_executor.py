@@ -387,6 +387,393 @@ def test_tool_loop_followup_runs_omission_before_second_model_call(tmp_path) -> 
     db.close()
 
 
+def test_tool_loop_followup_runs_compression_before_second_model_call(tmp_path) -> None:
+    class ToolLoopModel:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.messages_by_call = []
+
+        def invoke(self, messages):
+            self.calls += 1
+            self.messages_by_call.append(messages)
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "read_file_0",
+                                "name": "read_file",
+                                "args": {"path": "notes.txt"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "done", "tool_calls": [], "usage": {}},
+            )()
+
+    compression_calls = 0
+
+    def compression_model(_frame):
+        nonlocal compression_calls
+        compression_calls += 1
+        return json.dumps(
+            {
+                "task_goal": "continue debugging",
+                "completed_work": ["compressed before tool follow-up"],
+                "inspected_or_modified_files": [],
+                "remaining_work": [],
+                "next_plan": [],
+                "key_decisions": [],
+                "constraints": [],
+            }
+        )
+
+    (
+        workspace,
+        db,
+        _sessions,
+        runs,
+        events,
+        _checkpoints,
+        artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, ToolLoopModel())
+    session = type(session)(
+        **{
+            **session.to_dict(),
+            "config_snapshot": {
+                **session.config_snapshot,
+                "context": {
+                    "window_tokens": 1000,
+                    "omit_old_tool_results_at_ratio": 1.0,
+                    "compress_history_at_ratio": 0.7,
+                    "retain_recent_model_calls": 1,
+                    "compression_reserved_output_tokens": 40,
+                },
+            },
+        }
+    )
+    (workspace / "notes.txt").write_text("fresh tool result " * 220, encoding="utf-8")
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=CheckpointStore(db.connection),
+        artifact_store=artifacts,
+        adapter=LangChainAgentLoopAdapter(
+            model=ToolLoopModel(),
+            tool_broker=ToolBroker(event_writer=events, artifact_store=artifacts),
+        ),
+        tool_definitions=tool_definitions(),
+        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        run_store=runs,
+        compression_model=compression_model,
+    )
+    conversation = [
+        {
+            "seq": 1,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-old",
+            "model_call_id": "call-old",
+            "content": "old output " * 12,
+            "estimated_tokens": 40,
+        },
+        {
+            "seq": 2,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-consumed",
+            "model_call_id": "call-consumed",
+            "content": "Consumed old output.",
+            "estimated_tokens": 10,
+            "metadata": {"consumed_model_call_ids": ["call-old"]},
+        },
+    ]
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="read notes",
+        workspace_root=str(workspace),
+        conversation=conversation,
+    )
+
+    second_call_text = "\n".join(
+        message["content"] for message in executor.adapter.model.messages_by_call[1]
+    )
+    assert result.status == "completed"
+    assert compression_calls == 1
+    assert "old output " * 4 not in second_call_text
+    assert "compressed before tool follow-up" in second_call_text
+    assert result.metadata["context_optimization"]["trigger"] == "compression"
+    assert [event.kind for event in events.list_for_run(run.run_id)].count(
+        "context_optimized"
+    ) == 1
+    db.close()
+
+
+def test_tool_loop_followup_compression_failure_preserves_boundary(tmp_path) -> None:
+    class ToolLoopModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "read_file_0",
+                                "name": "read_file",
+                                "args": {"path": "notes.txt"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            raise AssertionError("ordinary follow-up model call should not run")
+
+    (
+        workspace,
+        db,
+        _sessions,
+        runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, ToolLoopModel())
+    session = type(session)(
+        **{
+            **session.to_dict(),
+            "config_snapshot": {
+                **session.config_snapshot,
+                "context": {
+                    "window_tokens": 1000,
+                    "omit_old_tool_results_at_ratio": 1.0,
+                    "compress_history_at_ratio": 0.7,
+                    "retain_recent_model_calls": 1,
+                    "compression_reserved_output_tokens": 40,
+                },
+            },
+        }
+    )
+    (workspace / "notes.txt").write_text("fresh tool result " * 220, encoding="utf-8")
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=artifacts,
+        adapter=LangChainAgentLoopAdapter(
+            model=ToolLoopModel(),
+            tool_broker=ToolBroker(event_writer=events, artifact_store=artifacts),
+        ),
+        tool_definitions=tool_definitions(),
+        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        run_store=runs,
+        compression_model=lambda _frame: "",
+    )
+    conversation = [
+        {
+            "seq": 1,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-old",
+            "model_call_id": "call-old",
+            "content": "old output " * 12,
+            "estimated_tokens": 40,
+        },
+        {
+            "seq": 2,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-consumed",
+            "model_call_id": "call-consumed",
+            "content": "Consumed old output.",
+            "estimated_tokens": 10,
+            "metadata": {"consumed_model_call_ids": ["call-old"]},
+        },
+    ]
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="read notes",
+        workspace_root=str(workspace),
+        conversation=conversation,
+    )
+
+    assert result.status == "failed"
+    assert result.error["error_class"] == "compression_failed"
+    assert result.metadata["conversation_writeback"] is not None
+    assert [message["content"] for message in result.metadata["conversation_writeback"]] == [
+        message["content"] for message in conversation
+    ]
+    assert all(
+        message["kind"] != "context_summary"
+        for message in result.metadata["conversation_writeback"]
+    )
+    persisted = events.list_for_run(run.run_id)
+    assert "compression_failed" in [event.kind for event in persisted]
+    assert "assistant_message" not in [event.kind for event in persisted]
+    assert [checkpoint.kind for checkpoint in checkpoints.list_for_session(session.session_id)] == [
+        "context"
+    ]
+    assert runs.get(run.run_id).status == "running"
+    assert db.connection.execute(
+        "SELECT COUNT(*) FROM context_snapshots WHERE run_id = ?",
+        (run.run_id,),
+    ).fetchone()[0] == 0
+    db.close()
+
+
+def test_tool_loop_followup_omission_then_compression_failure_does_not_write_back_omission(
+    tmp_path,
+) -> None:
+    class ToolLoopModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "read_file_0",
+                                "name": "read_file",
+                                "args": {"path": "notes.txt"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            raise AssertionError("ordinary follow-up model call should not run")
+
+    (
+        workspace,
+        db,
+        _sessions,
+        runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, ToolLoopModel())
+    session = type(session)(
+        **{
+            **session.to_dict(),
+            "config_snapshot": {
+                **session.config_snapshot,
+                "context": {
+                    "window_tokens": 1000,
+                    "omit_old_tool_results_at_ratio": 0.95,
+                    "compress_history_at_ratio": 0.7,
+                    "retain_recent_model_calls": 1,
+                    "compression_reserved_output_tokens": 40,
+                },
+            },
+        }
+    )
+    (workspace / "notes.txt").write_text("fresh tool result " * 220, encoding="utf-8")
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=artifacts,
+        adapter=LangChainAgentLoopAdapter(
+            model=ToolLoopModel(),
+            tool_broker=ToolBroker(event_writer=events, artifact_store=artifacts),
+        ),
+        tool_definitions=tool_definitions(),
+        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        run_store=runs,
+        compression_model=lambda _frame: "",
+    )
+    long_tool_output = "full old tool output " * 20
+    conversation = [
+        {
+            "seq": 1,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-old",
+            "model_call_id": "call-old",
+            "content": "old output",
+            "estimated_tokens": 10,
+        },
+        {
+            "seq": 2,
+            "role": "tool",
+            "kind": "tool_result",
+            "turn_id": "turn-old",
+            "model_call_id": "call-old",
+            "tool_call_id": "tool-old",
+            "content": long_tool_output,
+            "artifact_refs": ["art_old"],
+            "estimated_tokens": 60,
+        },
+        {
+            "seq": 3,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-consumed",
+            "model_call_id": "call-consumed",
+            "content": "Consumed old output.",
+            "estimated_tokens": 10,
+            "metadata": {"consumed_model_call_ids": ["call-old"]},
+        },
+    ]
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="read notes",
+        workspace_root=str(workspace),
+        conversation=conversation,
+    )
+
+    marker = "[Earlier tool result omitted for brevity. See artifact references or trace for full details.]"
+    assert result.status == "failed"
+    assert result.error["error_class"] == "compression_failed"
+    writeback_contents = [
+        message["content"] for message in result.metadata["conversation_writeback"]
+    ]
+    assert marker not in writeback_contents
+    assert long_tool_output in writeback_contents
+    assert [checkpoint.kind for checkpoint in checkpoints.list_for_session(session.session_id)] == [
+        "context"
+    ]
+    assert db.connection.execute(
+        "SELECT COUNT(*) FROM context_snapshots WHERE run_id = ?",
+        (run.run_id,),
+    ).fetchone()[0] == 0
+    assert "compression_failed" in [
+        event.kind for event in events.list_for_run(run.run_id)
+    ]
+    db.close()
+
+
 def test_tool_loop_current_buffer_seq_does_not_protect_retained_tool_result(
     tmp_path,
 ) -> None:
@@ -1039,6 +1426,394 @@ def test_prompt_executor_omits_old_tool_results_and_persists_context_snapshot(
     assert context_events[0].payload["reduced_to_tokens"] == (
         result.metadata["context_estimate"]["total_tokens"]
     )
+    db.close()
+
+
+def test_prompt_executor_automatically_compresses_before_initial_model_call(
+    tmp_path,
+) -> None:
+    class RecordingAdapter:
+        def __init__(self) -> None:
+            self.request = None
+
+        def run(self, request, context):
+            self.request = request
+            return AgentRunResult(
+                status="completed",
+                assistant_output="answer",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+        def cancel(self, run_id: str) -> None:
+            raise AssertionError("cancel should not be called")
+
+    compression_frames = []
+
+    def compression_model(frame):
+        compression_frames.append(frame)
+        return json.dumps(
+            {
+                "task_goal": "continue debugging",
+                "completed_work": ["read old output"],
+                "inspected_or_modified_files": ["old.py"],
+                "remaining_work": ["finish fix"],
+                "next_plan": ["run unit tests"],
+                "key_decisions": ["keep snapshots non-authoritative"],
+                "constraints": ["no manual compression"],
+                "visible_artifact_refs": ["art_old"],
+            }
+        )
+
+    (
+        workspace,
+        db,
+        _sessions,
+        runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    adapter = RecordingAdapter()
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=artifacts,
+        adapter=adapter,
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        run_store=runs,
+        compression_model=compression_model,
+    )
+    session = type(session)(
+        **{
+            **session.to_dict(),
+            "config_snapshot": {
+                **session.config_snapshot,
+                "context": {
+                    "window_tokens": 420,
+                    "omit_old_tool_results_at_ratio": 1.0,
+                    "compress_history_at_ratio": 0.1,
+                    "retain_recent_model_calls": 1,
+                    "compression_reserved_output_tokens": 40,
+                },
+            },
+        }
+    )
+    conversation = [
+        {
+            "seq": 1,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-1",
+            "model_call_id": "call-1",
+            "content": "old output " * 40,
+            "estimated_tokens": 120,
+        },
+        {
+            "seq": 2,
+            "role": "tool",
+            "kind": "tool_result",
+            "turn_id": "turn-1",
+            "model_call_id": "call-1",
+            "tool_call_id": "tool-1",
+            "content": "artifact art_old",
+            "artifact_refs": ["art_old"],
+            "estimated_tokens": 8,
+        },
+        {
+            "seq": 3,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-2",
+            "model_call_id": "call-2",
+            "content": "consumed old call",
+            "estimated_tokens": 8,
+            "metadata": {"consumed_model_call_ids": ["call-1"]},
+        },
+    ]
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="continue",
+        workspace_root=str(workspace),
+        conversation=conversation,
+    )
+
+    sent_contents = [
+        segment.content
+        for segment in adapter.request.model_context_frame.ordered_message_segments()
+    ]
+    assert result.status == "completed"
+    assert len(compression_frames) == 1
+    assert [message.seq for message in compression_frames[0].evicted_messages] == [1, 2]
+    assert "old output " * 4 not in sent_contents
+    assert any('"task_goal":"continue debugging"' in content for content in sent_contents)
+    assert result.metadata["context_optimization"]["trigger"] == "compression"
+    assert result.metadata["context_optimization"]["evicted_model_call_group_count"] == 1
+    assert result.metadata["conversation_writeback"][0]["kind"] == "context_summary"
+
+    persisted_kinds = [event.kind for event in events.list_for_run(run.run_id)]
+    assert persisted_kinds[:4] == [
+        "user_message",
+        "model_call_started",
+        "model_call_completed",
+        "context_optimized",
+    ]
+    assert events.list_for_run(run.run_id)[1].payload["purpose"] == "compression"
+    assert events.list_for_run(run.run_id)[1].payload["tool_schema_bindings"] == []
+    row = db.connection.execute(
+        "SELECT trigger, summary, evicted_message_count, evicted_model_call_group_count FROM context_snapshots WHERE run_id = ?",
+        (run.run_id,),
+    ).fetchone()
+    assert row[0] == "compression"
+    assert '"visible_artifact_refs":["art_old"]' in row[1]
+    assert row[2] == 2
+    assert row[3] == 1
+    assert any(checkpoint.kind == "context" for checkpoint in checkpoints.list_for_session(session.session_id))
+    db.close()
+
+
+def test_prompt_executor_compression_failure_aborts_without_conversation_mutation(
+    tmp_path,
+) -> None:
+    class FailingAdapter:
+        def run(self, request, context):
+            raise AssertionError("ordinary model call should not run after compression failure")
+
+        def cancel(self, run_id: str) -> None:
+            raise AssertionError("cancel should not be called")
+
+    (
+        workspace,
+        db,
+        _sessions,
+        runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=artifacts,
+        adapter=FailingAdapter(),
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        run_store=runs,
+        compression_model=lambda _frame: "",
+    )
+    session = type(session)(
+        **{
+            **session.to_dict(),
+            "config_snapshot": {
+                **session.config_snapshot,
+                "context": {
+                    "window_tokens": 420,
+                    "omit_old_tool_results_at_ratio": 1.0,
+                    "compress_history_at_ratio": 0.1,
+                    "retain_recent_model_calls": 1,
+                    "compression_reserved_output_tokens": 40,
+                },
+            },
+        }
+    )
+    conversation = [
+        {
+            "seq": 1,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-1",
+            "model_call_id": "call-1",
+            "content": "old output " * 40,
+            "estimated_tokens": 120,
+        },
+        {
+            "seq": 2,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-2",
+            "model_call_id": "call-2",
+            "content": "consumed old",
+            "estimated_tokens": 8,
+            "metadata": {"consumed_model_call_ids": ["call-1"]},
+        },
+    ]
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="continue",
+        workspace_root=str(workspace),
+        conversation=conversation,
+    )
+
+    assert result.status == "failed"
+    assert result.error["error_class"] == "compression_failed"
+    assert [message["content"] for message in result.metadata["conversation_writeback"]] == [
+        message["content"] for message in conversation
+    ]
+    assert all(
+        message["kind"] != "context_summary"
+        for message in result.metadata["conversation_writeback"]
+    )
+    assert db.connection.execute(
+        "SELECT COUNT(*) FROM context_snapshots WHERE run_id = ?",
+        (run.run_id,),
+    ).fetchone()[0] == 0
+    persisted = events.list_for_run(run.run_id)
+    assert [event.kind for event in persisted] == [
+        "user_message",
+        "model_call_started",
+        "model_call_completed",
+        "compression_failed",
+        "checkpoint_written",
+    ]
+    assert persisted[1].payload["purpose"] == "compression"
+    assert persisted[3].payload["error_class"] == "compression_failed"
+    context_checkpoint = next(
+        checkpoint for checkpoint in checkpoints.list_for_session(session.session_id)
+        if checkpoint.kind == "context"
+    )
+    assert context_checkpoint.state["latest_error_summary"] == (
+        "Context compression failed. The current turn was aborted."
+    )
+    assert runs.get(run.run_id).status == "running"
+    db.close()
+
+
+def test_omission_plus_compression_writes_only_final_snapshot(tmp_path) -> None:
+    class RecordingAdapter:
+        def run(self, request, context):
+            return AgentRunResult(
+                status="completed",
+                assistant_output="answer",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+        def cancel(self, run_id: str) -> None:
+            raise AssertionError("cancel should not be called")
+
+    def compression_model(_frame):
+        return json.dumps(
+            {
+                "task_goal": "continue debugging",
+                "completed_work": ["omitted and compressed"],
+                "inspected_or_modified_files": [],
+                "remaining_work": [],
+                "next_plan": [],
+                "key_decisions": [],
+                "constraints": [],
+            }
+        )
+
+    (
+        workspace,
+        db,
+        _sessions,
+        runs,
+        events,
+        _checkpoints,
+        artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=CheckpointStore(db.connection),
+        artifact_store=artifacts,
+        adapter=RecordingAdapter(),
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        run_store=runs,
+        compression_model=compression_model,
+    )
+    session = type(session)(
+        **{
+            **session.to_dict(),
+            "config_snapshot": {
+                **session.config_snapshot,
+                "context": {
+                    "window_tokens": 500,
+                    "omit_old_tool_results_at_ratio": 0.1,
+                    "compress_history_at_ratio": 0.1,
+                    "retain_recent_model_calls": 1,
+                    "compression_reserved_output_tokens": 40,
+                },
+            },
+        }
+    )
+    conversation = [
+        {
+            "seq": 1,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-1",
+            "model_call_id": "call-1",
+            "content": "old",
+            "estimated_tokens": 10,
+        },
+        {
+            "seq": 2,
+            "role": "tool",
+            "kind": "tool_result",
+            "turn_id": "turn-1",
+            "model_call_id": "call-1",
+            "tool_call_id": "tool-1",
+            "content": "full old tool output " * 80,
+            "artifact_refs": ["art_full"],
+            "estimated_tokens": 60,
+        },
+        {
+            "seq": 3,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-2",
+            "model_call_id": "call-2",
+            "content": "Consumed older result.",
+            "estimated_tokens": 10,
+            "metadata": {"consumed_model_call_ids": ["call-1"]},
+        },
+    ]
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="continue",
+        workspace_root=str(workspace),
+        conversation=conversation,
+    )
+
+    rows = db.connection.execute(
+        "SELECT trigger FROM context_snapshots WHERE run_id = ?",
+        (run.run_id,),
+    ).fetchall()
+    context_events = [
+        event for event in events.list_for_run(run.run_id)
+        if event.kind == "context_optimized"
+    ]
+    assert result.status == "completed"
+    assert rows == [("omission | compression",)]
+    assert [event.payload["trigger"] for event in context_events] == [
+        "omission | compression"
+    ]
+    assert result.metadata["context_optimization"]["omitted_tool_result_count"] == 1
     db.close()
 
 
