@@ -617,7 +617,7 @@ Deliverables: `/tools`, consolidated local slash-command assertions, unsupported
 - [x] Ensure REPL startup approval-mode selection does not implement or replace 6B idle-state `Ctrl+Y` cycling.
 - [x] Add the deferred one-shot `semi-auto` skill activation integration test now that the CLI approval-mode option exists.
 - [x] Add a REPL startup `semi-auto` skill activation integration test that proves runtime-control activation is audit-only and does not request interactive approval.
-- [x] Update status bar to the exact Phase 1 format `model: <model> | approval: <approval> | context: <used> / <window> (<pct>) | tokens: <used> used`.
+- [x] Update status bar to the exact Phase 1 format `model: <model> | approval: <approval> | context: <used> / <window> (<pct>) | tokens: <used> used`, with initial REPL values rendered as `context: 0` and `tokens: 0` before the first estimate or usage event.
 - [x] Update status bar context before model calls, after omission/compression, and after provider usage or deterministic estimate fallback.
 - [x] Add unit tests for `/tools`, unsupported commands, local `/skills`/`/tools`/`/compress` routing, one-shot and REPL approval-mode option parsing/defaults, and exact status bar format.
 - [x] Add integration tests for `/tools`, `/skills`, `/compress` local routing and one-shot/REPL approval-mode selection where deterministic injected I/O can verify behavior without manual TTY interaction.

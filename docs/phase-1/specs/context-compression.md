@@ -780,6 +780,14 @@ The bottom status bar order is:
 model: <model> | approval: <approval> | context: <used> / <window> (<pct>) | tokens: <used> used
 ```
 
+Before the first context estimate or token-usage accounting event in a REPL
+session, the status bar renders zero-valued fields instead of unavailable
+placeholders:
+
+```text
+model: <model> | approval: <approval> | context: 0 | tokens: 0
+```
+
 Example:
 
 ```text

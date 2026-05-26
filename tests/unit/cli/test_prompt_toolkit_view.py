@@ -120,7 +120,7 @@ def test_prompt_toolkit_view_renders_welcome_messages_status_and_close_summary()
         StatusBarSnapshot(
             input_tokens=999,
             output_tokens=1_000,
-            total_tokens=None,
+            total_tokens=1_999,
             approval_mode="normal",
             model="fake-model",
             context_used_tokens=1250,
@@ -159,9 +159,49 @@ def test_prompt_toolkit_view_renders_welcome_messages_status_and_close_summary()
     assert "turn 1: completed 2s" in rendered
     assert (
         "model: fake-model | approval: normal | context: 1.2k / 5.0k (25%) | "
-        "tokens: unavailable used"
+        "tokens: 2.0k used"
     ) in rendered
     assert "session sess_full" not in rendered
+
+
+def test_prompt_toolkit_view_status_bar_renders_initial_zero_values() -> None:
+    view = _prompt_toolkit_view()
+
+    view.update_status_bar(
+        StatusBarSnapshot(
+            input_tokens=None,
+            output_tokens=None,
+            total_tokens=None,
+            approval_mode="normal",
+            model="fake-model",
+        )
+    )
+
+    assert view._status_bar_text() == (
+        "model: fake-model | approval: normal | context: 0 | tokens: 0"
+    )
+
+
+def test_prompt_toolkit_view_status_bar_preserves_estimated_context_and_usage_format() -> None:
+    view = _prompt_toolkit_view()
+
+    view.update_status_bar(
+        StatusBarSnapshot(
+            input_tokens=900,
+            output_tokens=350,
+            total_tokens=1250,
+            approval_mode="normal",
+            model="fake-model",
+            context_used_tokens=1250,
+            context_window_tokens=5000,
+            context_percent=25,
+        )
+    )
+
+    assert view._status_bar_text() == (
+        "model: fake-model | approval: normal | context: 1.2k / 5.0k (25%) | "
+        "tokens: 1.2k used"
+    )
 
 
 def test_prompt_toolkit_view_normal_submit_keeps_prompt_active() -> None:
@@ -595,7 +635,7 @@ def test_prompt_toolkit_view_streaming_redraw_preserves_bottom_status_region(
     assert view._current_turn_status_text() == "turn 1: running 2s"
     assert view._status_bar_text() == (
         "model: fake-model | approval: normal | context: 1.2k / 5.0k (25%) | "
-        "tokens: unavailable used"
+        "tokens: 0"
     )
 
 

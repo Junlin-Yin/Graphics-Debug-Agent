@@ -296,6 +296,10 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
   `model | approval | context | tokens`.
 - status bar displays context as `<used> / <window> (<pct>)`.
 - status bar displays cumulative token usage as `<used> used`.
+- before the first context estimate, status bar displays context as `0`, not
+  `unavailable`.
+- before the first provider usage or deterministic token estimate, status bar
+  displays tokens as `0`, not `unavailable used`.
 - provider token usage updates cumulative usage after model calls.
 - missing provider token usage falls back to deterministic estimates.
 - before each model call, context estimate updates status-bar context fields.
