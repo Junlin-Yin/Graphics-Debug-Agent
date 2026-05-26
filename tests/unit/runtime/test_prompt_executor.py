@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from debug_agent.adapters.langchain_adapter import LangChainAgentLoopAdapter
 from debug_agent.adapters.model_factory import FakeChatModel
 from debug_agent.persistence.artifacts import ArtifactStore
@@ -12,6 +14,7 @@ from debug_agent.persistence.sqlite import RuntimeDatabase
 from debug_agent.runtime.config import PHASE_0_SYSTEM_PROMPT
 from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.model_context import TokenEstimator
+from debug_agent.runtime.orchestrator import ReplRuntime
 from debug_agent.runtime.prompt_executor import PromptAgentExecutor
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.tools.broker import ToolBroker
@@ -45,6 +48,7 @@ def _runtime(tmp_path, model):
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        run_store=runs,
     )
     return (
         workspace,
@@ -254,6 +258,232 @@ def test_tool_loop_followup_records_new_context_estimate_before_second_call(
         followup_estimate["total_tokens"]
     )
     assert query_state["continuation_reason"] == "final_assistant_response"
+    db.close()
+
+
+def test_tool_loop_followup_runs_omission_before_second_model_call(tmp_path) -> None:
+    class ToolLoopModel:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.messages_by_call = []
+
+        def invoke(self, messages):
+            self.calls += 1
+            self.messages_by_call.append(messages)
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "read_file_0",
+                                "name": "read_file",
+                                "args": {"path": "notes.txt"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "done", "tool_calls": [], "usage": {}},
+            )()
+
+    (
+        workspace,
+        db,
+        _sessions,
+        runs,
+        events,
+        checkpoints,
+        _artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, ToolLoopModel())
+    session = type(session)(
+        **{
+            **session.to_dict(),
+            "config_snapshot": {
+                **session.config_snapshot,
+                "context": {
+                    "window_tokens": 1000,
+                    "omit_old_tool_results_at_ratio": 0.9,
+                    "retain_recent_model_calls": 1,
+                },
+            },
+        }
+    )
+    (workspace / "notes.txt").write_text("fresh tool result " * 220, encoding="utf-8")
+    conversation = [
+        {
+            "seq": 1,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-old",
+            "model_call_id": "call-old",
+            "content": "Inspect old output.",
+        },
+        {
+            "seq": 2,
+            "role": "assistant",
+            "kind": "tool_call",
+            "turn_id": "turn-old",
+            "model_call_id": "call-old",
+            "tool_call_id": "tool-old",
+            "content": "read_file",
+        },
+        {
+            "seq": 3,
+            "role": "tool",
+            "kind": "tool_result",
+            "turn_id": "turn-old",
+            "model_call_id": "call-old",
+            "tool_call_id": "tool-old",
+            "content": "full old tool output " * 20,
+            "artifact_refs": ["art_old"],
+        },
+        {
+            "seq": 4,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-consumed",
+            "model_call_id": "call-consumed",
+            "content": "Consumed old output.",
+            "metadata": {"consumed_model_call_ids": ["call-old"]},
+        },
+    ]
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="read notes",
+        workspace_root=str(workspace),
+        conversation=conversation,
+    )
+
+    marker = "[Earlier tool result omitted for brevity. See artifact references or trace for full details.]"
+    first_call_text = "\n".join(
+        message["content"] for message in executor.adapter.model.messages_by_call[0]
+    )
+    second_call_text = "\n".join(
+        message["content"] for message in executor.adapter.model.messages_by_call[1]
+    )
+    assert result.status == "completed"
+    assert "full old tool output" in first_call_text
+    assert marker not in first_call_text
+    assert marker in second_call_text
+    assert "full old tool output" not in second_call_text
+    assert result.metadata["context_optimization"]["trigger"] == "omission"
+    assert result.metadata["conversation_writeback"][2]["content"] == marker
+    assert runs.get(run.run_id).context_snapshot_id is not None
+    assert any(checkpoint.kind == "context" for checkpoint in checkpoints.list_for_session(session.session_id))
+    assert [event.kind for event in events.list_for_run(run.run_id)].count(
+        "context_optimized"
+    ) == 1
+    db.close()
+
+
+def test_tool_loop_current_buffer_seq_does_not_protect_retained_tool_result(
+    tmp_path,
+) -> None:
+    class ToolLoopModel:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.messages_by_call = []
+
+        def invoke(self, messages):
+            self.calls += 1
+            self.messages_by_call.append(messages)
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "read_file_0",
+                                "name": "read_file",
+                                "args": {"path": "notes.txt"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "done", "tool_calls": [], "usage": {}},
+            )()
+
+    (
+        workspace,
+        db,
+        _sessions,
+        _runs,
+        _events,
+        _checkpoints,
+        _artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, ToolLoopModel())
+    session = type(session)(
+        **{
+            **session.to_dict(),
+            "config_snapshot": {
+                **session.config_snapshot,
+                "context": {
+                    "window_tokens": 1000,
+                    "omit_old_tool_results_at_ratio": 0.9,
+                    "retain_recent_model_calls": 1,
+                },
+            },
+        }
+    )
+    (workspace / "notes.txt").write_text("fresh tool result " * 220, encoding="utf-8")
+    conversation = [
+        {
+            "seq": 1,
+            "role": "tool",
+            "kind": "tool_result",
+            "turn_id": "turn-old",
+            "model_call_id": "call-old",
+            "tool_call_id": "tool-old",
+            "content": "full old tool output " * 20,
+            "artifact_refs": ["art_old"],
+        },
+        {
+            "seq": 2,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-consumed",
+            "model_call_id": "call-consumed",
+            "content": "Consumed old output.",
+            "metadata": {"consumed_model_call_ids": ["call-old"]},
+        },
+    ]
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="read notes",
+        workspace_root=str(workspace),
+        conversation=conversation,
+    )
+
+    marker = "[Earlier tool result omitted for brevity. See artifact references or trace for full details.]"
+    second_call_text = "\n".join(
+        message["content"] for message in executor.adapter.model.messages_by_call[1]
+    )
+    assert result.status == "completed"
+    assert marker in second_call_text
+    assert "full old tool output" not in second_call_text
+    assert result.metadata["conversation_writeback"][0]["content"] == marker
     db.close()
 
 
@@ -634,4 +864,298 @@ def test_prompt_executor_writes_failed_model_event_and_error_checkpoint(tmp_path
     assert latest_checkpoint.state["latest_error_summary"] == "provider failed"
     assert sessions.get(session.session_id).status == "running"
     assert runs.get(run.run_id).status == "running"
+    db.close()
+
+
+def test_prompt_executor_omits_old_tool_results_and_persists_context_snapshot(
+    tmp_path,
+) -> None:
+    class RecordingAdapter:
+        def __init__(self) -> None:
+            self.request = None
+
+        def run(self, request, context):
+            self.request = request
+            return AgentRunResult(
+                status="completed",
+                assistant_output="answer",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+        def cancel(self, run_id: str) -> None:
+            raise AssertionError("cancel should not be called")
+
+    (
+        workspace,
+        db,
+        _sessions,
+        runs,
+        events,
+        checkpoints,
+        _artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    adapter = RecordingAdapter()
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=ArtifactStore(db.connection, db.path.parent),
+        adapter=adapter,
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        run_store=runs,
+    )
+    session = type(session)(
+        **{
+            **session.to_dict(),
+            "config_snapshot": {
+                **session.config_snapshot,
+                "context": {
+                    "window_tokens": 120,
+                    "omit_old_tool_results_at_ratio": 0.1,
+                    "retain_recent_model_calls": 1,
+                },
+            },
+        }
+    )
+    long_output = "full old tool output " * 80
+    conversation = [
+        {
+            "seq": 1,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-1",
+            "model_call_id": "call-1",
+            "content": "I will inspect",
+        },
+        {
+            "seq": 2,
+            "role": "assistant",
+            "kind": "tool_call",
+            "turn_id": "turn-1",
+            "model_call_id": "call-1",
+            "tool_call_id": "tool-1",
+            "content": "read_file",
+        },
+        {
+            "seq": 3,
+            "role": "tool",
+            "kind": "tool_result",
+            "turn_id": "turn-1",
+            "model_call_id": "call-1",
+            "tool_call_id": "tool-1",
+            "content": long_output,
+            "artifact_refs": ["art_full"],
+            "metadata": {"path": "old.log"},
+        },
+        {
+            "seq": 4,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-2",
+            "model_call_id": "call-2",
+            "content": "Consumed older result.",
+            "metadata": {"consumed_model_call_ids": ["call-1"]},
+        },
+    ]
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="continue",
+        workspace_root=str(workspace),
+        conversation=conversation,
+    )
+
+    marker = "[Earlier tool result omitted for brevity. See artifact references or trace for full details.]"
+    sent_contents = [
+        segment.content
+        for segment in adapter.request.model_context_frame.ordered_message_segments()
+    ]
+    assert result.status == "completed"
+    assert marker in sent_contents
+    assert long_output not in sent_contents
+    assert result.metadata["context_optimization"] == {
+        "message": "Context optimized: reduced from "
+        + f"{result.metadata['context_optimization']['reduced_from_tokens']} to "
+        + f"{result.metadata['context_optimization']['reduced_to_tokens']} tokens "
+        + "by omitting earlier tool results.",
+        "omitted_tool_result_count": 1,
+        "reduced_from_tokens": result.metadata["context_estimate_history"][0]["total_tokens"],
+        "reduced_to_tokens": result.metadata["context_estimate"]["total_tokens"],
+        "trigger": "omission",
+    }
+    assert result.metadata["context_optimization"]["reduced_to_tokens"] < (
+        result.metadata["context_optimization"]["reduced_from_tokens"]
+    )
+
+    row = db.connection.execute(
+        """
+        SELECT context_snapshot_id, trigger, summary, retained_messages_json,
+               omitted_tool_result_count, artifact_refs_json, token_estimate_json,
+               payload_artifact_id
+        FROM context_snapshots
+        WHERE run_id = ?
+        """,
+        (run.run_id,),
+    ).fetchone()
+    assert row is not None
+    assert row[1] == "omission"
+    assert row[2] == ""
+    assert row[4] == 1
+    assert row[5] == '["art_full"]'
+    token_estimate = json.loads(row[6])
+    assert token_estimate["before"] == result.metadata["context_estimate_history"][0]
+    assert token_estimate["after"] == result.metadata["context_estimate"]
+    assert row[7] is None
+    assert runs.get(run.run_id).context_snapshot_id == row[0]
+
+    persisted_checkpoints = checkpoints.list_for_session(session.session_id)
+    context_checkpoint = next(
+        checkpoint for checkpoint in persisted_checkpoints if checkpoint.kind == "context"
+    )
+    assert context_checkpoint.state == {
+        "session_status": "running",
+        "run_status": "running",
+        "prompt_turn_counter": 1,
+        "context_snapshot_id": row[0],
+        "active_skill_records": [],
+        "latest_artifact_ids": ["art_full"],
+        "latest_error_summary": None,
+        "token_estimate": {
+            "before": result.metadata["context_estimate_history"][0],
+            "after": result.metadata["context_estimate"],
+        },
+    }
+    assert checkpoints.latest_for_run(run.run_id).kind == "turn"
+    context_events = [event for event in events.list_for_run(run.run_id) if event.kind == "context_optimized"]
+    assert context_events[0].payload["context_snapshot_id"] == row[0]
+    assert context_events[0].payload["reduced_to_tokens"] == (
+        result.metadata["context_estimate"]["total_tokens"]
+    )
+    db.close()
+
+
+def test_repl_runtime_writes_back_omitted_conversation_and_metadata(tmp_path) -> None:
+    class RecordingAdapter:
+        def __init__(self) -> None:
+            self.request = None
+
+        def run(self, request, context):
+            self.request = request
+            return AgentRunResult(
+                status="completed",
+                assistant_output="answer",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+        def cancel(self, run_id: str) -> None:
+            raise AssertionError("cancel should not be called")
+
+    (
+        workspace,
+        db,
+        sessions,
+        runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    session = type(session)(
+        **{
+            **session.to_dict(),
+            "config_snapshot": {
+                **session.config_snapshot,
+                "context": {
+                    "window_tokens": 120,
+                    "omit_old_tool_results_at_ratio": 0.1,
+                    "retain_recent_model_calls": 1,
+                },
+            },
+        }
+    )
+    db.connection.execute(
+        "UPDATE sessions SET config_snapshot_json = ? WHERE session_id = ?",
+        (json.dumps(session.config_snapshot, sort_keys=True), session.session_id),
+    )
+    db.connection.commit()
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=artifacts,
+        adapter=RecordingAdapter(),
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        run_store=runs,
+    )
+    runtime = ReplRuntime(
+        db=db,
+        sessions=sessions,
+        runs=runs,
+        events=events,
+        checkpoints=checkpoints,
+        executor=executor,
+        session_id=session.session_id,
+        run_id=run.run_id,
+        workspace_root=workspace,
+    )
+    runtime.conversation = [
+        {
+            "seq": 1,
+            "role": "assistant",
+            "kind": "tool_call",
+            "turn_id": "turn-1",
+            "model_call_id": "call-1",
+            "tool_call_id": "tool-1",
+            "content": "shell_exec",
+        },
+        {
+            "seq": 2,
+            "role": "tool",
+            "kind": "tool_result",
+            "turn_id": "turn-1",
+            "model_call_id": "call-1",
+            "tool_call_id": "tool-1",
+            "content": "full old tool output " * 80,
+            "artifact_refs": ["art_full"],
+        },
+        {
+            "seq": 3,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-2",
+            "model_call_id": "call-2",
+            "content": "Consumed older result.",
+            "metadata": {"consumed_model_call_ids": ["call-1"]},
+        },
+    ]
+
+    result = runtime.run_turn("continue")
+
+    marker = "[Earlier tool result omitted for brevity. See artifact references or trace for full details.]"
+    assert result.status == "completed"
+    assert runtime.conversation[1]["content"] == marker
+    assert runtime.conversation[1]["artifact_refs"] == ["art_full"]
+    assert runtime.conversation[-2]["kind"] == "current_user_input"
+    assert runtime.conversation[-2]["turn_id"] == "turn-1"
+    assert runtime.conversation[-2]["seq"] > 3
+    assert runtime.conversation[-1]["kind"] == "assistant_output"
+    assert runtime.conversation[-1]["model_call_id"].startswith("repl_turn_1")
+    assert runtime.conversation[-1]["metadata"]["consumed_model_call_ids"] == [
+        "call-1",
+        "call-2",
+    ]
     db.close()

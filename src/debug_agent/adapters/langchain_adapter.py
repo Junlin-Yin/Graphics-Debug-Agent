@@ -349,6 +349,11 @@ def _provider_message_from_segment(segment: ConversationMessage) -> dict[str, st
     content = segment.content
     if not isinstance(content, str):
         content = json.dumps(content, ensure_ascii=False, sort_keys=True)
+    if segment.artifact_refs:
+        content = (
+            f"{content}\n\nArtifact references: "
+            f"{', '.join(segment.artifact_refs)}"
+        )
     return {"role": segment.role, "content": content}
 
 

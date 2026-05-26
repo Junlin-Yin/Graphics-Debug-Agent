@@ -500,21 +500,21 @@ Objective: derive deterministic model-call groups and reduce old tool-result bul
 
 Deliverables: model-call group derivation, non-evictable raw suffix, old tool-result omission markers, omission context snapshots, `runs.context_snapshot_id` updates, `context` checkpoints, and omission status display.
 
-- [ ] Implement `QueryControlPlane` model-call group derivation from durable conversation metadata.
-- [ ] Mark groups `open` while streaming output, pending tool calls, or missing terminal tool results exist.
-- [ ] Mark closed groups `consumed_by_later_model_call` only after a later ordinary task model call includes their raw messages.
-- [ ] Compute the non-evictable raw suffix from newest `retain_recent_model_calls` completed groups, open groups, unconsumed groups, current user input, and current tool-loop buffers.
-- [ ] Ensure large tool/model outputs continue to be artifact-backed at record time, not as a later pre-call optimization.
-- [ ] Implement old tool-result omission when the candidate `ModelContextFrame` is strictly greater than `omit_old_tool_results_at_ratio * window_tokens`.
-- [ ] Replace eligible older tool result bodies with the exact omission marker `[Earlier tool result omitted for brevity. See artifact references or trace for full details.]` while preserving metadata and artifact ids.
-- [ ] Persist omission context snapshots with trigger `omission`, empty summary, retained messages, omission count, artifact refs, token estimates, and active skill records.
-- [ ] Ensure omission context snapshots use the Phase 1 minimum `context_snapshots` shape, allowed trigger value `omission`, inline payload threshold, and `payload_artifact_id` artifacting rules.
-- [ ] Update `runs.context_snapshot_id` and write a `context` checkpoint after omission snapshots.
-- [ ] Display a REPL system message with reduced-from and reduced-to estimates after omission.
-- [ ] Rebuild and re-estimate the candidate `ModelContextFrame` after omission before any compression decision.
-- [ ] Add unit tests for group derivation, non-evictable suffix, live/unconsumed protection, omission eligibility, exact omission marker text, snapshot shape, checkpoint shape, and status bar update.
-- [ ] Add integration test proving full omitted tool output remains recoverable through events or artifacts.
-- [ ] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
+- [x] Implement `QueryControlPlane` model-call group derivation from durable conversation metadata.
+- [x] Mark groups `open` while streaming output, pending tool calls, or missing terminal tool results exist.
+- [x] Mark closed groups `consumed_by_later_model_call` only after a later ordinary task model call includes their raw messages.
+- [x] Compute the non-evictable raw suffix from newest `retain_recent_model_calls` completed groups, open groups, unconsumed groups, current user input, and current tool-loop buffers.
+- [x] Ensure large tool/model outputs continue to be artifact-backed at record time, not as a later pre-call optimization.
+- [x] Implement old tool-result omission when the candidate `ModelContextFrame` is strictly greater than `omit_old_tool_results_at_ratio * window_tokens`.
+- [x] Replace eligible older tool result bodies with the exact omission marker `[Earlier tool result omitted for brevity. See artifact references or trace for full details.]` while preserving metadata and artifact ids.
+- [x] Persist omission context snapshots with trigger `omission`, empty summary, retained messages, omission count, artifact refs, token estimates, and active skill records.
+- [x] Ensure omission context snapshots use the Phase 1 minimum `context_snapshots` shape, allowed trigger value `omission`, inline payload threshold, and `payload_artifact_id` artifacting rules.
+- [x] Update `runs.context_snapshot_id` and write a `context` checkpoint after omission snapshots.
+- [x] Display a REPL system message with reduced-from and reduced-to estimates after omission.
+- [x] Rebuild and re-estimate the candidate `ModelContextFrame` after omission before any compression decision.
+- [x] Add unit tests for group derivation, non-evictable suffix, live/unconsumed protection, omission eligibility, exact omission marker text, snapshot shape, checkpoint shape, and status bar update.
+- [x] Add integration test proving full omitted tool output remains recoverable through events or artifacts.
+- [x] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
 
 Modified boundaries: query control plane, durable conversation metadata, context manager omission, context snapshots, context checkpoints, status display.
 

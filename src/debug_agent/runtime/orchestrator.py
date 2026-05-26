@@ -113,9 +113,40 @@ class ReplRuntime:
                 estimate = result.metadata.get("context_estimate")
                 if isinstance(estimate, dict):
                     self.latest_context_estimate = estimate
-                self.conversation.append({"role": "user", "content": user_input})
+                writeback = result.metadata.get("conversation_writeback")
+                if isinstance(writeback, list):
+                    self.conversation = [dict(message) for message in writeback]
+                next_seq = _next_conversation_seq(self.conversation)
+                turn_id = f"turn-{self.turn_counter}"
+                model_call_id = f"repl_turn_{self.turn_counter}_assistant"
+                consumed_ids = _consumed_model_call_ids(self.conversation)
                 self.conversation.append(
-                    {"role": "assistant", "content": result.assistant_output or ""}
+                    {
+                        "seq": next_seq,
+                        "role": "user",
+                        "kind": "current_user_input",
+                        "turn_id": turn_id,
+                        "model_call_id": None,
+                        "tool_call_id": None,
+                        "content": user_input,
+                        "artifact_refs": [],
+                        "metadata": {},
+                    }
+                )
+                self.conversation.append(
+                    {
+                        "seq": next_seq + 1,
+                        "role": "assistant",
+                        "kind": "assistant_output",
+                        "turn_id": turn_id,
+                        "model_call_id": model_call_id,
+                        "tool_call_id": None,
+                        "content": result.assistant_output or "",
+                        "artifact_refs": [],
+                        "metadata": {
+                            "consumed_model_call_ids": consumed_ids,
+                        },
+                    }
                 )
             return result
 
@@ -930,6 +961,26 @@ def _artifact_ids(result: AgentRunResult) -> list[str]:
     for tool_result in result.tool_results:
         artifact_ids.extend(tool_result.get("artifacts", []))
     return artifact_ids
+
+
+def _next_conversation_seq(conversation: list[dict[str, Any]]) -> int:
+    seq_values = [
+        message.get("seq")
+        for message in conversation
+        if isinstance(message.get("seq"), int)
+    ]
+    if not seq_values:
+        return 1
+    return max(seq_values) + 1
+
+
+def _consumed_model_call_ids(conversation: list[dict[str, Any]]) -> list[str]:
+    consumed: list[str] = []
+    for message in conversation:
+        model_call_id = message.get("model_call_id")
+        if isinstance(model_call_id, str) and model_call_id not in consumed:
+            consumed.append(model_call_id)
+    return consumed
 
 
 def _active_conflict_message(session_id: str) -> str:

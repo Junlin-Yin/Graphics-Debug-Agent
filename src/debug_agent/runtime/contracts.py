@@ -38,11 +38,12 @@ RUN_EVENT_KINDS = frozenset(
         "skill_snapshot_created",
         "skill_activated",
         "skill_reference_loaded",
+        "context_optimized",
         "checkpoint_written",
         "artifact_registered",
     }
 )
-CHECKPOINT_KINDS = frozenset({"turn", "terminal", "error"})
+CHECKPOINT_KINDS = frozenset({"turn", "terminal", "error", "context"})
 ARTIFACT_TYPES = frozenset({"image", "rdc", "text"})
 TOOL_RESULT_STATUSES = frozenset({"ok", "error", "denied", "timeout", "cancelled"})
 AGENT_RUN_RESULT_STATUSES = frozenset(
@@ -132,8 +133,6 @@ class Run:
     def __post_init__(self) -> None:
         _validate(self.run_type, RUN_TYPES, "run_type")
         _validate(self.status, RUN_STATUSES, "run status")
-        if self.context_snapshot_id is not None:
-            raise ValueError("context_snapshot_id must be None in Phase 0")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

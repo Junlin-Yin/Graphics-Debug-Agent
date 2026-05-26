@@ -170,6 +170,24 @@ class RunStore:
         self.connection.commit()
         return self.get(run_id)
 
+    def update_context_snapshot(
+        self,
+        run_id: str,
+        *,
+        context_snapshot_id: str,
+    ) -> Run:
+        now = utc_now_iso()
+        self.connection.execute(
+            """
+            UPDATE runs
+            SET context_snapshot_id = ?, updated_at = ?
+            WHERE run_id = ?
+            """,
+            (context_snapshot_id, now, run_id),
+        )
+        self.connection.commit()
+        return self.get(run_id)
+
     def _mark_terminal(
         self,
         run_id: str,

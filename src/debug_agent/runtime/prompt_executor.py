@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.checkpoints import CheckpointStore
+from debug_agent.persistence.context_snapshots import ContextSnapshotStore
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
 from debug_agent.runtime.contracts import (
@@ -22,6 +23,7 @@ from debug_agent.runtime.contracts import (
     utc_now_iso,
 )
 from debug_agent.persistence.skills import SkillSnapshotStore
+from debug_agent.runtime.context_manager import ContextManager
 from debug_agent.runtime.model_context import ConversationMessage
 from debug_agent.runtime.prompt_composer import PromptComposer, PromptCompositionRequest
 from debug_agent.runtime.query_control import QueryControlPlane
@@ -84,10 +86,15 @@ class PromptAgentExecutor:
                 content=user_input,
             )
         ]
+        retained_messages = _conversation_messages(conversation or [])
+        retained_messages_box: dict[str, list[ConversationMessage]] = {
+            "messages": retained_messages
+        }
+        optimization_box: dict[str, dict[str, Any] | None] = {"optimization": None}
         composition = self._compose_frame(
             session=session,
             run=run,
-            retained_messages=_conversation_messages(conversation or []),
+            retained_messages=retained_messages,
             current_messages=current_messages,
         )
         query_state = query_control.record_context_estimate(
@@ -99,6 +106,51 @@ class PromptAgentExecutor:
         query_state_box["state"] = query_state
         context_estimate_box["estimate"] = composition.estimate.to_dict()
         context_estimate_history.append(composition.estimate.to_dict())
+        optimization = self._maybe_omit_old_tool_results(
+            session=session,
+            run=run,
+            query_control=query_control,
+            query_state=query_state,
+            retained_messages=retained_messages,
+            current_messages=current_messages,
+            initial_estimate=composition.estimate.to_dict(),
+            prompt_turn_counter=prompt_turn_counter,
+        )
+        if optimization is not None:
+            retained_messages = optimization["retained_messages"]
+            retained_messages_box["messages"] = retained_messages
+            composition = self._compose_frame(
+                session=session,
+                run=self._latest_run(run),
+                retained_messages=retained_messages,
+                current_messages=current_messages,
+            )
+            query_state = query_control.record_context_estimate(
+                query_state.query_id,
+                frame=composition.frame,
+                estimate_total_tokens=composition.estimate.total_tokens,
+                estimator_version=composition.estimate.estimator_version,
+            )
+            query_state_box["state"] = query_state
+            context_estimate_box["estimate"] = composition.estimate.to_dict()
+            context_estimate_history.append(composition.estimate.to_dict())
+            optimization["metadata"]["reduced_to_tokens"] = (
+                composition.estimate.total_tokens
+            )
+            optimization["metadata"]["message"] = (
+                "Context optimized: reduced from "
+                f"{optimization['metadata']['reduced_from_tokens']} to "
+                f"{optimization['metadata']['reduced_to_tokens']} tokens by "
+                "omitting earlier tool results."
+            )
+            self._persist_omission(
+                session=session,
+                run=run,
+                optimization=optimization,
+                after_estimate=composition.estimate.to_dict(),
+                prompt_turn_counter=prompt_turn_counter,
+            )
+            optimization_box["optimization"] = optimization
         request = AgentRunRequest(
             session_id=session.session_id,
             run_id=run.run_id,
@@ -124,7 +176,7 @@ class PromptAgentExecutor:
                     context_estimate_box=context_estimate_box,
                     context_estimate_history=context_estimate_history,
                     continuation_history=continuation_history,
-                    retained_messages=_conversation_messages(conversation or []),
+                    retained_messages_box=retained_messages_box,
                     current_messages=[
                         *current_messages,
                         *_provider_messages_to_conversation(
@@ -132,6 +184,8 @@ class PromptAgentExecutor:
                             turn_id=query_state_box["state"].turn_id,
                         ),
                     ],
+                    optimization_box=optimization_box,
+                    prompt_turn_counter=prompt_turn_counter,
                 ),
             },
             model_event_recorder=lambda kind, payload: self._append_model_event(
@@ -159,6 +213,15 @@ class PromptAgentExecutor:
             context_estimate_history=context_estimate_history,
             continuation_history=continuation_history,
             query_state=query_state,
+            context_optimization=None
+            if optimization_box["optimization"] is None
+            else optimization_box["optimization"]["metadata"],
+            conversation_writeback=None
+            if optimization_box["optimization"] is None
+            else [
+                message.to_dict()
+                for message in optimization_box["optimization"]["retained_messages"]
+            ],
         )
         if result.status == "completed":
             self._append_event(
@@ -262,8 +325,10 @@ class PromptAgentExecutor:
         context_estimate_box: dict[str, Any],
         context_estimate_history: list[dict[str, Any]],
         continuation_history: list[str],
-        retained_messages: list[ConversationMessage],
+        retained_messages_box: dict[str, list[ConversationMessage]],
         current_messages: list[ConversationMessage],
+        optimization_box: dict[str, dict[str, Any] | None],
+        prompt_turn_counter: int,
     ) -> dict[str, Any]:
         state = query_control.record_continuation(
             query_state_box["state"].query_id,
@@ -273,7 +338,7 @@ class PromptAgentExecutor:
         composition = self._compose_frame(
             session=session,
             run=self._latest_run(run),
-            retained_messages=retained_messages,
+            retained_messages=retained_messages_box["messages"],
             current_messages=current_messages,
         )
         state = query_control.record_context_estimate(
@@ -285,11 +350,173 @@ class PromptAgentExecutor:
         query_state_box["state"] = state
         context_estimate_box["estimate"] = composition.estimate.to_dict()
         context_estimate_history.append(composition.estimate.to_dict())
+        optimization = self._maybe_omit_old_tool_results(
+            session=session,
+            run=run,
+            query_control=query_control,
+            query_state=state,
+            retained_messages=retained_messages_box["messages"],
+            current_messages=current_messages,
+            initial_estimate=composition.estimate.to_dict(),
+            prompt_turn_counter=prompt_turn_counter,
+        )
+        if optimization is not None:
+            retained_messages_box["messages"] = optimization["retained_messages"]
+            composition = self._compose_frame(
+                session=session,
+                run=self._latest_run(run),
+                retained_messages=retained_messages_box["messages"],
+                current_messages=current_messages,
+            )
+            state = query_control.record_context_estimate(
+                state.query_id,
+                frame=composition.frame,
+                estimate_total_tokens=composition.estimate.total_tokens,
+                estimator_version=composition.estimate.estimator_version,
+            )
+            query_state_box["state"] = state
+            context_estimate_box["estimate"] = composition.estimate.to_dict()
+            context_estimate_history.append(composition.estimate.to_dict())
+            optimization["metadata"]["reduced_to_tokens"] = (
+                composition.estimate.total_tokens
+            )
+            optimization["metadata"]["message"] = (
+                "Context optimized: reduced from "
+                f"{optimization['metadata']['reduced_from_tokens']} to "
+                f"{optimization['metadata']['reduced_to_tokens']} tokens by "
+                "omitting earlier tool results."
+            )
+            self._persist_omission(
+                session=session,
+                run=run,
+                optimization=optimization,
+                after_estimate=composition.estimate.to_dict(),
+                prompt_turn_counter=prompt_turn_counter,
+            )
+            optimization_box["optimization"] = optimization
         return {
             "frame": composition.frame,
             "estimate": composition.estimate.to_dict(),
             "query_state": state,
         }
+
+    def _maybe_omit_old_tool_results(
+        self,
+        *,
+        session: Session,
+        run: Run,
+        query_control: QueryControlPlane,
+        query_state: Any,
+        retained_messages: list[ConversationMessage],
+        current_messages: list[ConversationMessage],
+        initial_estimate: dict[str, Any],
+        prompt_turn_counter: int,
+    ) -> dict[str, Any] | None:
+        context_settings = session.config_snapshot.get("context", {})
+        window_tokens = int(context_settings.get("window_tokens", 200000))
+        omit_ratio = float(context_settings.get("omit_old_tool_results_at_ratio", 0.60))
+        if initial_estimate["total_tokens"] <= omit_ratio * window_tokens:
+            return None
+        retain_recent_model_calls = int(
+            context_settings.get("retain_recent_model_calls", 4)
+        )
+        omission = ContextManager(query_control=query_control).omit_old_tool_results(
+            retained_messages=retained_messages,
+            current_messages=current_messages,
+            retain_recent_model_calls=retain_recent_model_calls,
+        )
+        if omission.omitted_tool_result_count == 0:
+            return None
+        return {
+            "retained_messages": omission.retained_messages,
+            "snapshot_messages": omission.snapshot_messages,
+            "artifact_refs": omission.artifact_refs,
+            "before_estimate": dict(initial_estimate),
+            "metadata": {
+                "trigger": "omission",
+                "omitted_tool_result_count": omission.omitted_tool_result_count,
+                "reduced_from_tokens": initial_estimate["total_tokens"],
+                "reduced_to_tokens": None,
+                "message": "",
+            },
+        }
+
+    def _persist_omission(
+        self,
+        *,
+        session: Session,
+        run: Run,
+        optimization: dict[str, Any],
+        after_estimate: dict[str, Any],
+        prompt_turn_counter: int,
+    ) -> None:
+        metadata = optimization["metadata"]
+        snapshot_store = ContextSnapshotStore(
+            connection=self.artifact_store.connection,
+            artifact_store=self.artifact_store,
+        )
+        context_settings = session.config_snapshot.get("context", {})
+        snapshot = snapshot_store.save_omission_snapshot(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            source_checkpoint_id=run.latest_checkpoint_id,
+            active_skill_records=run.active_skills,
+            retained_messages=[
+                message.to_dict() for message in optimization["snapshot_messages"]
+            ],
+            omitted_tool_result_count=metadata["omitted_tool_result_count"],
+            artifact_refs=optimization["artifact_refs"],
+            token_estimate={
+                "before": dict(optimization["before_estimate"]),
+                "after": dict(after_estimate),
+                "window_tokens": int(context_settings.get("window_tokens", 200000)),
+                "omit_old_tool_results_at_ratio": float(
+                    context_settings.get("omit_old_tool_results_at_ratio", 0.60)
+                ),
+            },
+        )
+        if self.run_store is not None:
+            self.run_store.update_context_snapshot(
+                run.run_id,
+                context_snapshot_id=snapshot.context_snapshot_id,
+            )
+        checkpoint = self._save_checkpoint(
+            session=session,
+            run=run,
+            kind="context",
+            state={
+                "session_status": session.status,
+                "run_status": run.status,
+                "prompt_turn_counter": prompt_turn_counter,
+                "context_snapshot_id": snapshot.context_snapshot_id,
+                "active_skill_records": run.active_skills,
+                "latest_artifact_ids": optimization["artifact_refs"],
+                "latest_error_summary": None,
+                "token_estimate": {
+                    "before": dict(optimization["before_estimate"]),
+                    "after": dict(after_estimate),
+                },
+            },
+            summary="Old tool results omitted.",
+        )
+        self._append_event(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            kind="context_optimized",
+            payload={
+                "trigger": "omission",
+                "context_snapshot_id": snapshot.context_snapshot_id,
+                "checkpoint_id": checkpoint.checkpoint_id,
+                "omitted_tool_result_count": metadata["omitted_tool_result_count"],
+                "artifact_refs": optimization["artifact_refs"],
+                "reduced_from_tokens": metadata["reduced_from_tokens"],
+                "reduced_to_tokens": metadata["reduced_to_tokens"],
+                "token_estimate": {
+                    "before": dict(optimization["before_estimate"]),
+                    "after": dict(after_estimate),
+                },
+            },
+        )
 
     def _latest_run(self, run: Run) -> Run:
         if self.run_store is None:
@@ -380,13 +607,16 @@ def _conversation_messages(conversation: list[dict[str, Any]]) -> list[Conversat
         content = message.get("content", "")
         messages.append(
             ConversationMessage(
-                seq=index + 1,
+                seq=int(message.get("seq", index + 1)),
                 role=role,
-                kind="retained_raw",
-                turn_id=None,
-                model_call_id=None,
-                tool_call_id=None,
+                kind=str(message.get("kind") or "retained_raw"),
+                turn_id=message.get("turn_id"),
+                model_call_id=message.get("model_call_id"),
+                tool_call_id=message.get("tool_call_id"),
                 content=content if isinstance(content, (str, dict)) else str(content),
+                artifact_refs=list(message.get("artifact_refs", [])),
+                estimated_tokens=message.get("estimated_tokens"),
+                metadata=dict(message.get("metadata", {})),
             )
         )
     return messages
@@ -432,28 +662,35 @@ def _with_context_metadata(
     context_estimate_history: list[dict[str, Any]],
     continuation_history: list[str],
     query_state: Any,
+    context_optimization: dict[str, Any] | None = None,
+    conversation_writeback: list[dict[str, Any]] | None = None,
 ) -> AgentRunResult:
+    metadata = {
+        **result.metadata,
+        "context_estimate": context_estimate,
+        "context_estimate_history": list(context_estimate_history),
+        "continuation_history": list(continuation_history),
+        "query_state": {
+            "query_id": query_state.query_id,
+            "turn_id": query_state.turn_id,
+            "continuation_reason": query_state.continuation_reason,
+            "active_skill_records": query_state.active_skill_records,
+            "latest_context_estimate": query_state.latest_context_estimate,
+            "current_approval_mode": query_state.current_approval_mode,
+            "latest_model_context_frame": query_state.latest_model_context_frame,
+        },
+    }
+    if context_optimization is not None:
+        metadata["context_optimization"] = context_optimization
+    if conversation_writeback is not None:
+        metadata["conversation_writeback"] = conversation_writeback
     return AgentRunResult(
         status=result.status,
         assistant_output=result.assistant_output,
         tool_results=result.tool_results,
         usage=result.usage,
         error=result.error,
-        metadata={
-            **result.metadata,
-            "context_estimate": context_estimate,
-            "context_estimate_history": list(context_estimate_history),
-            "continuation_history": list(continuation_history),
-            "query_state": {
-                "query_id": query_state.query_id,
-                "turn_id": query_state.turn_id,
-                "continuation_reason": query_state.continuation_reason,
-                "active_skill_records": query_state.active_skill_records,
-                "latest_context_estimate": query_state.latest_context_estimate,
-                "current_approval_mode": query_state.current_approval_mode,
-                "latest_model_context_frame": query_state.latest_model_context_frame,
-            },
-        },
+        metadata=metadata,
     )
 
 

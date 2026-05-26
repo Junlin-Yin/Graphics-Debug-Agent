@@ -187,3 +187,107 @@ def test_active_skill_injection_shares_adapter_model_context_frame(tmp_path) -> 
     ).fetchone()[0]
     assert "Do it." not in durable_text
     runtime["db"].close()
+
+
+def test_omitted_tool_output_remains_recoverable_from_artifact(tmp_path) -> None:
+    runtime = _runtime(tmp_path)
+    full_output = "full recoverable tool output\n" * 900
+    artifact = runtime["artifacts"].write_text(
+        session_id=runtime["session"].session_id,
+        run_id=runtime["run"].run_id,
+        filename="tool-output.txt",
+        content=full_output,
+        metadata={"source": "integration-test"},
+        artifact_id="art_tool_full",
+    )
+
+    class RecordingAdapter:
+        def __init__(self) -> None:
+            self.request = None
+
+        def run(self, request, context):
+            self.request = request
+            return AgentRunResult(
+                status="completed",
+                assistant_output="answer",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+        def cancel(self, run_id: str) -> None:
+            raise AssertionError("cancel should not be called")
+
+    session = type(runtime["session"])(
+        **{
+            **runtime["session"].to_dict(),
+            "config_snapshot": {
+                **runtime["session"].config_snapshot,
+                "context": {
+                    "window_tokens": 120,
+                    "omit_old_tool_results_at_ratio": 0.1,
+                    "retain_recent_model_calls": 1,
+                },
+            },
+        }
+    )
+    executor = PromptAgentExecutor(
+        event_writer=runtime["events"],
+        checkpoint_store=CheckpointStore(runtime["db"].connection),
+        artifact_store=runtime["artifacts"],
+        adapter=RecordingAdapter(),
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=runtime["skill_store"],
+        run_store=runtime["runs"],
+    )
+
+    result = executor.run_turn(
+        session=session,
+        run=runtime["run"],
+        user_input="continue",
+        workspace_root=str(runtime["workspace"]),
+        conversation=[
+            {
+                "seq": 1,
+                "role": "assistant",
+                "kind": "tool_call",
+                "turn_id": "turn-1",
+                "model_call_id": "call-1",
+                "tool_call_id": "tool-1",
+                "content": "shell_exec",
+            },
+            {
+                "seq": 2,
+                "role": "tool",
+                "kind": "tool_result",
+                "turn_id": "turn-1",
+                "model_call_id": "call-1",
+                "tool_call_id": "tool-1",
+                "content": "[Tool output stored as artifact: art_tool_full]",
+                "artifact_refs": [artifact.artifact_id],
+            },
+            {
+                "seq": 3,
+                "role": "assistant",
+                "kind": "assistant_output",
+                "turn_id": "turn-2",
+                "model_call_id": "call-2",
+                "content": "Consumed tool output.",
+                "metadata": {"consumed_model_call_ids": ["call-1"]},
+            },
+        ],
+    )
+
+    marker = "[Earlier tool result omitted for brevity. See artifact references or trace for full details.]"
+    sent_segments = executor.adapter.request.model_context_frame.ordered_message_segments()
+    sent_text = "\n".join(str(segment.content) for segment in sent_segments)
+    assert result.status == "completed"
+    assert marker in sent_text
+    omitted_segment = next(segment for segment in sent_segments if segment.content == marker)
+    assert omitted_segment.artifact_refs == ["art_tool_full"]
+    assert runtime["artifacts"].resolve_path("art_tool_full").read_text(
+        encoding="utf-8"
+    ) == full_output
+    runtime["db"].close()
