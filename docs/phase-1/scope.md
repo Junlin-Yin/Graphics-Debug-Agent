@@ -96,7 +96,9 @@ packaging, or broad provider/model discovery.
   - idle-state `Ctrl+Y` approval mode cycling through
     `normal -> semi-auto -> yolo -> normal`, with persisted run-event and engine
     log audit.
-  - REPL default approval mode remains `normal`.
+  - REPL default approval mode remains `normal`; users may explicitly select
+    initial REPL approval mode `semi-auto` or `yolo` through the CLI
+    approval-mode option.
   - one-shot default approval mode remains `normal`; users may explicitly select
     `semi-auto` or `yolo` through the CLI approval-mode option.
   - TUI approval prompt integrated into the existing prompt_toolkit

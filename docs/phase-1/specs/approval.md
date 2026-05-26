@@ -29,10 +29,14 @@ Default modes:
 - REPL default: `normal`.
 - one-shot default: `normal`.
 
-Users may explicitly select `semi-auto` or `yolo` for one-shot execution through
-the CLI approval-mode option. This is a Phase 1 breaking change from Phase 0
-one-shot default autonomy: approval-required non-interactive operations fail
-closed unless the user explicitly selects a more autonomous mode.
+Users may explicitly select initial approval mode `normal`, `semi-auto`, or
+`yolo` through the CLI approval-mode option. For REPL execution, the option sets
+only the session's initial approval mode; later idle-state `Ctrl+Y` changes are
+still governed by the REPL cycling rules below. For one-shot execution, the
+option sets the approval mode used for the single prompt run. This is a Phase 1
+breaking change from Phase 0 one-shot default autonomy: approval-required
+non-interactive operations fail closed unless the user explicitly selects a more
+autonomous mode.
 
 TTY REPL users may cycle the active approval mode with `Ctrl+Y` only while the
 REPL is idle. The cycle order is `normal -> semi-auto -> yolo -> normal`.

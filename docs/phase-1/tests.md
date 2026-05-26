@@ -546,8 +546,13 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 - `debug-agent < input.txt` uses `PlainReplView`; if approval is required, it
   denies non-interactively rather than hanging.
 - REPL default approval mode is `normal`.
+- REPL may explicitly select initial approval mode `normal`, `semi-auto`, or
+  `yolo` through the CLI approval-mode option.
+- explicit REPL startup approval mode sets the initial session approval mode and
+  status-bar approval source without implementing or replacing idle-state
+  `Ctrl+Y` cycling.
 - one-shot default approval mode is `normal`.
-- one-shot may explicitly select `semi-auto` or `yolo` through the CLI
+- one-shot may explicitly select `normal`, `semi-auto`, or `yolo` through the CLI
   approval-mode option.
 
 ### Persistence And Observability

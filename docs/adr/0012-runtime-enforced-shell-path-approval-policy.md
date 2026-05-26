@@ -175,8 +175,10 @@ runtime-control handler. Handlers do not own permission decisions and do not
 write audit events directly.
 
 Phase 1 defaults are `normal` for REPL and `normal` for one-shot. Users may
-explicitly select `semi-auto` or `yolo` for one-shot execution through the CLI
-approval-mode option.
+explicitly select initial approval mode `normal`, `semi-auto`, or `yolo`
+through the CLI approval-mode option. For REPL execution, this option sets only
+the initial session approval mode; idle-state `Ctrl+Y` remains the runtime
+mechanism for later interactive mode cycling.
 
 TTY REPL users may cycle the active approval mode with `Ctrl+Y` only while the
 REPL is idle. Runtime records the switch as an `approval_mode_changed` run event

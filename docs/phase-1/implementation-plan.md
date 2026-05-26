@@ -60,7 +60,7 @@
 - `src/debug_agent/tools/runtime_control.py`: `activate_skill` and `load_skill_ref_file` handlers.
 - `src/debug_agent/skills/registry.py`: prompt skill discovery, manifest validation, startup snapshotting, hash normalization, available skill headers.
 - `src/debug_agent/cli/repl_controller.py`: `/skills`, `/tools`, `/compress`, inline approval state, idle-only `Ctrl+Y`, Phase 1 status bar updates.
-- `src/debug_agent/cli/main.py`: one-shot `--approval-mode` option parsing and validation.
+- `src/debug_agent/cli/main.py`: one-shot and REPL startup `--approval-mode` option parsing and validation.
 - `src/debug_agent/cli/repl_view.py`: Phase 1 snapshots/events for approval prompts, `/skills`, `/tools`, and context status.
 - `src/debug_agent/cli/plain_repl_view.py`: plain approval prompt and non-interactive approval denial behavior.
 - `src/debug_agent/cli/prompt_toolkit_view.py`: TUI inline approval prompt and exact Phase 1 status bar format.
@@ -605,23 +605,25 @@ Runnable state: users can manually compress idle REPL history, receive determini
 
 Objective: expose Phase 1 local command and status surfaces before adding interactive approval UI complexity.
 
-Deliverables: `/tools`, consolidated local slash-command assertions, unsupported command handling, one-shot approval-mode option parsing, approval-mode status source, and exact Phase 1 status bar format.
+Deliverables: `/tools`, consolidated local slash-command assertions, unsupported command handling, CLI approval-mode option parsing for one-shot and REPL initial mode, approval-mode status source, and exact Phase 1 status bar format.
 
 - [ ] Add `/tools` as a local REPL command listing current runtime-visible tools, category, risk, access, approval behavior, enabled status, and disabled reason.
 - [ ] Ensure `/tools` reflects current frozen session config, active approval mode, path policy, and shell policy.
 - [ ] Ensure `/skills`, `/tools`, and `/compress` are local and never sent to the model.
 - [ ] Ensure `/compress` during active execution is suppressed without runtime side effects.
 - [ ] Keep `/agents`, `/models`, and `/compact` unsupported in Phase 1.
-- [ ] Add one-shot CLI approval-mode option parsing and validation for exactly `normal`, `semi-auto`, and `yolo`.
-- [ ] Ensure REPL default approval mode remains `normal`, one-shot default approval mode remains `normal`, and explicit one-shot `semi-auto`/`yolo` values are frozen into query/tool context.
+- [ ] Add CLI approval-mode option parsing and validation for exactly `normal`, `semi-auto`, and `yolo` on one-shot and REPL startup.
+- [ ] Ensure REPL default approval mode remains `normal`, one-shot default approval mode remains `normal`, explicit REPL startup values become the initial session approval mode, and explicit one-shot values are frozen into query/tool context.
+- [ ] Ensure REPL startup approval-mode selection does not implement or replace 6B idle-state `Ctrl+Y` cycling.
 - [ ] Add the deferred one-shot `semi-auto` skill activation integration test now that the CLI approval-mode option exists.
+- [ ] Add a REPL startup `semi-auto` skill activation integration test that proves runtime-control activation is audit-only and does not request interactive approval.
 - [ ] Update status bar to the exact Phase 1 format `model: <model> | approval: <approval> | context: <used> / <window> (<pct>) | tokens: <used> used`.
 - [ ] Update status bar context before model calls, after omission/compression, and after provider usage or deterministic estimate fallback.
-- [ ] Add unit tests for `/tools`, unsupported commands, local `/skills`/`/tools`/`/compress` routing, one-shot approval-mode option parsing/defaults, and exact status bar format.
-- [ ] Add integration tests for `/tools`, `/skills`, `/compress` local routing and one-shot approval-mode selection where deterministic injected I/O can verify behavior without manual TTY interaction.
+- [ ] Add unit tests for `/tools`, unsupported commands, local `/skills`/`/tools`/`/compress` routing, one-shot and REPL approval-mode option parsing/defaults, and exact status bar format.
+- [ ] Add integration tests for `/tools`, `/skills`, `/compress` local routing and one-shot/REPL approval-mode selection where deterministic injected I/O can verify behavior without manual TTY interaction.
 - [ ] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
 
-Modified boundaries: REPL local command routing, one-shot CLI approval-mode parsing, status data source, and status bar rendering.
+Modified boundaries: REPL local command routing, CLI approval-mode parsing, REPL initial approval-mode selection, status data source, and status bar rendering.
 
 Invariants: local slash commands are never sent to the model; status display is presentation state and not runtime truth.
 
@@ -629,7 +631,7 @@ Freeze/review checkpoint: users can inspect tools/skills/compression command beh
 
 Rollback: disable `/tools` and Phase 1 status additions while retaining broker policy decisions and compression/runtime-control behavior.
 
-Runnable state: REPL local commands and one-shot approval-mode selection are deterministic and testable without TTY approval prompts.
+Runnable state: REPL local commands and one-shot/REPL startup approval-mode selection are deterministic and testable without TTY approval prompts.
 
 ## Milestone 6B: Approval Providers, Denial Semantics, And TTY Integration
 
@@ -694,6 +696,7 @@ Deliverables: Phase 1 trace rendering, Phase 1 engine-log helper ownership, engi
 - [ ] Run REPL smoke with fake model config: start `debug-agent`, exercise `/skills`, `/tools`, `/compress`, then `/exit`.
 - [ ] Run non-TTY `debug-agent < input.txt` approval-required check.
 - [ ] Run one-shot `--approval-mode semi-auto` smoke.
+- [ ] Run REPL startup `--approval-mode semi-auto` smoke.
 - [ ] Record Windows shell wrapper behavior evidence using a fake runner or a real Windows smoke environment when available.
 - [ ] Confirm no subagent, workflow, MCP, plugin, `/agents`, `/models`, `/compact`, or `deactivate_skill` feature is exposed or required.
 - [ ] Confirm project lockfile reflects any changed dependency declarations; run `uv lock` if dependencies changed.
