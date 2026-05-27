@@ -81,12 +81,34 @@ def _log_path(sessions_root: Path, session_id: str) -> Path:
 def _level_for_event(kind: str) -> str:
     if kind.endswith("_failed"):
         return "ERROR"
-    if kind == "tool_call_denied":
+    if kind in {"tool_call_denied", "context_limit_exceeded"}:
         return "WARN"
     return "INFO"
 
 
 def _message_for_event(kind: str, payload: dict[str, Any]) -> str:
+    if kind in {
+        "skill_snapshot_created",
+        "skill_activated",
+        "skill_reference_loaded",
+    }:
+        return skill_log_message(kind, payload)
+    if kind in {
+        "approval_requested",
+        "approval_decision_recorded",
+        "approval_mode_changed",
+    }:
+        return approval_log_message(kind, payload)
+    if kind == "tool_call_denied":
+        return policy_log_message(kind, payload)
+    if kind in {"context_optimized", "compression_failed", "context_limit_exceeded"}:
+        return context_log_message(kind, payload)
+    if kind == "artifact_registered":
+        return artifact_log_message(kind, payload)
+    return kind
+
+
+def skill_log_message(kind: str, payload: dict[str, Any]) -> str:
     if kind == "skill_snapshot_created":
         return (
             "skill_snapshot_created "
@@ -106,3 +128,67 @@ def _message_for_event(kind: str, payload: dict[str, Any]) -> str:
             f"reference={payload.get('reference_path', '')}"
         )
     return kind
+
+
+def approval_log_message(kind: str, payload: dict[str, Any]) -> str:
+    if kind == "approval_requested":
+        return (
+            "approval_requested "
+            f"tool={payload.get('tool_name', '')} "
+            f"target={payload.get('target', '')}"
+        )
+    if kind == "approval_decision_recorded":
+        return (
+            "approval_decision_recorded "
+            f"tool={payload.get('tool_name', '')} "
+            f"decision={payload.get('decision', '')} "
+            f"scope={payload.get('grant_scope', '')}"
+        )
+    if kind == "approval_mode_changed":
+        return (
+            "approval_mode_changed "
+            f"{payload.get('old_mode', '')}->{payload.get('new_mode', '')}"
+        )
+    return kind
+
+
+def policy_log_message(kind: str, payload: dict[str, Any]) -> str:
+    result = payload.get("result", {})
+    error = result.get("error", {}) if isinstance(result, dict) else {}
+    error_class = error.get("error_class", "") if isinstance(error, dict) else ""
+    message = error.get("message", "") if isinstance(error, dict) else ""
+    return (
+        f"{kind} tool={payload.get('tool_name', '')} "
+        f"error_class={error_class} message={message}"
+    )
+
+
+def context_log_message(kind: str, payload: dict[str, Any]) -> str:
+    if kind == "context_optimized":
+        return (
+            "context_optimized "
+            f"trigger={payload.get('trigger', '')} "
+            f"snapshot={payload.get('context_snapshot_id', '')} "
+            f"tokens={payload.get('reduced_from_tokens', '')}->{payload.get('reduced_to_tokens', '')}"
+        )
+    if kind == "compression_failed":
+        return (
+            "compression_failed "
+            f"reason={payload.get('reason', '')} "
+            f"message={payload.get('message', '')}"
+        )
+    if kind == "context_limit_exceeded":
+        return (
+            "context_limit_exceeded "
+            f"estimated={payload.get('estimated_tokens', '')} "
+            f"window={payload.get('window_tokens', '')}"
+        )
+    return kind
+
+
+def artifact_log_message(kind: str, payload: dict[str, Any]) -> str:
+    return (
+        f"{kind} artifact={payload.get('artifact_id', '')} "
+        f"type={payload.get('artifact_type', '')} "
+        f"path={payload.get('relative_path', '')}"
+    )

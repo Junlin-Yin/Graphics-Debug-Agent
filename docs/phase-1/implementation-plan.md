@@ -695,33 +695,73 @@ Objective: harden trace/log rendering, legacy fail-closed behavior, compatibilit
 
 Deliverables: Phase 1 trace rendering, Phase 1 engine-log helper ownership, engine-log rendering, legacy schema integration tests, one-shot/plain/non-TTY compatibility checks, streaming non-authority regression checks, full canonical test evidence, manual TTY evidence, and lockfile verification.
 
-- [ ] Render Phase 1 skill snapshot, activation, active skill records, and reference load facts in trace.
-- [ ] Render approval requested/decision facts, approval mode switches, policy denials, reusable grants, and denied tool outcomes in trace.
-- [ ] Render shell policy denial, path policy denial, tool timeout, artifact registration, context snapshots, omission, compression, compression failure, and context-limit failure in trace.
-- [ ] Extend `src/debug_agent/observability/logging.py` with Phase 1 engine-log helpers for skill, approval, policy, context optimization, and artifact registration facts.
-- [ ] Record approval mode switches, approval decisions, policy denials, context optimizations, and artifact registrations in `engine.log`.
-- [ ] Ensure large stack traces, shell outputs, and details are artifact-backed rather than stored inline.
-- [ ] Add integration tests for `debug-agent trace <session_id>` including Phase 1 skill, approval, tool, and compression events.
-- [ ] Add integration tests for Phase 1 startup, status, and trace failing closed on legacy Phase 0/0.5 schemas with clear user-facing guidance.
-- [ ] Confirm one-shot mode remains plain stdout.
-- [ ] Confirm non-TTY and injected I/O paths still use `PlainReplView`.
-- [ ] Confirm Phase 0.5 streaming output remains non-authoritative and `AgentStreamEvent` is not persisted.
-- [ ] Run `uv run pytest tests/unit -v`.
-- [ ] Run `uv run pytest tests/integration -v`.
-- [ ] Run `uv run pytest -v`.
-- [ ] Run manual macOS Terminal TTY approval prompt check.
-- [ ] Run manual iTerm2 TTY approval prompt check.
-- [ ] Run manual TTY denial return-to-input check.
-- [ ] Run manual TTY `/skills`, `/tools`, `/compress` check.
-- [ ] Run manual status bar context/token update check.
-- [ ] Record each manual check with terminal application, command sequence, expected result, observed result, and known limitation.
-- [ ] Run REPL smoke with fake model config: start `debug-agent`, exercise `/skills`, `/tools`, `/compress`, then `/exit`.
-- [ ] Run non-TTY `debug-agent < input.txt` approval-required check.
-- [ ] Run one-shot `--approval-mode semi-auto` smoke.
-- [ ] Run REPL startup `--approval-mode semi-auto` smoke.
-- [ ] Record Windows shell wrapper behavior evidence using a fake runner or a real Windows smoke environment when available.
-- [ ] Confirm no subagent, workflow, MCP, plugin, `/agents`, `/models`, `/compact`, or `deactivate_skill` feature is exposed or required.
-- [ ] Confirm project lockfile reflects any changed dependency declarations; run `uv lock` if dependencies changed.
+- [x] Render Phase 1 skill snapshot, activation, active skill records, and reference load facts in trace.
+- [x] Render approval requested/decision facts, approval mode switches, policy denials, reusable grants, and denied tool outcomes in trace.
+- [x] Render shell policy denial, path policy denial, tool timeout, artifact registration, context snapshots, omission, compression, compression failure, and context-limit failure in trace.
+- [x] Extend `src/debug_agent/observability/logging.py` with Phase 1 engine-log helpers for skill, approval, policy, context optimization, and artifact registration facts.
+- [x] Record approval mode switches, approval decisions, policy denials, context optimizations, and artifact registrations in `engine.log`.
+- [x] Ensure large stack traces, shell outputs, and details are artifact-backed rather than stored inline.
+- [x] Add integration tests for `debug-agent trace <session_id>` including Phase 1 skill, approval, tool, and compression events.
+- [x] Add integration tests for Phase 1 startup, status, and trace failing closed on legacy Phase 0/0.5 schemas with clear user-facing guidance.
+- [x] Confirm one-shot mode remains plain stdout.
+- [x] Confirm non-TTY and injected I/O paths still use `PlainReplView`.
+- [x] Confirm Phase 0.5 streaming output remains non-authoritative and `AgentStreamEvent` is not persisted.
+- [x] Run `uv run pytest tests/unit -v`.
+- [x] Run `uv run pytest tests/integration -v`.
+- [x] Run `uv run pytest -v`.
+- [x] Run manual macOS Terminal TTY approval prompt check.
+- [x] Run manual iTerm2 TTY approval prompt check.
+- [x] Run manual TTY denial return-to-input check.
+- [x] Run manual TTY `/skills`, `/tools`, `/compress` check.
+- [x] Run manual status bar context/token update check.
+- [x] Record each manual check with terminal application, command sequence, expected result, observed result, and known limitation.
+- [x] Run REPL smoke with fake model config: start `debug-agent`, exercise `/skills`, `/tools`, `/compress`, then `/exit`.
+- [x] Run non-TTY `debug-agent < input.txt` approval-required check.
+- [x] Run one-shot `--approval-mode semi-auto` smoke.
+- [x] Run REPL startup `--approval-mode semi-auto` smoke.
+- [x] Record Windows shell wrapper behavior evidence using a fake runner or a real Windows smoke environment when available.
+- [x] Confirm no subagent, workflow, MCP, plugin, `/agents`, `/models`, `/compact`, or `deactivate_skill` feature is exposed or required.
+- [x] Confirm project lockfile reflects any changed dependency declarations; run `uv lock` if dependencies changed.
+
+Automated verification evidence for Milestone 6C:
+
+- `uv run pytest tests/unit/observability -v`: 7 passed.
+- `uv run pytest tests/integration/test_cli_status_trace.py -v`: 5 passed.
+- `uv run pytest tests/integration/test_cli_repl.py tests/integration/test_cli_one_shot.py tests/unit/runtime/test_stream_events.py -v`: 22 passed.
+- `uv run pytest tests/unit -v`: 379 passed.
+- `uv run pytest tests/integration -v`: 45 passed.
+- `uv run pytest -v`: 424 passed.
+- REPL `/skills`, `/tools`, `/compress`, non-TTY/plain view selection, one-shot plain stdout, one-shot `--approval-mode semi-auto`, REPL startup `--approval-mode semi-auto`, unsupported `/agents`, `/models`, and `/compact`, and streaming non-persistence are covered by the passing automated unit/integration tests.
+- Windows shell wrapper behavior is covered by fake-runner tests in `tests/unit/tools/test_shell.py` and integration coverage in `tests/integration/test_shell_git_policy.py`.
+- No dependency declaration files changed during Milestone 6C; `uv lock` was not run.
+
+Manual TTY evidence for Milestone 6C:
+
+- Terminal application: macOS Terminal. Command sequence: start a TTY
+  `debug-agent` REPL, trigger an approval-required tool call, and exercise
+  approval choices. Expected result: the approval prompt renders in the TTY
+  application and accepts `y`, `a`, and `n`. Observed result: human manual
+  testing reported the check passed.
+- Terminal application: iTerm2. Command sequence: start a TTY `debug-agent`
+  REPL, trigger an approval-required tool call, and exercise approval choices.
+  Expected result: the approval prompt renders in the TTY application and
+  accepts `y`, `a`, and `n`. Observed result: human manual testing reported the
+  check passed.
+- Terminal application: TTY REPL. Command sequence: trigger an approval-required
+  tool call and deny with `n`. Expected result: denial returns to prompt input
+  without terminalizing the REPL, and the next prompt can be entered. Observed
+  result: human manual testing reported the check passed.
+- Terminal application: TTY REPL. Command sequence: enter `/skills`, `/tools`,
+  and `/compress`. Expected result: all three commands are handled locally,
+  render the documented local output or no-op message, and leave the REPL
+  usable. Observed result: human manual testing reported the check passed.
+- Terminal application: TTY REPL. Command sequence: run a model turn that
+  updates context/token accounting. Expected result: the status bar updates
+  context and token fields in the Phase 1 order. Observed result: human manual
+  testing reported the check passed.
+- Known limitation: remaining TUI display optimizations are presentation polish
+  only and do not affect the Milestone 6C runtime, trace/log, legacy
+  fail-closed, or acceptance semantics.
 
 Modified boundaries: trace writer, engine log, final integration behavior, manual verification evidence.
 

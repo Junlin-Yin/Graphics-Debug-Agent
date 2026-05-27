@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +63,8 @@ class TraceWriter:
                 self.connection, self.sessions_root
             ).list_for_session(session_id),
             "checkpoints": CheckpointStore(self.connection).list_for_session(session_id),
+            "context_snapshots": _load_context_snapshots(self.connection, session_id),
+            "approval_grants": _load_approval_grants(self.connection, session_id),
             "artifacts": artifacts,
             "artifact_exists": {
                 artifact.artifact_id: (
@@ -93,9 +96,14 @@ def _render_trace(data: dict[str, Any], metadata: dict[str, Any]) -> str:
         "## Runs",
     ]
     for run in data["runs"]:
+        active_skills = ", ".join(
+            _format_active_skill(record) for record in run.active_skills
+        )
         lines.append(
             f"- {run.run_id}: type={run.run_type} status={run.status} "
             f"latest_checkpoint_id={run.latest_checkpoint_id or ''} "
+            f"context_snapshot_id={run.context_snapshot_id or ''} "
+            f"active_skills=[{active_skills}] "
             f"error_summary={run.error_summary or ''}"
         )
     lines.extend(["", "## Timeline"])
@@ -111,6 +119,32 @@ def _render_trace(data: dict[str, Any], metadata: dict[str, Any]) -> str:
             f"kind={checkpoint.kind} run={checkpoint.run_id} "
             f"summary={checkpoint.summary or ''}"
         )
+    lines.extend(["", "## Context Snapshots"])
+    if data["context_snapshots"]:
+        for snapshot in data["context_snapshots"]:
+            lines.append(
+                f"- {snapshot['created_at']} {snapshot['context_snapshot_id']}: "
+                f"trigger={snapshot['trigger']} run={snapshot['run_id']} "
+                f"omitted_tool_results={snapshot['omitted_tool_result_count']} "
+                f"evicted_messages={snapshot['evicted_message_count']} "
+                f"evicted_groups={snapshot['evicted_model_call_group_count']} "
+                f"artifacts={snapshot['artifact_refs']} "
+                f"payload_artifact_id={snapshot['payload_artifact_id'] or ''} "
+                f"active_skills=[{', '.join(_format_active_skill(record) for record in snapshot['active_skill_records'])}]"
+            )
+    else:
+        lines.append("- none")
+    lines.extend(["", "## Approval Grants"])
+    if data["approval_grants"]:
+        for grant in data["approval_grants"]:
+            lines.append(
+                f"- {grant['created_at']} {grant['grant_id']}: "
+                f"tool={grant['tool_name']} risk={grant['risk_level']} "
+                f"decision={grant['decision']} scope={grant['grant_scope']} "
+                f"scope_signature={grant['scope_signature']}"
+            )
+    else:
+        lines.append("- none")
     lines.extend(["", "## Artifacts"])
     for artifact in data["artifacts"]:
         exists = data["artifact_exists"].get(artifact.artifact_id, False)
@@ -165,6 +199,24 @@ def _summarize_payload(payload: dict[str, Any], kind: str | None = None) -> str:
         return _summarize_skill_activation(payload)
     if kind == "skill_reference_loaded":
         return _summarize_skill_reference_loaded(payload)
+    if kind == "approval_requested":
+        return _summarize_approval_requested(payload)
+    if kind == "approval_decision_recorded":
+        return _summarize_approval_decision(payload)
+    if kind == "approval_mode_changed":
+        return _summarize_approval_mode_changed(payload)
+    if kind == "tool_call_denied":
+        return _summarize_tool_denied(payload)
+    if kind == "tool_call_failed":
+        return _summarize_tool_failed(payload)
+    if kind == "artifact_registered":
+        return _summarize_artifact_registered(payload)
+    if kind == "context_optimized":
+        return _summarize_context_optimized(payload)
+    if kind == "compression_failed":
+        return _summarize_compression_failed(payload)
+    if kind == "context_limit_exceeded":
+        return _summarize_context_limit_exceeded(payload)
     text = str(payload)
     if len(text) <= 240:
         return text
@@ -235,6 +287,196 @@ def _summarize_skill_reference_loaded(payload: dict[str, Any]) -> str:
         f"bytes={payload.get('size_bytes', 0)}, "
         f"artifact_id={payload.get('artifact_id') or ''}"
         "}"
+    )
+
+
+def _summarize_approval_requested(payload: dict[str, Any]) -> str:
+    return (
+        "{"
+        f"tool={payload.get('tool_name', '')}, "
+        f"risk={payload.get('risk_level', '')}, "
+        f"target={_shorten(str(payload.get('target', '')))}, "
+        f"scope_signature={payload.get('scope_signature', '')}"
+        "}"
+    )
+
+
+def _summarize_approval_decision(payload: dict[str, Any]) -> str:
+    return (
+        "{"
+        f"tool={payload.get('tool_name', '')}, "
+        f"decision={payload.get('decision', '')}, "
+        f"grant_scope={payload.get('grant_scope', '')}, "
+        f"scope_signature={payload.get('scope_signature', '')}"
+        "}"
+    )
+
+
+def _summarize_approval_mode_changed(payload: dict[str, Any]) -> str:
+    return (
+        "{"
+        f"old_mode={payload.get('old_mode', '')}, "
+        f"new_mode={payload.get('new_mode', '')}"
+        "}"
+    )
+
+
+def _summarize_tool_denied(payload: dict[str, Any]) -> str:
+    result = payload.get("result", {})
+    error = result.get("error", {}) if isinstance(result, dict) else {}
+    arguments = payload.get("arguments", {})
+    return (
+        "{"
+        f"tool={payload.get('tool_name', '')}, "
+        f"error_class={error.get('error_class', '') if isinstance(error, dict) else ''}, "
+        f"message={_shorten(str(error.get('message', '')) if isinstance(error, dict) else '')}, "
+        f"arguments={_shorten(str(arguments))}"
+        "}"
+    )
+
+
+def _summarize_tool_failed(payload: dict[str, Any]) -> str:
+    result = payload.get("result", {})
+    error = result.get("error", {}) if isinstance(result, dict) else {}
+    metadata = result.get("metadata", {}) if isinstance(result, dict) else {}
+    return (
+        "{"
+        f"tool={payload.get('tool_name', '')}, "
+        f"status={payload.get('status', '')}, "
+        f"error_class={error.get('error_class', '') if isinstance(error, dict) else ''}, "
+        f"timeout={metadata.get('effective_timeout_seconds', '') if isinstance(metadata, dict) else ''}, "
+        f"message={_shorten(str(error.get('message', '')) if isinstance(error, dict) else '')}"
+        "}"
+    )
+
+
+def _summarize_artifact_registered(payload: dict[str, Any]) -> str:
+    metadata = payload.get("metadata", {})
+    return (
+        "{"
+        f"artifact_id={payload.get('artifact_id', '')}, "
+        f"type={payload.get('artifact_type', '')}, "
+        f"path={payload.get('relative_path', '')}, "
+        f"metadata={_shorten(str(metadata))}"
+        "}"
+    )
+
+
+def _summarize_context_optimized(payload: dict[str, Any]) -> str:
+    return (
+        "{"
+        f"trigger={payload.get('trigger', '')}, "
+        f"context_snapshot_id={payload.get('context_snapshot_id', '')}, "
+        f"checkpoint_id={payload.get('checkpoint_id', '')}, "
+        f"omitted={payload.get('omitted_tool_result_count', 0)}, "
+        f"evicted_messages={payload.get('evicted_message_count', 0)}, "
+        f"evicted_groups={payload.get('evicted_model_call_group_count', 0)}, "
+        f"reduced={payload.get('reduced_from_tokens', '')}->{payload.get('reduced_to_tokens', '')}, "
+        f"artifacts={payload.get('artifact_refs', [])}"
+        "}"
+    )
+
+
+def _summarize_compression_failed(payload: dict[str, Any]) -> str:
+    return (
+        "{"
+        f"error_class={payload.get('error_class', '')}, "
+        f"reason={payload.get('reason', '')}, "
+        f"message={_shorten(str(payload.get('message', '')))}"
+        "}"
+    )
+
+
+def _summarize_context_limit_exceeded(payload: dict[str, Any]) -> str:
+    return (
+        "{"
+        f"error_class={payload.get('error_class', '')}, "
+        f"estimated={payload.get('estimated_tokens', '')}, "
+        f"window={payload.get('window_tokens', '')}, "
+        f"optimization_applied={payload.get('optimization_applied', [])}, "
+        f"message={_shorten(str(payload.get('message', '')))}"
+        "}"
+    )
+
+
+def _load_context_snapshots(
+    connection: sqlite3.Connection, session_id: str
+) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT context_snapshot_id, session_id, run_id, trigger,
+               source_checkpoint_id, active_skill_records_json, summary,
+               retained_messages_json, omitted_tool_result_count,
+               evicted_message_count, evicted_model_call_group_count,
+               artifact_refs_json, token_estimate_json, payload_artifact_id,
+               created_at, version
+        FROM context_snapshots
+        WHERE session_id = ?
+        ORDER BY created_at ASC, rowid ASC
+        """,
+        (session_id,),
+    ).fetchall()
+    snapshots: list[dict[str, Any]] = []
+    for row in rows:
+        snapshots.append(
+            {
+                "context_snapshot_id": row[0],
+                "session_id": row[1],
+                "run_id": row[2],
+                "trigger": row[3],
+                "source_checkpoint_id": row[4],
+                "active_skill_records": json.loads(row[5]),
+                "summary": row[6],
+                "retained_messages": json.loads(row[7]),
+                "omitted_tool_result_count": row[8],
+                "evicted_message_count": row[9],
+                "evicted_model_call_group_count": row[10],
+                "artifact_refs": json.loads(row[11]),
+                "token_estimate": json.loads(row[12]),
+                "payload_artifact_id": row[13],
+                "created_at": row[14],
+                "version": row[15],
+            }
+        )
+    return snapshots
+
+
+def _load_approval_grants(
+    connection: sqlite3.Connection, session_id: str
+) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT grant_id, session_id, run_id, tool_name, risk_level,
+               scope_signature, decision, grant_scope, approval_request,
+               created_at, version
+        FROM approval_grants
+        WHERE session_id = ?
+        ORDER BY created_at ASC, rowid ASC
+        """,
+        (session_id,),
+    ).fetchall()
+    return [
+        {
+            "grant_id": row[0],
+            "session_id": row[1],
+            "run_id": row[2],
+            "tool_name": row[3],
+            "risk_level": row[4],
+            "scope_signature": row[5],
+            "decision": row[6],
+            "grant_scope": row[7],
+            "approval_request": row[8],
+            "created_at": row[9],
+            "version": row[10],
+        }
+        for row in rows
+    ]
+
+
+def _format_active_skill(record: dict[str, Any]) -> str:
+    return (
+        f"{record.get('name', '')}@{record.get('content_hash', '')}"
+        f":{record.get('activation_reason', '')}:{record.get('scope', '')}"
     )
 
 

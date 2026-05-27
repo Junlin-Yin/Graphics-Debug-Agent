@@ -216,6 +216,13 @@ def test_streaming_repl_controller_renders_fake_model_deltas(tmp_path) -> None:
         payload={"model_call_id": "model_call_1", "text": "hello"},
     ) in view.events
     assert view.turn_statuses[-1][1] == "completed"
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM run_events WHERE kind LIKE 'stream_%'"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_streaming_repl_controller_warns_on_non_streaming_fallback(tmp_path) -> None:

@@ -5,6 +5,11 @@ import json
 from debug_agent.observability.logging import (
     EngineLogWriter,
     _level_for_event,
+    approval_log_message,
+    artifact_log_message,
+    context_log_message,
+    policy_log_message,
+    skill_log_message,
     write_event_log,
 )
 from debug_agent.runtime.contracts import RunEvent
@@ -77,3 +82,57 @@ def test_skill_events_write_engine_log_fact_messages(tmp_path) -> None:
         "skill_reference_loaded skill=alpha reference=references/guide.md"
     )
     assert payload["metadata"]["payload"]["reference_content_hash"] == "sha256:guide"
+
+
+def test_phase1_engine_log_helpers_render_required_fact_messages() -> None:
+    assert (
+        skill_log_message(
+            "skill_activated",
+            {"skill_name": "alpha", "content_hash": "sha256:alpha"},
+        )
+        == "skill_activated skill=alpha hash=sha256:alpha"
+    )
+    assert approval_log_message(
+        "approval_mode_changed",
+        {"old_mode": "normal", "new_mode": "semi-auto"},
+    ) == "approval_mode_changed normal->semi-auto"
+    assert approval_log_message(
+        "approval_decision_recorded",
+        {
+            "tool_name": "read_file",
+            "decision": "approved_for_session",
+            "grant_scope": "session",
+        },
+    ) == "approval_decision_recorded tool=read_file decision=approved_for_session scope=session"
+    assert policy_log_message(
+        "tool_call_denied",
+        {
+            "tool_name": "shell_exec",
+            "result": {
+                "error": {
+                    "error_class": "policy_denied",
+                    "message": "Shell command denied by policy.",
+                }
+            },
+        },
+    ) == (
+        "tool_call_denied tool=shell_exec error_class=policy_denied "
+        "message=Shell command denied by policy."
+    )
+    assert context_log_message(
+        "context_optimized",
+        {
+            "trigger": "compression",
+            "context_snapshot_id": "ctx_1",
+            "reduced_from_tokens": 100,
+            "reduced_to_tokens": 40,
+        },
+    ) == "context_optimized trigger=compression snapshot=ctx_1 tokens=100->40"
+    assert artifact_log_message(
+        "artifact_registered",
+        {
+            "artifact_id": "art_1",
+            "artifact_type": "text",
+            "relative_path": "sess_1/artifacts/out.txt",
+        },
+    ) == "artifact_registered artifact=art_1 type=text path=sess_1/artifacts/out.txt"
