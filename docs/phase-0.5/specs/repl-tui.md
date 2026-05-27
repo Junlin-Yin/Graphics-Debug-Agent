@@ -121,12 +121,14 @@ The REPL shows a welcome panel at startup.
 Minimum fields:
 
 - tool name: `debug-agent`
+- one blank line after the tool name
 - version from `importlib.metadata.version("debug-agent")`
-- current model from the config snapshot
 - workspace root from the session
-- approval mode from the session
 - display session name `sess-<short-id>`, where `<short-id>` is the first four characters of the unique id segment in the runtime contract `Session.session_id`; for Phase 0 ids shaped like `sess_<timestamp>-<id>`, this uses the trailing `<id>` segment, not `sess`
 - the display session name must not be derived from the `.sessions` directory name or artifact path
+
+The welcome panel must not display the current model or approval mode because
+those values are already shown in the bottom status bar.
 
 If version lookup fails in editable or development environments, the view displays `unknown` and continues startup.
 

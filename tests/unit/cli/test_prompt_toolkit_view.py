@@ -195,6 +195,30 @@ def test_prompt_toolkit_view_renders_welcome_messages_status_and_close_summary()
     assert "session sess_full" not in rendered
 
 
+def test_prompt_toolkit_welcome_omits_status_bar_fields_and_spaces_after_tool_name() -> None:
+    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+
+    view = _prompt_toolkit_view()
+
+    view.show_welcome(
+        WelcomeSnapshot(
+            tool_name="debug-agent",
+            version="1.2.3",
+            model="fake-model",
+            workspace_root="/repo",
+            approval_mode="normal",
+            session_id_short="sess_123",
+        )
+    )
+
+    rendered = view.rendered_text()
+
+    assert "model: fake-model" not in rendered
+    assert "approval: normal" not in rendered
+    assert "| debug-agent 1.2.3 |" in rendered
+    assert "|                   |" in rendered
+
+
 def test_prompt_toolkit_view_status_bar_renders_initial_zero_values() -> None:
     view = _prompt_toolkit_view()
 

@@ -708,9 +708,8 @@ def _format_status_bar(snapshot: StatusBarSnapshot) -> str:
 def _format_welcome_panel(snapshot: WelcomeSnapshot) -> str:
     lines = [
         f"{snapshot.tool_name} {snapshot.version}",
-        f"model: {snapshot.model}",
+        "",
         f"workspace: {snapshot.workspace_root}",
-        f"approval: {snapshot.approval_mode}",
         f"session: {snapshot.session_id_short}",
     ]
     width = max(len(line) for line in lines)

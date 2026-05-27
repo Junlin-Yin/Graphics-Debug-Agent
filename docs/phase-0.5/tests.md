@@ -79,6 +79,8 @@
 - TTY prompt input height changes refresh the message list so the newest message remains visible when following the newest message.
 - TTY turn/status region has one blank spacer row above it and does not append that spacer to the message list.
 - TTY welcome panel renders inside a lightweight rectangular ASCII border.
+- TTY welcome panel renders one blank line immediately below the `debug-agent` tool name.
+- TTY welcome panel does not render current model or approval mode fields.
 - TTY submitted user prompt blocks render with top and bottom `-` borders and a shell-style `> ` marker.
 - TTY submitted user prompt block borders use the smallest terminal cell width that fully covers the rendered prompt text in that block, including Chinese text.
 - TTY submitted multiline user prompts render `> ` only on the first line and indent continuation lines by two spaces.
