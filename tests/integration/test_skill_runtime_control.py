@@ -184,8 +184,14 @@ def test_active_skill_injection_shares_adapter_model_context_frame(tmp_path) -> 
 
     assert result.status == "completed"
     assert "activate_skill" in model.bound_tool_names
-    second_call_text = "\n".join(
+    second_call_messages = [
         _provider_message_content(message) for message in model.messages_by_call[1]
+    ]
+    assert any(
+        "Skill activated: alpha" in message for message in second_call_messages
+    )
+    second_call_text = "\n".join(
+        second_call_messages
     )
     assert "[Runtime supplied active skill context]" in second_call_text
     assert "skill_id: alpha" in second_call_text

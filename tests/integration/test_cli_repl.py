@@ -592,7 +592,7 @@ def test_repl_approval_denial_aborts_turn_and_is_visible_to_next_turn(
         ]
         assert len(denied_messages) == 1
         assert denied_messages[0]["metadata"]["terminal_observation"] is True
-        assert denied_messages[0]["tool_call_id"] == "call_read"
+        assert denied_messages[0]["tool_call_id"] == "model_call_1_tool_1"
         assert denied_messages[0]["content"] == {
             "message_type": "tool_result",
             "content": (
@@ -600,7 +600,7 @@ def test_repl_approval_denial_aborts_turn_and_is_visible_to_next_turn(
                 '"message": "Approval denied.", "recoverable": true, '
                 '"source": "toolbroker"}, "status": "denied"}'
             ),
-            "tool_call_id": "call_read",
+            "tool_call_id": "model_call_1_tool_1",
         }
 
         with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:

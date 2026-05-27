@@ -435,7 +435,7 @@ def test_langchain_adapter_stream_reconstructs_tool_call_chunks_before_invocatio
     ]
     assert _event_payloads(events, "stream_tool_call_started") == [
         {
-            "tool_call_id": "read_file_0",
+            "tool_call_id": "model_call_1_tool_1",
             "model_call_id": _event_payloads(events, "stream_model_call_started")[0][
                 "model_call_id"
             ],
@@ -445,7 +445,7 @@ def test_langchain_adapter_stream_reconstructs_tool_call_chunks_before_invocatio
     ]
 
 
-def test_langchain_adapter_stream_emits_tool_events_with_provider_tool_id() -> None:
+def test_langchain_adapter_stream_emits_tool_events_with_runtime_tool_id() -> None:
     events = []
 
     class ToolStreamingModel:
@@ -497,7 +497,7 @@ def test_langchain_adapter_stream_emits_tool_events_with_provider_tool_id() -> N
     assert result.tool_results[0]["output"] == {"text": "hello"}
     assert _event_payloads(events, "stream_tool_call_started") == [
         {
-            "tool_call_id": "provider_tool_1",
+            "tool_call_id": "model_call_1_tool_1",
             "model_call_id": _event_payloads(events, "stream_model_call_started")[0]["model_call_id"],
             "name": "read_file",
             "args": {"path": "notes.txt"},
@@ -505,7 +505,7 @@ def test_langchain_adapter_stream_emits_tool_events_with_provider_tool_id() -> N
     ]
     assert _event_payloads(events, "stream_tool_call_completed") == [
         {
-            "tool_call_id": "provider_tool_1",
+            "tool_call_id": "model_call_1_tool_1",
             "model_call_id": _event_payloads(events, "stream_model_call_started")[0]["model_call_id"],
             "name": "read_file",
             "status": "ok",
@@ -514,7 +514,7 @@ def test_langchain_adapter_stream_emits_tool_events_with_provider_tool_id() -> N
     ]
     assert _event_payloads(events, "stream_tool_result") == [
         {
-            "tool_call_id": "provider_tool_1",
+            "tool_call_id": "model_call_1_tool_1",
             "model_call_id": _event_payloads(events, "stream_model_call_started")[0]["model_call_id"],
             "output": {"text": "hello"},
             "redacted_output": "hello",
@@ -578,7 +578,7 @@ def test_langchain_adapter_stream_ignores_empty_name_tool_calls() -> None:
     assert broker_calls == [("read_file", {"path": "notes.txt"})]
     assert _event_payloads(events, "stream_tool_call_started") == [
         {
-            "tool_call_id": "valid_tool",
+            "tool_call_id": "model_call_1_tool_1",
             "model_call_id": _event_payloads(events, "stream_model_call_started")[0]["model_call_id"],
             "name": "read_file",
             "args": {"path": "notes.txt"},
@@ -942,7 +942,7 @@ def test_langchain_adapter_feeds_tool_results_back_to_model() -> None:
     assert len(model.messages_by_call) == 2
     second_call_messages = model.messages_by_call[1]
     assert second_call_messages[-1].content == "file text"
-    assert second_call_messages[-1].tool_call_id == "read_file_0"
+    assert second_call_messages[-1].tool_call_id == "model_call_1_tool_1"
     assert calls == [
         (
             "sess_1",
@@ -1033,7 +1033,7 @@ def test_langchain_adapter_stream_propagates_tool_display_metadata_from_broker_e
     assert result.status == "completed"
     assert _event_payloads(events, "stream_tool_call_completed") == [
         {
-            "tool_call_id": "provider_tool_1",
+            "tool_call_id": "model_call_1_tool_1",
             "model_call_id": _event_payloads(events, "stream_model_call_started")[0]["model_call_id"],
             "name": "shell_exec",
             "status": "ok",
@@ -1044,7 +1044,7 @@ def test_langchain_adapter_stream_propagates_tool_display_metadata_from_broker_e
     ]
     assert _event_payloads(events, "stream_tool_result") == [
         {
-            "tool_call_id": "provider_tool_1",
+            "tool_call_id": "model_call_1_tool_1",
             "model_call_id": _event_payloads(events, "stream_model_call_started")[0]["model_call_id"],
             "output": {"stdout": "ok\n", "stderr": "", "returncode": 0},
             "redacted_output": None,
@@ -1053,7 +1053,7 @@ def test_langchain_adapter_stream_propagates_tool_display_metadata_from_broker_e
     ]
 
 
-def test_langchain_adapter_preserves_tool_call_ids_after_context_refresh() -> None:
+def test_langchain_adapter_preserves_runtime_tool_call_ids_after_context_refresh() -> None:
     from langchain_core.messages import convert_to_messages
 
     class RecordingBroker:
@@ -1088,8 +1088,8 @@ def test_langchain_adapter_preserves_tool_call_ids_after_context_refresh() -> No
                     ],
                 )
             converted = convert_to_messages(messages)
-            assert converted[-2].tool_calls[0]["id"] == "read_file_0"
-            assert converted[-1].tool_call_id == "read_file_0"
+            assert converted[-2].tool_calls[0]["id"] == "model_call_1_tool_1"
+            assert converted[-1].tool_call_id == "model_call_1_tool_1"
             return AIMessage(content="a.txt contains file text")
 
     def refresh_model_context_frame(tool_loop_messages):
@@ -1155,6 +1155,68 @@ def test_langchain_adapter_preserves_tool_call_ids_after_context_refresh() -> No
 
     assert result.status == "completed"
     assert result.assistant_output == "a.txt contains file text"
+
+
+def test_langchain_adapter_namespaces_repeated_provider_tool_call_ids() -> None:
+    from langchain_core.messages import convert_to_messages
+
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="ok",
+                output=f"{arguments['path']} text",
+                error=None,
+                artifacts=[],
+                metadata={},
+                redacted_output=None,
+            )
+
+    class RepeatedProviderIdModel:
+        def __init__(self) -> None:
+            self.messages_by_call = []
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            self.messages_by_call.append(messages)
+            if len(self.messages_by_call) == 1:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "duplicate_tool_id",
+                            "name": "read_file",
+                            "args": {"path": "a.txt"},
+                        }
+                    ],
+                )
+            converted = convert_to_messages(messages)
+            if len(self.messages_by_call) == 2:
+                assert converted[-2].tool_calls[0]["id"] == "model_call_1_tool_1"
+                assert converted[-1].tool_call_id == "model_call_1_tool_1"
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "duplicate_tool_id",
+                            "name": "read_file",
+                            "args": {"path": "b.txt"},
+                        }
+                    ],
+                )
+            assert converted[-2].tool_calls[0]["id"] == "model_call_2_tool_1"
+            assert converted[-1].tool_call_id == "model_call_2_tool_1"
+            return AIMessage(content="done")
+
+    model = RepeatedProviderIdModel()
+    result = LangChainAgentLoopAdapter(model=model, tool_broker=RecordingBroker()).run(
+        _request(),
+        _context(),
+    )
+
+    assert result.status == "completed"
+    assert result.assistant_output == "done"
 
 
 def test_langchain_adapter_short_circuits_same_turn_after_approval_denial() -> None:

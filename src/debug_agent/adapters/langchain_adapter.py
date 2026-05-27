@@ -55,13 +55,23 @@ class LangChainAgentLoopAdapter:
         tool_results: list[dict[str, Any]] = []
         aggregate_usage: dict[str, Any] = {}
         try:
-            for _ in range(MAX_TOOL_CALL_ITERATIONS):
-                response = _invoke_model(model, messages, request, context)
+            for model_call_index in range(MAX_TOOL_CALL_ITERATIONS):
+                model_call_id = f"model_call_{model_call_index + 1}"
+                response = _invoke_model(
+                    model,
+                    messages,
+                    request,
+                    context,
+                    model_call_id=model_call_id,
+                )
                 aggregate_usage = _aggregate_usage(
                     aggregate_usage,
                     getattr(response, "usage", {}) or {},
                 )
-                tool_calls = _tool_calls(response)
+                tool_calls = _normalized_tool_calls(
+                    _tool_calls(response),
+                    model_call_id=model_call_id,
+                )
                 if not tool_calls:
                     return AgentRunResult(
                         status="completed",
@@ -436,8 +446,10 @@ def _assistant_tool_call_content(content: object) -> tuple[str, list[dict[str, A
     assistant_content = content.get("content", "")
     if not isinstance(assistant_content, str):
         assistant_content = _tool_result_content(assistant_content)
-    return assistant_content, _normalized_tool_calls(
-        [call for call in raw_tool_calls if isinstance(call, dict)]
+    return assistant_content, _provider_visible_tool_calls(
+        _normalized_tool_calls(
+            [call for call in raw_tool_calls if isinstance(call, dict)]
+        )
     )
 
 
@@ -461,6 +473,8 @@ def _invoke_model(
     messages: list[object],
     request: AgentRunRequest,
     context: RunContext,
+    *,
+    model_call_id: str,
 ) -> object:
     recorder = context.model_event_recorder
     if recorder is not None:
@@ -491,7 +505,10 @@ def _invoke_model(
                 "metadata": {},
                 "duration": monotonic() - start,
                 "content": _response_content(response),
-                "tool_calls": _normalized_tool_calls(_tool_calls(response)),
+                "tool_calls": _normalized_tool_calls(
+                    _tool_calls(response),
+                    model_call_id=model_call_id,
+                ),
                 "artifact_ids": [],
                 "redacted_output": None,
             },
@@ -832,19 +849,33 @@ def _has_arguments(value: object) -> bool:
     return isinstance(value, dict) and bool(value)
 
 
-def _normalized_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _normalized_tool_calls(
+    tool_calls: list[dict[str, Any]],
+    *,
+    model_call_id: str | None = None,
+) -> list[dict[str, Any]]:
     normalized = []
     for index, call in enumerate(tool_calls):
         name = call.get("name")
         if not isinstance(name, str) or not name:
             continue
-        normalized.append(
-            {
-                "name": name,
-                "args": call.get("args", {}),
-                "id": str(call.get("id") or f"{name}_{index}"),
-            }
+        provider_tool_call_id = call.get("provider_tool_call_id")
+        if not isinstance(provider_tool_call_id, str):
+            raw_id = call.get("id")
+            provider_tool_call_id = raw_id if isinstance(raw_id, str) and raw_id else None
+        tool_call_id = (
+            f"{model_call_id}_tool_{index + 1}"
+            if model_call_id is not None
+            else str(call.get("id") or f"{name}_{index}")
         )
+        normalized_call = {
+            "name": name,
+            "args": call.get("args", {}),
+            "id": tool_call_id,
+        }
+        if provider_tool_call_id is not None:
+            normalized_call["provider_tool_call_id"] = provider_tool_call_id
+        normalized.append(normalized_call)
     return normalized
 
 
@@ -860,8 +891,13 @@ def _normalized_stream_tool_calls(
             {
                 "name": name,
                 "args": call.get("args", {}),
-                "id": str(call.get("id") or f"{model_call_id}_tool_{index + 1}"),
+                "id": f"{model_call_id}_tool_{index + 1}",
                 "model_call_id": model_call_id,
+                **(
+                    {"provider_tool_call_id": str(call["id"])}
+                    if isinstance(call.get("id"), str) and call.get("id")
+                    else {}
+                ),
             }
         )
     return normalized
@@ -870,7 +906,9 @@ def _normalized_stream_tool_calls(
 def _tool_loop_messages(
     response: object, invoked_results: list[tuple[dict[str, Any], Any]]
 ) -> list[object]:
-    messages: list[object] = [_assistant_tool_message(response)]
+    messages: list[object] = [
+        _assistant_tool_message(response, [call for call, _ in invoked_results])
+    ]
     for index, (call, result) in enumerate(invoked_results):
         messages.append(
             ToolMessage(
@@ -881,13 +919,25 @@ def _tool_loop_messages(
     return messages
 
 
-def _assistant_tool_message(response: object) -> object:
-    if isinstance(response, AIMessage):
-        return response
+def _assistant_tool_message(
+    response: object,
+    tool_calls: list[dict[str, Any]],
+) -> object:
     return AIMessage(
         content=_response_content(response),
-        tool_calls=_normalized_tool_calls(_tool_calls(response)),
+        tool_calls=_provider_visible_tool_calls(tool_calls),
     )
+
+
+def _provider_visible_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": str(call["id"]),
+            "name": str(call["name"]),
+            "args": call.get("args", {}),
+        }
+        for call in tool_calls
+    ]
 
 
 def _tool_message_content(result: dict[str, Any]) -> str:

@@ -192,7 +192,12 @@ def test_prompt_executor_records_model_completion_before_react_tool_events(
     first_model_completed = events.list_for_run(run.run_id)[2]
     assert first_model_completed.payload["content"] == ""
     assert first_model_completed.payload["tool_calls"] == [
-        {"id": "read_file_0", "name": "read_file", "args": {"path": "notes.txt"}}
+        {
+            "id": "model_call_1_tool_1",
+            "name": "read_file",
+            "args": {"path": "notes.txt"},
+            "provider_tool_call_id": "read_file_0",
+        }
     ]
     db.close()
 
@@ -238,7 +243,7 @@ def test_repl_runtime_denial_history_allows_next_turn_model_call(tmp_path) -> No
                 message for message in converted if isinstance(message, ToolMessage)
             ]
             assert tool_messages
-            assert tool_messages[-1].tool_call_id == "write_file_0"
+            assert tool_messages[-1].tool_call_id == "model_call_1_tool_1"
             return type(
                 "Response",
                 (),
