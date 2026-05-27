@@ -676,6 +676,13 @@ When approval is required:
 
 If the user enters `y` or `a`, tool execution continues.
 
+Interactive approval wait time is measured from the point the approval request
+is handed to the approval provider until the provider returns the user decision.
+The broker persists this value as `approval_wait_duration_ms` on the resulting
+`tool_call_completed`, `tool_call_failed`, or `tool_call_denied` audit payload.
+Policy auto-allow, audit-only decisions, policy denials, schema/config denials,
+and non-interactive denials record `approval_wait_duration_ms=0`.
+
 If the user enters `n`, `ToolBroker` returns a denied tool outcome carrying
 `turn_aborted=true`. Runtime records the denial and `PromptAgentExecutor`
 short-circuits the current turn without making a same-turn follow-up model call.
@@ -714,3 +721,29 @@ not emitted for `semi-auto` or `yolo` policy auto-allow decisions.
 
 Tool denial due to approval uses existing tool denial semantics and includes
 `error_class=policy_denied`.
+
+Tool audit payloads for completed, failed, and denied tool calls include:
+
+- broker-normalized `target`, derived from the same target facts used for
+  approval display and reusable approval scope.
+- `approval_wait_duration_ms`.
+
+Existing tool execution duration remains the duration of the tool work that
+actually ran. Interactive approval wait time must not be included in tool
+execution duration.
+
+TTY tool blocks use this presentation shape:
+
+```text
+read_file: src/app.py (0.1s)
+<successful stdout or preview>
+
+write_file: secrets.txt
+Denied by user.
+
+shell_exec: rm -rf target
+Denied by shell/path policy.
+
+shell_exec: pytest tests (1.4s)
+<concrete error messages>
+```

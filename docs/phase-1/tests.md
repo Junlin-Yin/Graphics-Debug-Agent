@@ -692,6 +692,35 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 - non-TTY and injected I/O paths still use `PlainReplView`.
 - Phase 0.5 streaming output remains non-authoritative and `AgentStreamEvent`
   is not persisted.
+- TTY tool blocks show `<tool_name>: <target>` for each tool call using the
+  broker-normalized target.
+- TTY tool blocks display execution duration only for tools that actually ran,
+  rendered in seconds with one decimal place from `execution_duration_ms`.
+- user-denied tool calls do not display a duration and render `Denied by user.`
+- shell/path policy denials do not display a duration and render
+  `Denied by shell/path policy.`
+- failed tool calls render the concrete tool error message returned by the tool
+  or broker.
+- successful shell tool blocks display stdout as the primary result preview and
+  do not display the raw `ToolResult` JSON structure as the primary UI.
+- `tool_call_completed`, `tool_call_failed`, and `tool_call_denied` payloads
+  persist `approval_wait_duration_ms`.
+
+Expected TTY tool-block examples:
+
+```text
+read_file: src/app.py (0.1s)
+<successful stdout or preview>
+
+write_file: secrets.txt
+Denied by user.
+
+shell_exec: rm -rf target
+Denied by shell/path policy.
+
+shell_exec: pytest tests (1.4s)
+<concrete error messages>
+```
 
 ## Failure Scenarios
 
@@ -813,6 +842,8 @@ Fake tool or fixture workspace must cover:
 - TTY `/skills`, `/tools`, and `/compress`.
 - TTY status bar updates after context estimation, compression, and model
   usage.
+- TTY tool block display for successful output, user denial, policy denial, and
+  tool failure.
 - non-TTY `debug-agent < input.txt` does not hang on approval-required tool.
 - Windows shell wrapper behavior using a fake runner or real Windows smoke
   environment when available.

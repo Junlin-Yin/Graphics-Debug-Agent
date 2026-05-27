@@ -772,3 +772,69 @@ Freeze/review checkpoint: all Phase 1 unit/integration/manual verification evide
 Rollback: keep completed lower milestones and disable only final presentation/trace additions if acceptance failures are isolated there.
 
 Runnable state: Phase 1 satisfies `docs/phase-1/scope.md`, all Phase 1 specs, `docs/phase-1/tests.md`, and `docs/phase-1/operations.md`.
+
+## Milestone 7: TUI Tool Block Target, Timing, And Result Presentation
+
+Objective: refine Phase 1 TTY tool presentation and audit timing without
+changing tool permission semantics, model-visible tool results, or runtime
+execution behavior.
+
+Deliverables: broker-normalized tool targets in tool metadata and TUI blocks,
+approval wait timing persisted for tool audit events, execution-only duration in
+TUI for tools that actually ran, stdout-first successful shell output, and
+distinct user-denial, policy-denial, and tool-failure messages.
+
+- [ ] Promote the broker approval target to a general tool `target` metadata
+  field for all model-visible tool calls.
+- [ ] Define target rendering for Phase 1 tools:
+  - `read_file`, `list_dir`, `write_file`, and `edit_file`: normalized path.
+  - `search_text`: query plus normalized path.
+  - `shell_exec`: normalized command preview, with cwd only when it materially
+    clarifies the target.
+  - `activate_skill`: `skill <name>`.
+  - `load_skill_ref_file`: `skill reference <skill_name>:<path>`.
+- [ ] Measure interactive approval wait time from approval request handoff to
+  approval decision return.
+- [ ] Persist `approval_wait_duration_ms` on `tool_call_completed`,
+  `tool_call_failed`, and `tool_call_denied` payloads; record `0` for
+  auto-allow, audit-only, policy denial, schema/config denial, and
+  non-interactive denial paths.
+- [ ] Ensure tool execution duration excludes approval wait time and is exposed
+  to the TUI as `execution_duration_ms` for tools that actually ran.
+- [ ] Ensure TTY tool blocks display `tool_name: target (N.Ns)` only when the
+  tool actually ran; user-denied and policy-denied calls display no duration.
+- [ ] Match the documented TTY tool-block examples in
+  `docs/phase-1/specs/approval.md` and `docs/phase-1/tests.md`.
+- [ ] Render successful shell tool output as stdout-first preview and do not
+  display the raw `ToolResult` JSON structure as the primary TUI output.
+- [ ] Render user approval denial as `Denied by user.`
+- [ ] Render shell/path policy denial as `Denied by shell/path policy.`
+- [ ] Render tool failures with the concrete tool or broker error message.
+- [ ] Add unit tests for target metadata, approval wait persistence, execution
+  duration separation, and TUI formatting for success, user denial, policy
+  denial, and tool failure.
+- [ ] Add integration coverage where deterministic injected I/O can verify TUI
+  event payloads without requiring live terminal interaction.
+- [ ] Run canonical verification from `docs/phase-1/operations.md`.
+- [ ] Run manual TTY checks for tool-block target, duration, success preview,
+  user denial, policy denial, and tool failure display.
+
+Modified boundaries: ToolBroker audit metadata, adapter/controller stream tool
+metadata, TTY tool-block formatting, tool preview formatting, and tests for
+these presentation/audit surfaces.
+
+Invariants: ToolBroker remains the permission and audit boundary; tool handlers
+do not own approval timing or UI display rules; runtime services do not import
+prompt_toolkit, rich, or concrete view classes; model-visible tool results and
+policy decisions are unchanged.
+
+Forbidden downstream behavior: do not add new tools, new approval modes, new
+tool risk categories, persistent cross-session grants, subagent/workflow/MCP
+behavior, `/agents`, `/models`, `/compact`, or Phase 2 compatibility behavior.
+
+Rollback: keep Phase 1 tool execution and approval semantics, and revert only
+the Milestone 7 metadata and TUI presentation changes if display regressions are
+isolated there.
+
+Runnable state: Phase 1 remains runnable after Milestone 7 with unchanged tool
+authorization semantics and improved TTY tool-block display/audit timing.

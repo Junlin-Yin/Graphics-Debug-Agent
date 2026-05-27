@@ -307,6 +307,9 @@ Phase 1 is complete when:
   exits non-zero.
 - `/tools` lists current runtime-visible tools with normalized approval policy
   and description, then path policy and shell policy details.
+- TTY tool blocks render tool name, broker-normalized target, execution
+  duration for tools that actually ran, success preview, and distinct denial or
+  failure messages without exposing raw tool-result JSON as the primary UI.
 - status bar context percentage is based on deterministic `ModelContextFrame`
   estimates.
 - Phase 1 acceptance is evaluated against the Phase 1 schema and safety policy.

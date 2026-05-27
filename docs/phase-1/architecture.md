@@ -251,6 +251,11 @@ Phase 1 reuses the Phase 0.5 controller/view architecture. Approval is modeled
 as a temporary controller state inside the same input lane, not as a popup or
 second command lane.
 
+Tool result presentation is owned by the controller/view layer and must use
+runtime-owned metadata supplied by `ToolBroker`. `ToolBroker` owns target
+normalization, approval wait timing, and audit payloads; the view must not
+reconstruct policy facts or infer targets from raw model arguments.
+
 ## Dependency Direction
 
 ```text
