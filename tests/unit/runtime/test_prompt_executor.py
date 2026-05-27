@@ -13,9 +13,12 @@ from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
 from debug_agent.runtime.config import PHASE_0_SYSTEM_PROMPT
 from debug_agent.runtime.contracts import AgentRunResult
+from debug_agent.runtime.context_manager import ContextManager
+from debug_agent.runtime.model_context import ConversationMessage
 from debug_agent.runtime.model_context import TokenEstimator
 from debug_agent.runtime.orchestrator import ReplRuntime
 from debug_agent.runtime.prompt_executor import PromptAgentExecutor
+from debug_agent.runtime.query_control import QueryControlPlane
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.tools.broker import ToolBroker
 from debug_agent.tools.native import tool_definitions
@@ -2464,6 +2467,186 @@ def test_repl_runtime_writes_back_omitted_conversation_and_metadata(tmp_path) ->
         "call-1",
         "call-2",
     ]
+    db.close()
+
+
+def test_repl_runtime_persists_tool_loop_messages_for_next_turn_context(tmp_path) -> None:
+    class ToolHistoryModel:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.messages_by_call = []
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            self.calls += 1
+            self.messages_by_call.append(messages)
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "I will read the notes before answering.",
+                        "tool_calls": [
+                            {
+                                "id": "read_file_0",
+                                "name": "read_file",
+                                "args": {"path": "notes.txt"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "answer", "tool_calls": [], "usage": {}},
+            )()
+
+    model = ToolHistoryModel()
+    (
+        workspace,
+        db,
+        sessions,
+        runs,
+        events,
+        checkpoints,
+        _artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, model)
+    (workspace / "notes.txt").write_text("persisted tool output", encoding="utf-8")
+    runtime = ReplRuntime(
+        db=db,
+        sessions=sessions,
+        runs=runs,
+        events=events,
+        checkpoints=checkpoints,
+        executor=executor,
+        session_id=session.session_id,
+        run_id=run.run_id,
+        workspace_root=workspace,
+    )
+
+    first = runtime.run_turn("read notes")
+    second = runtime.run_turn("what did the tool return?")
+
+    assert first.status == "completed"
+    assert second.status == "completed"
+    assert [message["kind"] for message in runtime.conversation] == [
+        "current_user_input",
+        "tool_call",
+        "tool_result",
+        "assistant_output",
+        "current_user_input",
+        "assistant_output",
+    ]
+    assert runtime.conversation[1]["model_call_id"] == "model_call_1"
+    assert runtime.conversation[1]["content"]["content"] == (
+        "I will read the notes before answering."
+    )
+    assert runtime.conversation[2]["model_call_id"] == "model_call_1"
+    assert runtime.conversation[2]["content"]["content"] == "persisted tool output"
+    second_turn_messages = [
+        _provider_message_content(message) for message in model.messages_by_call[2]
+    ]
+    second_turn_text = "\n".join(second_turn_messages)
+    assert "read notes" in second_turn_text
+    assert any(
+        "read_file" in str(getattr(message, "tool_calls", ""))
+        for message in model.messages_by_call[2]
+    )
+    assert "persisted tool output" in second_turn_text
+    assert "what did the tool return?" in second_turn_text
+    db.close()
+
+
+def test_repl_runtime_tool_history_group_is_closed_and_evictable(tmp_path) -> None:
+    class ToolHistoryModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "Reading first.",
+                        "tool_calls": [
+                            {
+                                "id": "read_file_0",
+                                "name": "read_file",
+                                "args": {"path": "notes.txt"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "answer", "tool_calls": [], "usage": {}},
+            )()
+
+    (
+        workspace,
+        db,
+        sessions,
+        runs,
+        events,
+        checkpoints,
+        _artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, ToolHistoryModel())
+    (workspace / "notes.txt").write_text("grouped tool output", encoding="utf-8")
+    runtime = ReplRuntime(
+        db=db,
+        sessions=sessions,
+        runs=runs,
+        events=events,
+        checkpoints=checkpoints,
+        executor=executor,
+        session_id=session.session_id,
+        run_id=run.run_id,
+        workspace_root=workspace,
+    )
+
+    result = runtime.run_turn("read notes")
+
+    messages = [
+        ConversationMessage.from_dict(message)
+        for message in runtime.conversation
+    ]
+    query_control = QueryControlPlane()
+    groups = query_control.derive_model_call_groups(messages)
+    tool_group = next(
+        group for group in groups if group.model_call_id == "model_call_1"
+    )
+    plan = ContextManager(query_control=query_control).prepare_compression(
+        retained_messages=messages,
+        current_messages=[],
+        retain_recent_model_calls=0,
+        window_tokens=10_000,
+        compression_reserved_output_tokens=100,
+    )
+
+    assert result.status == "completed"
+    assert tool_group.status == "closed"
+    assert tool_group.consumed_by_later_model_call is True
+    assert [message.kind for message in plan.evicted_messages] == [
+        "tool_call",
+        "tool_result",
+    ]
+    assert plan.selected_model_call_group_ids == ["model_call_1"]
     db.close()
 
 

@@ -141,7 +141,6 @@ class ReplRuntime:
                 next_seq = _next_conversation_seq(self.conversation)
                 turn_id = f"turn-{self.turn_counter}"
                 model_call_id = f"repl_turn_{self.turn_counter}_assistant"
-                consumed_ids = _consumed_model_call_ids(self.conversation)
                 self.conversation.append(
                     {
                         "seq": next_seq,
@@ -155,9 +154,23 @@ class ReplRuntime:
                         "metadata": {},
                     }
                 )
+                next_seq += 1
+                turn_tool_loop_messages = result.metadata.get("turn_tool_loop_messages")
+                if isinstance(turn_tool_loop_messages, list):
+                    for raw_message in turn_tool_loop_messages:
+                        if not isinstance(raw_message, dict):
+                            continue
+                        message = dict(raw_message)
+                        message["seq"] = next_seq
+                        message.setdefault("turn_id", turn_id)
+                        message.setdefault("artifact_refs", [])
+                        message.setdefault("metadata", {})
+                        self.conversation.append(message)
+                        next_seq += 1
+                consumed_ids = _consumed_model_call_ids(self.conversation)
                 self.conversation.append(
                     {
-                        "seq": next_seq + 1,
+                        "seq": next_seq,
                         "role": "assistant",
                         "kind": "assistant_output",
                         "turn_id": turn_id,

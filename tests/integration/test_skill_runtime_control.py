@@ -203,6 +203,97 @@ def test_active_skill_injection_shares_adapter_model_context_frame(tmp_path) -> 
     runtime["db"].close()
 
 
+def test_tool_loop_context_refresh_preserves_prior_skill_activation_result(tmp_path) -> None:
+    runtime = _runtime(tmp_path)
+
+    class ActivatingThenLoadingModel:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.messages_by_call = []
+
+        def bind_tools(self, tools):
+            self.bound_tool_names = [tool.name for tool in tools]
+            return self
+
+        def invoke(self, messages):
+            self.calls += 1
+            self.messages_by_call.append(messages)
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "activate_alpha",
+                                "name": "activate_skill",
+                                "args": {"name": "alpha"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            if self.calls == 2:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "load_alpha_guide",
+                                "name": "load_skill_ref_file",
+                                "args": {
+                                    "skill_name": "alpha",
+                                    "path": "references/guide.txt",
+                                },
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "done", "tool_calls": [], "usage": {}},
+            )()
+
+    model = ActivatingThenLoadingModel()
+    broker = ToolBroker(
+        event_writer=runtime["events"],
+        artifact_store=runtime["artifacts"],
+    )
+    adapter = LangChainAgentLoopAdapter(model=model, tool_broker=broker)
+    executor = PromptAgentExecutor(
+        event_writer=runtime["events"],
+        checkpoint_store=CheckpointStore(runtime["db"].connection),
+        artifact_store=runtime["artifacts"],
+        adapter=adapter,
+        tool_definitions=gated_user_facing_tool_definitions(),
+        system_prompt="system",
+        skill_snapshot_store=runtime["skill_store"],
+        run_store=runtime["runs"],
+    )
+
+    result = executor.run_turn(
+        session=runtime["session"],
+        run=runtime["run"],
+        user_input="activate alpha and read guide",
+        workspace_root=str(runtime["workspace"]),
+    )
+
+    assert result.status == "completed"
+    third_call_messages = [
+        _provider_message_content(message) for message in model.messages_by_call[2]
+    ]
+    third_call_text = "\n".join(third_call_messages)
+    assert "Skill activated: alpha" in third_call_text
+    assert "guide" in third_call_text
+    assert "[Runtime supplied active skill context]" in third_call_text
+    runtime["db"].close()
+
+
 def test_omitted_tool_output_remains_recoverable_from_artifact(tmp_path) -> None:
     runtime = _runtime(tmp_path)
     full_output = "full recoverable tool output\n" * 900

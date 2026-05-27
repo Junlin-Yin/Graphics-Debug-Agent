@@ -322,6 +322,31 @@ class PromptAgentExecutor:
             conversation=[],
             tools=[],
         )
+        accumulated_tool_loop_messages: list[object] = []
+
+        def refresh_model_context_frame(tool_loop_messages: list[object]) -> dict[str, Any]:
+            accumulated_tool_loop_messages.extend(tool_loop_messages)
+            return self._record_followup_composition(
+                session=session,
+                run=run,
+                query_control=query_control,
+                query_state_box=query_state_box,
+                context_estimate_box=context_estimate_box,
+                context_estimate_history=context_estimate_history,
+                continuation_history=continuation_history,
+                retained_messages_box=retained_messages_box,
+                current_messages=[
+                    *current_messages,
+                    *_provider_messages_to_conversation(
+                        accumulated_tool_loop_messages,
+                        turn_id=query_state_box["state"].turn_id,
+                    ),
+                ],
+                optimization_box=optimization_box,
+                prompt_turn_counter=prompt_turn_counter,
+                agent_stream_callback=agent_stream_callback,
+            )
+
         context = RunContext(
             workspace_root=workspace_root,
             artifact_root=session.artifact_root,
@@ -331,26 +356,7 @@ class PromptAgentExecutor:
                 "skill_snapshot_store": self.skill_snapshot_store,
                 "run_store": self.run_store,
                 "approval_provider": approval_provider,
-                "refresh_model_context_frame": lambda tool_loop_messages: self._record_followup_composition(
-                    session=session,
-                    run=run,
-                    query_control=query_control,
-                    query_state_box=query_state_box,
-                    context_estimate_box=context_estimate_box,
-                    context_estimate_history=context_estimate_history,
-                    continuation_history=continuation_history,
-                    retained_messages_box=retained_messages_box,
-                    current_messages=[
-                        *current_messages,
-                        *_provider_messages_to_conversation(
-                            tool_loop_messages,
-                            turn_id=query_state_box["state"].turn_id,
-                        ),
-                    ],
-                    optimization_box=optimization_box,
-                    prompt_turn_counter=prompt_turn_counter,
-                    agent_stream_callback=agent_stream_callback,
-                ),
+                "refresh_model_context_frame": refresh_model_context_frame,
             },
             model_event_recorder=lambda kind, payload: self._append_model_event(
                 session=session,
@@ -395,6 +401,13 @@ class PromptAgentExecutor:
             else [
                 message.to_dict()
                 for message in optimization_box["optimization"]["retained_messages"]
+            ],
+            turn_tool_loop_messages=[
+                message.to_dict()
+                for message in _provider_messages_to_conversation(
+                    accumulated_tool_loop_messages,
+                    turn_id=query_state.turn_id,
+                )
             ],
         )
         if result.metadata.get("compression_failed_abort") is True:
@@ -1511,16 +1524,19 @@ def _provider_messages_to_conversation(
             kind = "tool_loop_message"
         content = getattr(message, "content", message)
         tool_call_id = getattr(message, "tool_call_id", None)
+        model_call_id = None
         if role == "assistant" and kind == "tool_call":
             tool_calls = _message_tool_calls(message)
             if tool_calls:
                 content = {"content": content, "tool_calls": tool_calls}
+                model_call_id = _model_call_id_from_tool_calls(tool_calls)
         if role == "tool" and kind == "tool_result" and isinstance(tool_call_id, str):
             content = {
                 "message_type": "tool_result",
                 "content": content,
                 "tool_call_id": tool_call_id,
             }
+            model_call_id = _model_call_id_from_tool_call_id(tool_call_id)
         if not isinstance(content, (str, dict)):
             content = str(content)
         converted.append(
@@ -1529,7 +1545,7 @@ def _provider_messages_to_conversation(
                 role=str(role or "assistant"),
                 kind=kind,
                 turn_id=turn_id,
-                model_call_id=None,
+                model_call_id=model_call_id,
                 tool_call_id=tool_call_id,
                 content=content,
             )
@@ -1556,6 +1572,27 @@ def _message_tool_calls(message: object) -> list[dict[str, Any]]:
     return normalized
 
 
+def _model_call_id_from_tool_calls(tool_calls: list[dict[str, Any]]) -> str | None:
+    model_call_ids = {
+        model_call_id
+        for call in tool_calls
+        if isinstance(call.get("id"), str)
+        for model_call_id in [_model_call_id_from_tool_call_id(call["id"])]
+        if model_call_id is not None
+    }
+    if len(model_call_ids) == 1:
+        return next(iter(model_call_ids))
+    return None
+
+
+def _model_call_id_from_tool_call_id(tool_call_id: str) -> str | None:
+    marker = "_tool_"
+    if marker not in tool_call_id:
+        return None
+    model_call_id, _tool_index = tool_call_id.rsplit(marker, 1)
+    return model_call_id or None
+
+
 def _with_context_metadata(
     result: AgentRunResult,
     *,
@@ -1565,6 +1602,7 @@ def _with_context_metadata(
     query_state: Any,
     context_optimization: dict[str, Any] | None = None,
     conversation_writeback: list[dict[str, Any]] | None = None,
+    turn_tool_loop_messages: list[dict[str, Any]] | None = None,
 ) -> AgentRunResult:
     metadata = {
         **result.metadata,
@@ -1585,6 +1623,8 @@ def _with_context_metadata(
         metadata["context_optimization"] = context_optimization
     if conversation_writeback is not None:
         metadata["conversation_writeback"] = conversation_writeback
+    if turn_tool_loop_messages:
+        metadata["turn_tool_loop_messages"] = turn_tool_loop_messages
     return AgentRunResult(
         status=result.status,
         assistant_output=result.assistant_output,
