@@ -431,6 +431,14 @@ tool bindings, and instruction channels from the frame. It does not pass the
 frame verbatim to providers, but it must not add, remove, reorder, or reinterpret
 model-visible frame content as a prompt policy decision.
 
+Approval-denied terminal observations are provider-native tool results only when
+the runtime has a non-empty tool call id that can be paired with the preceding
+assistant tool call message. If the denied tool call id is missing, empty, or
+otherwise cannot be paired, the runtime must preserve the denial as ordinary
+LLM-visible conversation text instead of materializing a provider-native
+`ToolMessage`. The adapter must never send empty or unpaired `tool_call_id`
+values to a provider.
+
 Compression does not use the ordinary task `ModelContextFrame`. It uses a
 runtime-owned `CompressionContextFrame` that excludes the main agent system
 prompt, available skill headers, model-visible tool schema bindings, and active

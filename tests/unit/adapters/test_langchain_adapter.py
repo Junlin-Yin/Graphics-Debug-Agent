@@ -1395,6 +1395,51 @@ def test_langchain_adapter_materializes_denied_terminal_observation_for_next_tur
     assert result.assistant_output == "saw denial"
 
 
+def test_langchain_adapter_does_not_materialize_empty_tool_call_id_observation() -> None:
+    from langchain_core.messages import ToolMessage, convert_to_messages
+
+    denied_observation = ConversationMessage(
+        seq=40,
+        role="tool",
+        kind="tool_result",
+        turn_id="turn-1",
+        model_call_id=None,
+        tool_call_id="",
+        content={
+            "message_type": "tool_result",
+            "content": "Approval denied.",
+            "tool_call_id": "",
+        },
+        metadata={
+            "turn_aborted": True,
+            "terminal_observation": True,
+        },
+    )
+
+    class ProviderValidatingModel:
+        def invoke(self, messages):
+            converted = convert_to_messages(messages)
+            assert not any(
+                isinstance(message, ToolMessage) and message.tool_call_id == ""
+                for message in converted
+            )
+            assert "Approval denied." in "\n".join(
+                str(getattr(message, "content", "")) for message in converted
+            )
+            return AIMessage(content="saw plain denial")
+
+    request = _frame_request()
+    request.model_context_frame.message_segments.append(denied_observation)
+
+    result = LangChainAgentLoopAdapter(model=ProviderValidatingModel()).run(
+        request,
+        _context(),
+    )
+
+    assert result.status == "completed"
+    assert result.assistant_output == "saw plain denial"
+
+
 def test_langchain_adapter_aggregates_usage_across_tool_loop_model_calls() -> None:
     class RecordingBroker:
         def invoke(self, session_id, run_id, tool_name, arguments, context):

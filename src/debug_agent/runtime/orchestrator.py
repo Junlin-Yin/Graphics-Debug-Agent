@@ -212,7 +212,10 @@ class ReplRuntime:
             for call in result.metadata.get("denied_tool_calls", [])
             if isinstance(call, dict)
         ]
-        if denied_tool_calls:
+        provider_tool_calls = [
+            call for call in denied_tool_calls if _non_empty_str(call.get("id"))
+        ]
+        if provider_tool_calls:
             self.conversation.append(
                 {
                     "seq": next_seq + 1,
@@ -225,11 +228,11 @@ class ReplRuntime:
                         "content": "",
                         "tool_calls": [
                             {
-                                "id": str(call.get("id") or ""),
+                                "id": str(call["id"]),
                                 "name": str(call.get("name") or ""),
                                 "args": call.get("args", {}),
                             }
-                            for call in denied_tool_calls
+                            for call in provider_tool_calls
                         ],
                     },
                     "artifact_refs": [],
@@ -238,30 +241,51 @@ class ReplRuntime:
                     },
                 }
             )
-        for offset, tool_result in enumerate(result.tool_results, start=1):
+        next_seq += 1
+        if provider_tool_calls:
+            next_seq += 1
+        for index, tool_result in enumerate(result.tool_results):
             metadata = dict(tool_result.get("metadata", {}))
             metadata["terminal_observation"] = True
-            tool_call_id = str(
-                metadata.get("tool_call_id")
-                or _tool_call_id_for_result(denied_tool_calls, offset - 1)
-            )
-            self.conversation.append(
-                {
-                    "seq": next_seq + offset + (1 if denied_tool_calls else 0),
-                    "role": "tool",
-                    "kind": "tool_result",
-                    "turn_id": turn_id,
-                    "model_call_id": None,
-                    "tool_call_id": tool_call_id,
-                    "content": {
-                        "message_type": "tool_result",
-                        "content": _denied_tool_observation_content(tool_result),
+            tool_call_id = _tool_call_id_for_result(denied_tool_calls, index)
+            if tool_call_id:
+                self.conversation.append(
+                    {
+                        "seq": next_seq,
+                        "role": "tool",
+                        "kind": "tool_result",
+                        "turn_id": turn_id,
+                        "model_call_id": None,
                         "tool_call_id": tool_call_id,
-                    },
-                    "artifact_refs": list(tool_result.get("artifacts", [])),
-                    "metadata": metadata,
-                }
-            )
+                        "content": {
+                            "message_type": "tool_result",
+                            "content": _denied_tool_observation_content(tool_result),
+                            "tool_call_id": tool_call_id,
+                        },
+                        "artifact_refs": list(tool_result.get("artifacts", [])),
+                        "metadata": metadata,
+                    }
+                )
+            else:
+                self.conversation.append(
+                    {
+                        "seq": next_seq,
+                        "role": "assistant",
+                        "kind": "approval_denied_observation",
+                        "turn_id": turn_id,
+                        "model_call_id": None,
+                        "tool_call_id": None,
+                        "content": _plain_denied_tool_observation_content(
+                            tool_result,
+                            denied_tool_calls[index]
+                            if index < len(denied_tool_calls)
+                            else None,
+                        ),
+                        "artifact_refs": list(tool_result.get("artifacts", [])),
+                        "metadata": metadata,
+                    }
+                )
+            next_seq += 1
 
     def set_approval_provider(self, approval_provider: object) -> None:
         with self._lock:
@@ -1312,9 +1336,13 @@ def _consumed_model_call_ids(conversation: list[dict[str, Any]]) -> list[str]:
 def _tool_call_id_for_result(tool_calls: list[dict[str, Any]], index: int) -> str:
     if 0 <= index < len(tool_calls):
         tool_call_id = tool_calls[index].get("id")
-        if isinstance(tool_call_id, str):
+        if _non_empty_str(tool_call_id):
             return tool_call_id
     return ""
+
+
+def _non_empty_str(value: object) -> bool:
+    return isinstance(value, str) and bool(value)
 
 
 def _denied_tool_observation_content(tool_result: dict[str, Any]) -> str:
@@ -1331,6 +1359,28 @@ def _denied_tool_observation_content(tool_result: dict[str, Any]) -> str:
         },
         sort_keys=True,
     )
+
+
+def _plain_denied_tool_observation_content(
+    tool_result: dict[str, Any],
+    tool_call: dict[str, Any] | None,
+) -> str:
+    tool_name = ""
+    if isinstance(tool_call, dict):
+        name = tool_call.get("name")
+        if isinstance(name, str):
+            tool_name = name
+    error = tool_result.get("error")
+    message = ""
+    if isinstance(error, dict):
+        raw_message = error.get("message")
+        if isinstance(raw_message, str):
+            message = raw_message
+    if not message:
+        message = "Approval denied."
+    if tool_name:
+        return f"Tool call denied by user: {tool_name}. {message}"
+    return f"Tool call denied by user. {message}"
 
 
 def _active_conflict_message(session_id: str) -> str:

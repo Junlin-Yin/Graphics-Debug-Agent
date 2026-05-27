@@ -710,6 +710,10 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
   artifact detail and must not re-render a second tool summary block for the
   same tool call.
 - user-denied tool calls do not display a duration and render `Denied by user.`
+- after a user-denied tool call, the next model call sees the denial fact without
+  receiving any provider-native tool result that has an empty or unpaired
+  `tool_call_id`; missing denied tool-call ids are rendered as ordinary
+  LLM-visible denial observations.
 - shell/path policy denials do not display a duration and render
   `Denied by shell/path policy.`
 - failed tool calls render the concrete tool error message returned by the tool

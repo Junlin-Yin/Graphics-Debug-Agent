@@ -295,6 +295,91 @@ def test_repl_runtime_denial_history_allows_next_turn_model_call(tmp_path) -> No
     db.close()
 
 
+def test_repl_runtime_denial_history_without_tool_id_uses_plain_observation(
+    tmp_path,
+) -> None:
+    (
+        workspace,
+        db,
+        sessions,
+        runs,
+        events,
+        checkpoints,
+        _artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, object())
+    runtime = ReplRuntime(
+        db=db,
+        sessions=sessions,
+        runs=runs,
+        events=events,
+        checkpoints=checkpoints,
+        executor=executor,
+        session_id=session.session_id,
+        run_id=run.run_id,
+        workspace_root=workspace,
+    )
+    result = AgentRunResult(
+        status="failed",
+        assistant_output=None,
+        tool_results=[
+            {
+                "status": "denied",
+                "output": None,
+                "error": {
+                    "error_class": "policy_denied",
+                    "message": "Approval denied.",
+                    "source": "toolbroker",
+                    "recoverable": True,
+                },
+                "artifacts": [],
+                "metadata": {"turn_aborted": True},
+                "redacted_output": None,
+            }
+        ],
+        usage={},
+        error={
+            "error_class": "policy_denied",
+            "message": "Approval denied.",
+            "source": "toolbroker",
+            "recoverable": True,
+        },
+        metadata={
+            "failure_scope": "turn",
+            "approval_denied_abort": True,
+            "denied_tool_calls": [
+                {"id": "", "name": "write_file", "args": {"path": "count.py"}}
+            ],
+        },
+    )
+
+    runtime._append_denied_turn_observation("write count.py", result)
+
+    assert not any(
+        message["kind"] == "tool_result" and message["tool_call_id"] == ""
+        for message in runtime.conversation
+    )
+    assert not any(
+        message["kind"] == "tool_call"
+        and any(
+            call.get("id") == ""
+            for call in message.get("content", {}).get("tool_calls", [])
+        )
+        for message in runtime.conversation
+    )
+    plain_observations = [
+        message
+        for message in runtime.conversation
+        if message["kind"] == "approval_denied_observation"
+    ]
+    assert len(plain_observations) == 1
+    assert "write_file" in plain_observations[0]["content"]
+    assert "Approval denied." in plain_observations[0]["content"]
+    db.close()
+
+
 def test_tool_loop_followup_records_new_context_estimate_before_second_call(
     tmp_path,
 ) -> None:

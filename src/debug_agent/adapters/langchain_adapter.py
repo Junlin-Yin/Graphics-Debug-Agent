@@ -405,6 +405,8 @@ def _provider_message_from_segment(segment: ConversationMessage) -> object:
             content=_tool_result_content(content["content"]),
             tool_call_id=str(content["tool_call_id"]),
         )
+    if segment.role == "tool" and segment.kind == "tool_result":
+        return {"role": "assistant", "content": _tool_result_content(content)}
     if segment.role == "assistant" and segment.kind == "tool_call":
         assistant_content, tool_calls = _assistant_tool_call_content(content)
         if tool_calls:
@@ -432,7 +434,7 @@ def _is_structured_tool_result(
     return (
         isinstance(content, dict)
         and content.get("message_type") == "tool_result"
-        and isinstance(content.get("tool_call_id"), str)
+        and _non_empty_str(content.get("tool_call_id"))
         and content.get("tool_call_id") == segment.tool_call_id
     )
 
@@ -841,6 +843,10 @@ def _matching_tool_call_index(
 
 def _has_arguments(value: object) -> bool:
     return isinstance(value, dict) and bool(value)
+
+
+def _non_empty_str(value: object) -> bool:
+    return isinstance(value, str) and bool(value)
 
 
 def _normalized_tool_calls(
