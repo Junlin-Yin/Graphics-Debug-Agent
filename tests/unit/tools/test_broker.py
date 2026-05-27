@@ -12,7 +12,9 @@ from debug_agent.persistence.sqlite import RuntimeDatabase
 from debug_agent.runtime.policy import (
     PathPolicyEntry,
     PermissionEvaluator,
+    ShellPolicy,
     build_builtin_policy,
+    policy_facts_to_snapshot,
 )
 from debug_agent.tools.broker import FakeApprovalProvider, ToolBroker
 from debug_agent.tools.shell import FakeShellRunner
@@ -517,6 +519,48 @@ def test_tool_audit_payload_includes_broker_normalized_target_for_native_search_
     assert completed[0]["target"] == str((workspace / "src/app.py").resolve())
     assert completed[1]["target"] == f"needle in {(workspace / 'src').resolve()}"
     assert completed[2]["target"] == "pytest tests"
+    runtime["db"].close()
+
+
+def test_broker_restores_policy_from_frozen_config_when_policy_facts_are_absent(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    workspace = runtime["workspace"]
+    facts = build_builtin_policy(workspace)
+    facts.user_path_deny.append(
+        PathPolicyEntry.from_raw("deny", "README.md", workspace, facts.home)
+    )
+    facts.user_shell = ShellPolicy(deny=[("git",)])
+    (workspace / "README.md").write_text("secret", encoding="utf-8")
+    base_context = {
+        "workspace_root": str(workspace),
+        "approval_mode": "yolo",
+        "frozen_config": {"policy": policy_facts_to_snapshot(facts)},
+        "approval_grants": ApprovalGrantStore(runtime["db"].connection),
+        "approval_provider": FakeApprovalProvider("denied"),
+    }
+
+    denied_read = runtime["broker"].invoke(
+        session_id=runtime["session"].session_id,
+        run_id=runtime["run"].run_id,
+        tool_name="read_file",
+        arguments={"path": "README.md"},
+        context=base_context,
+    )
+    denied_shell = runtime["broker"].invoke(
+        session_id=runtime["session"].session_id,
+        run_id=runtime["run"].run_id,
+        tool_name="shell_exec",
+        arguments={"argv": ["git", "status"]},
+        context=base_context,
+    )
+
+    assert denied_read.status == "denied"
+    assert denied_read.error["message"].startswith("Path denied by policy:")
+    assert denied_shell.status == "denied"
+    assert denied_shell.error["message"] == "Command denied by user shell policy."
+    assert _event_kinds(runtime) == ["tool_call_denied", "tool_call_denied"]
     runtime["db"].close()
 
 

@@ -20,6 +20,7 @@ from debug_agent.runtime.policy import (
     canonicalize_path,
     classify_argv_paths,
     normalize_shell_argv,
+    policy_facts_from_snapshot,
     scope_signature_for_tool,
 )
 from debug_agent.tools.native import NativeHandlerResult, tool_definitions, tool_error_result, tool_handlers
@@ -222,7 +223,7 @@ class ToolBroker:
             )
             return result
 
-        policy_facts = context.get("policy_facts") or build_builtin_policy(workspace_root)
+        policy_facts = _policy_facts_from_context(context, workspace_root)
         evaluator = context.get("permission_evaluator") or PermissionEvaluator(policy_facts)
         normalized = _normalize_tool_arguments(
             definition=definition,
@@ -770,6 +771,17 @@ def _validate_schema(definition: ToolDefinition, arguments: dict[str, Any]) -> s
     return None
 
 
+def _policy_facts_from_context(context: dict[str, Any], workspace_root: Path) -> PolicyFacts:
+    policy_facts = context.get("policy_facts")
+    if isinstance(policy_facts, PolicyFacts):
+        return policy_facts
+    frozen_config = context.get("frozen_config")
+    policy_snapshot = frozen_config.get("policy") if isinstance(frozen_config, dict) else None
+    if isinstance(policy_snapshot, dict):
+        return policy_facts_from_snapshot(policy_snapshot, workspace_root)
+    return build_builtin_policy(workspace_root)
+
+
 def _normalize_tool_arguments(
     *,
     definition: ToolDefinition,
@@ -833,11 +845,9 @@ def _normalize_runtime_control_arguments(
         approval_mode=runtime_context.get("approval_mode", "normal"),
         frozen_config=runtime_context.get("frozen_config", {}),
         tool_definition=definition,
-        frozen_policy=runtime_context.get("policy_facts") or build_builtin_policy(workspace_root),
+        frozen_policy=_policy_facts_from_context(runtime_context, workspace_root),
         permission_evaluator=runtime_context.get("permission_evaluator")
-        or PermissionEvaluator(
-            runtime_context.get("policy_facts") or build_builtin_policy(workspace_root)
-        ),
+        or PermissionEvaluator(_policy_facts_from_context(runtime_context, workspace_root)),
         approval_grants=runtime_context.get("approval_grants"),
         approval_provider=runtime_context.get("approval_provider")
         or NonInteractiveApprovalProvider(),

@@ -16,6 +16,8 @@ from debug_agent.runtime.policy import (
     canonicalize_path,
     classify_argv_paths,
     load_main_agent_policy,
+    policy_facts_from_snapshot,
+    policy_facts_to_snapshot,
     normalize_shell_argv,
     scope_signature_for_tool,
 )
@@ -137,6 +139,38 @@ deny = [["git"]]
     assert [entry.raw for entry in policy.facts.user_path_deny] == ["secrets/", ".env"]
     assert policy.facts.user_shell.allow == [("uv",), ("python", "-m", "pytest")]
     assert policy.facts.user_shell.deny == [("git",)]
+
+
+def test_policy_snapshot_restores_user_path_and_shell_policy(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    facts = build_builtin_policy(workspace, home)
+    facts.user_path_deny.append(
+        PathPolicyEntry.from_raw("deny", "README.md", workspace, home)
+    )
+    facts.user_shell = ShellPolicy(deny=[("git",)])
+    snapshot = policy_facts_to_snapshot(facts)
+
+    restored = policy_facts_from_snapshot(snapshot, workspace, home)
+    evaluator = PermissionEvaluator(restored)
+
+    assert evaluator.classify_path(workspace / "README.md").classification == "denied"
+    decision = evaluator.evaluate(
+        NormalizedToolCall(
+            tool_name="shell_exec",
+            category="shell",
+            risk_level="execute",
+            access=("execute",),
+            paths=(workspace,),
+            shell_argv=("git", "status"),
+            approval_scope_signature="shell_exec|execute|git",
+        ),
+        approval_mode="yolo",
+    )
+    assert decision.decision == "deny"
+    assert decision.reason == "user_shell_denied"
 
 
 def test_policy_rejects_invalid_scope_and_regex_shapes(tmp_path, monkeypatch) -> None:

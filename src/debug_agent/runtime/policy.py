@@ -364,6 +364,36 @@ def policy_facts_to_snapshot(facts: PolicyFacts) -> dict[str, Any]:
     }
 
 
+def policy_facts_from_snapshot(
+    snapshot: dict[str, Any], workspace_root: str | Path, home: str | Path | None = None
+) -> PolicyFacts:
+    home_path = Path(home).resolve() if home is not None else _home_path()
+    user_shell = snapshot.get("user_shell", {}) if isinstance(snapshot, dict) else {}
+    if not isinstance(user_shell, dict):
+        user_shell = {}
+    return PolicyFacts(
+        workspace_root=Path(workspace_root).resolve(),
+        home=home_path,
+        builtin_path_deny=[
+            _entry_from_snapshot(item)
+            for item in _snapshot_entry_list(snapshot.get("builtin_path_deny"))
+        ],
+        user_path_trust=[
+            _entry_from_snapshot(item)
+            for item in _snapshot_entry_list(snapshot.get("user_path_trust"))
+        ],
+        user_path_deny=[
+            _entry_from_snapshot(item)
+            for item in _snapshot_entry_list(snapshot.get("user_path_deny"))
+        ],
+        builtin_shell_deny=ShellPolicy(),
+        user_shell=ShellPolicy(
+            allow=_parse_shell_prefixes(user_shell.get("allow", [])),
+            deny=_parse_shell_prefixes(user_shell.get("deny", [])),
+        ),
+    )
+
+
 def canonicalize_path(path: str | Path, workspace_root: str | Path) -> Path:
     candidate = Path(path)
     if isinstance(path, str) and not candidate.is_absolute():
@@ -512,6 +542,24 @@ def _entry_snapshot(entry: PathPolicyEntry) -> dict[str, Any]:
         "subtree": entry.subtree,
         "component_name": entry.component_name,
     }
+
+
+def _snapshot_entry_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _entry_from_snapshot(item: dict[str, Any]) -> PathPolicyEntry:
+    return PathPolicyEntry(
+        scope=str(item.get("scope") or "deny"),
+        raw=str(item.get("raw") or ""),
+        path=Path(str(item.get("path") or "")),
+        subtree=bool(item.get("subtree")),
+        component_name=item.get("component_name")
+        if isinstance(item.get("component_name"), str)
+        else None,
+    )
 
 
 def _command_identity(token: str) -> str:

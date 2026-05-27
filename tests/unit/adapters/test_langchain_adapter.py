@@ -895,6 +895,7 @@ def test_langchain_adapter_delegates_tool_calls_to_toolbroker() -> None:
                 "approval_mode": "yolo",
                 "cancellation_token": None,
                 "timeout_seconds": 30,
+                "frozen_config": {"provider": "fake"},
                 "metadata": {},
             },
         )
@@ -1010,6 +1011,7 @@ def test_langchain_adapter_feeds_tool_results_back_to_model() -> None:
                 "approval_mode": "yolo",
                 "cancellation_token": None,
                 "timeout_seconds": 30,
+                "frozen_config": {"provider": "fake"},
                 "metadata": {},
             },
         )
@@ -1692,6 +1694,7 @@ def test_generated_langchain_tool_callable_delegates_only_to_toolbroker() -> Non
                 "approval_mode": "yolo",
                 "cancellation_token": None,
                 "timeout_seconds": 30,
+                "frozen_config": {"provider": "fake"},
                 "metadata": {},
             },
         )

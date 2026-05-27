@@ -26,6 +26,7 @@ from debug_agent.runtime.contracts import (
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.runtime.context_manager import CompressionError, ContextManager
 from debug_agent.runtime.model_context import CompressionContextFrame, ConversationMessage
+from debug_agent.runtime.policy import PermissionEvaluator, policy_facts_from_snapshot
 from debug_agent.runtime.prompt_composer import PromptComposer, PromptCompositionRequest
 from debug_agent.runtime.query_control import QueryControlPlane
 from debug_agent.runtime.stream_events import AgentStreamEvent
@@ -347,17 +348,23 @@ class PromptAgentExecutor:
                 agent_stream_callback=agent_stream_callback,
             )
 
+        tool_metadata = {
+            "skill_snapshot_store": self.skill_snapshot_store,
+            "run_store": self.run_store,
+            "approval_provider": approval_provider,
+            "refresh_model_context_frame": refresh_model_context_frame,
+        }
+        policy_snapshot = session.config_snapshot.get("policy")
+        if isinstance(policy_snapshot, dict):
+            policy_facts = policy_facts_from_snapshot(policy_snapshot, workspace_root)
+            tool_metadata["policy_facts"] = policy_facts
+            tool_metadata["permission_evaluator"] = PermissionEvaluator(policy_facts)
         context = RunContext(
             workspace_root=workspace_root,
             artifact_root=session.artifact_root,
             approval_mode=session.approval_mode,
             cancellation_token=None,
-            metadata={
-                "skill_snapshot_store": self.skill_snapshot_store,
-                "run_store": self.run_store,
-                "approval_provider": approval_provider,
-                "refresh_model_context_frame": refresh_model_context_frame,
-            },
+            metadata=tool_metadata,
             model_event_recorder=lambda kind, payload: self._append_model_event(
                 session=session,
                 run=run,

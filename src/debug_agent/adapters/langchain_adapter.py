@@ -361,6 +361,7 @@ def _tool_context(request: AgentRunRequest, context: RunContext) -> dict[str, An
         "approval_mode": context.approval_mode,
         "cancellation_token": context.cancellation_token,
         "metadata": context.metadata,
+        "frozen_config": request.model_config,
         **context.metadata,
     }
     if request.timeout_seconds is not None:
