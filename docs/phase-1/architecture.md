@@ -79,6 +79,13 @@ call until final answer, turn abort, timeout, cancellation, or terminal
 one-shot failure. The query control plane is runtime-owned; it is not an agent
 framework loop and does not own durable runtime truth.
 
+For streaming model calls, the configured model timeout is an idle timeout for
+receiving the next provider stream event, not a total wall-clock limit for the
+entire streamed response. Each received delta, tool-call chunk, usage chunk, or
+terminal stream event resets the timeout window. A streaming model timeout aborts
+the current query. In REPL/TUI mode it is rendered as an error block and returns
+the UI to prompt-input state without terminalizing the session.
+
 Phase 1 query state includes:
 
 - `query_id`.

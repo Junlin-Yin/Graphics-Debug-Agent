@@ -817,7 +817,11 @@ def _terminal_summary_status(result: AgentRunResult) -> str:
 
 
 def _is_turn_scoped_failure(result: AgentRunResult) -> bool:
-    return result.status == "failed" and result.metadata.get("failure_scope") == "turn"
+    return (
+        result.status == "timeout"
+        or result.status == "failed"
+        and result.metadata.get("failure_scope") == "turn"
+    )
 
 
 def _is_approval_denied_abort(result: AgentRunResult) -> bool:

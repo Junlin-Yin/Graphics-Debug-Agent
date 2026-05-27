@@ -1174,6 +1174,34 @@ def test_plain_repl_turn_scoped_failure_does_not_terminalize_runtime() -> None:
     assert "Tool call loop exceeded Phase 0 iteration limit." in output.getvalue()
 
 
+def test_tui_model_timeout_displays_error_and_restores_input() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime(
+        _result(
+            "timeout",
+            error={
+                "error_class": "timeout",
+                "message": "Model stream timed out after 30 seconds.",
+                "source": "model",
+                "recoverable": True,
+            },
+        )
+    )
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_submit("hello")
+    controller.wait_for_active_turn(timeout=2)
+    controller.drain_completed_turns()
+
+    assert view.errors == ["Model stream timed out after 30 seconds."]
+    assert view.input_enabled[-1] is True
+    assert view.closed_summaries == []
+    assert runtime.failed_results == []
+    assert controller.exit_code == 0
+
+
 def test_status_slash_command_appends_system_message() -> None:
     from debug_agent.cli.repl_controller import ReplController
 

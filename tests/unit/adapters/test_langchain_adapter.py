@@ -771,6 +771,61 @@ def test_langchain_adapter_times_out_blocking_stream_call() -> None:
     assert [event.kind for event in stream_events] == ["stream_model_call_started"]
 
 
+def test_langchain_adapter_stream_timeout_resets_after_each_chunk() -> None:
+    events = []
+    stream_events = []
+
+    class ActiveStreamingModel:
+        stream_chunks = ["one", "two", "three"]
+
+        def stream(self, messages):
+            for chunk in self.stream_chunks:
+                time.sleep(0.03)
+                yield AIMessageChunk(content=chunk)
+
+        def invoke(self, messages):
+            raise AssertionError("streaming path must not fall back to invoke")
+
+    request = AgentRunRequest(
+        session_id="sess_1",
+        run_id="run_1",
+        user_input="hello",
+        system_prompt="system prompt",
+        conversation=[],
+        tools=[],
+        model_config={"provider": "fake", "model": "active-stream"},
+        timeout_seconds=0.05,
+    )
+    context = RunContext(
+        workspace_root="/repo",
+        artifact_root="/repo/.sessions/sess_1/artifacts",
+        approval_mode="yolo",
+        cancellation_token=None,
+        metadata={},
+        model_event_recorder=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    result = LangChainAgentLoopAdapter(model=ActiveStreamingModel()).stream(
+        request,
+        context,
+        stream_events.append,
+    )
+
+    assert result.status == "completed"
+    assert result.assistant_output == "onetwothree"
+    assert [kind for kind, _payload in events] == [
+        "model_call_started",
+        "model_call_completed",
+    ]
+    assert [event.kind for event in stream_events] == [
+        "stream_model_call_started",
+        "stream_text_delta",
+        "stream_text_delta",
+        "stream_text_delta",
+        "stream_model_call_completed",
+    ]
+
+
 def test_langchain_adapter_delegates_tool_calls_to_toolbroker() -> None:
     calls = []
 

@@ -694,6 +694,11 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 - non-TTY and injected I/O paths still use `PlainReplView`.
 - Phase 0.5 streaming output remains non-authoritative and `AgentStreamEvent`
   is not persisted.
+- streaming model timeout is measured as idle time since the previous provider
+  stream event; an active stream that emits deltas within the timeout window does
+  not time out solely because total wall-clock response time exceeds the timeout.
+- TUI model timeout renders an Error block, marks only the current turn failed,
+  restores prompt input, and does not terminalize the REPL session.
 - TTY tool blocks show `<tool_name>: <target>` for each tool call using the
   broker-normalized target.
 - TTY tool blocks display execution duration only for tools that actually ran,

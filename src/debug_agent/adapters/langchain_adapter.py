@@ -684,15 +684,9 @@ def _stream_with_timeout(
 
     thread = threading.Thread(target=stream, daemon=True)
     thread.start()
-    deadline = monotonic() + float(timeout_seconds)
     while True:
-        remaining = deadline - monotonic()
-        if remaining <= 0:
-            raise TimeoutError(
-                f"Model stream timed out after {timeout_seconds:g} seconds."
-            )
         try:
-            status, value = result_queue.get(timeout=remaining)
+            status, value = result_queue.get(timeout=float(timeout_seconds))
         except queue.Empty as exc:
             raise TimeoutError(
                 f"Model stream timed out after {timeout_seconds:g} seconds."
