@@ -217,10 +217,26 @@ def _preview_source(
     if redacted_output is not None:
         return redacted_output
     if isinstance(output, dict):
+        if {"stdout", "stderr", "returncode"} <= set(output):
+            return _shell_preview_source(output)
         return json.dumps(output, ensure_ascii=False, sort_keys=True)
     if output is None:
         return ""
     return output
+
+
+def _shell_preview_source(output: dict[str, Any]) -> str:
+    stdout = str(output.get("stdout") or "")
+    stderr = str(output.get("stderr") or "")
+    parts: list[str] = []
+    if stdout:
+        parts.append(stdout.rstrip("\n"))
+    if stderr:
+        stripped_stderr = stderr.rstrip("\n")
+        parts.append(f"stderr: {stripped_stderr}")
+    if not parts:
+        return f"returncode: {output.get('returncode')}"
+    return "\n".join(parts)
 
 
 def _truncation_message(

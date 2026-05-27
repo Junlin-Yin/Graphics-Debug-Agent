@@ -696,6 +696,12 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
   broker-normalized target.
 - TTY tool blocks display execution duration only for tools that actually ran,
   rendered in seconds with one decimal place from `execution_duration_ms`.
+- TTY tool summary blocks may include the existing status emoji prefix, but the
+  summary text after the prefix must remain `<tool_name>: <target>` with an
+  optional execution duration.
+- streaming `stream_tool_result` observations append only result preview or
+  artifact detail and must not re-render a second tool summary block for the
+  same tool call.
 - user-denied tool calls do not display a duration and render `Denied by user.`
 - shell/path policy denials do not display a duration and render
   `Denied by shell/path policy.`
@@ -709,16 +715,16 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 Expected TTY tool-block examples:
 
 ```text
-read_file: src/app.py (0.1s)
+🟢 read_file: src/app.py (0.1s)
 <successful stdout or preview>
 
-write_file: secrets.txt
+🔴 write_file: secrets.txt
 Denied by user.
 
-shell_exec: rm -rf target
+🔴 shell_exec: rm -rf target
 Denied by shell/path policy.
 
-shell_exec: pytest tests (1.4s)
+🔴 shell_exec: pytest tests (1.4s)
 <concrete error messages>
 ```
 

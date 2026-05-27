@@ -232,6 +232,12 @@ class LangChainAgentLoopAdapter:
         results = []
         for call in tool_calls:
             started_at = monotonic()
+            audit_payloads: list[tuple[str, dict[str, Any]]] = []
+            context_dict["tool_audit_recorder"] = (
+                lambda kind, payload, sink=audit_payloads: sink.append(
+                    (kind, dict(payload))
+                )
+            )
             on_event(
                 AgentStreamEvent(
                     kind="stream_tool_call_started",
@@ -250,17 +256,34 @@ class LangChainAgentLoopAdapter:
                 call.get("args", {}),
                 context_dict,
             )
-            duration_ms = _tool_duration_ms(result.to_dict(), started_at)
+            tool_audit = _latest_tool_audit_payload(audit_payloads)
+            duration_ms = _stream_execution_duration_ms(
+                result.to_dict(),
+                started_at,
+                tool_audit,
+            )
+            completed_payload = {
+                "tool_call_id": call["id"],
+                "model_call_id": call["model_call_id"],
+                "name": call["name"],
+                "status": result.status,
+            }
+            if tool_audit is not None:
+                target = tool_audit.get("target")
+                if isinstance(target, str) and target:
+                    completed_payload["target"] = target
+                execution_duration_ms = tool_audit.get("execution_duration_ms")
+                if isinstance(execution_duration_ms, int):
+                    completed_payload["execution_duration_ms"] = execution_duration_ms
+                error = _error_from_tool_audit(tool_audit)
+                if error is not None:
+                    completed_payload["error"] = error
+            if duration_ms is not None:
+                completed_payload["duration_ms"] = duration_ms
             on_event(
                 AgentStreamEvent(
                     kind="stream_tool_call_completed",
-                    payload={
-                        "tool_call_id": call["id"],
-                        "model_call_id": call["model_call_id"],
-                        "name": call["name"],
-                        "status": result.status,
-                        "duration_ms": duration_ms,
-                    },
+                    payload=completed_payload,
                 )
             )
             on_event(
@@ -275,6 +298,7 @@ class LangChainAgentLoopAdapter:
                     },
                 )
             )
+            context_dict.pop("tool_audit_recorder", None)
             results.append((call, result))
         return results
 
@@ -948,6 +972,45 @@ def _tool_duration_ms(result: dict[str, Any], started_at: float) -> int:
     if isinstance(duration_ms, int):
         return duration_ms
     return int((monotonic() - started_at) * 1000)
+
+
+def _stream_execution_duration_ms(
+    result: dict[str, Any],
+    started_at: float,
+    audit_payload: dict[str, Any] | None,
+) -> int | None:
+    if audit_payload is not None:
+        execution_duration_ms = audit_payload.get("execution_duration_ms")
+        if isinstance(execution_duration_ms, int):
+            return execution_duration_ms
+        return None
+    return _tool_duration_ms(result, started_at)
+
+
+def _latest_tool_audit_payload(
+    audit_payloads: list[tuple[str, dict[str, Any]]],
+) -> dict[str, Any] | None:
+    for kind, payload in reversed(audit_payloads):
+        if kind in {
+            "tool_call_completed",
+            "tool_call_failed",
+            "tool_call_denied",
+        }:
+            return payload
+    return None
+
+
+def _error_from_tool_audit(payload: dict[str, Any]) -> dict[str, Any] | None:
+    message = payload.get("message")
+    error_class = payload.get("error_class")
+    if not isinstance(message, str) or not message:
+        return None
+    return {
+        "error_class": str(error_class or "tool_error"),
+        "message": message,
+        "source": str(payload.get("source") or "toolbroker"),
+        "recoverable": bool(payload.get("recoverable", True)),
+    }
 
 
 def _error_result(

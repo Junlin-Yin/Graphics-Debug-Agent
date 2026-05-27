@@ -668,6 +668,321 @@ def test_streamed_tool_started_is_silent_and_completed_then_result_append_blocks
     assert view.events[-1].payload["preview"].text == "> M file.py"
 
 
+def test_streamed_tool_blocks_use_broker_target_execution_duration_and_shell_preview() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_call_started",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "name": "shell_exec",
+                "args": {"argv": ["pytest", "tests"]},
+            },
+        )
+    )
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_call_completed",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "name": "shell_exec",
+                "status": "ok",
+                "target": "pytest tests",
+                "execution_duration_ms": 1400,
+                "duration_ms": 9999,
+            },
+        )
+    )
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_result",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "status": "ok",
+                "output": {"stdout": "passed\n", "stderr": "warning\n", "returncode": 0},
+                "redacted_output": None,
+                "artifact_ids": [],
+                "error": None,
+            },
+        )
+    )
+
+    assert controller.drain_stream_events() == 3
+    assert view.events[0].payload["metadata"] == {
+        "tool_call_id": "tool_1",
+        "model_call_id": "model_1",
+        "tool_name": "shell_exec",
+        "target": "pytest tests",
+        "execution_duration_ms": 1400,
+    }
+    assert view.events[1].payload["preview"].text == "> passed\n> stderr: warning"
+
+
+def test_streamed_user_denial_result_does_not_duplicate_tool_summary() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_call_started",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "name": "write_file",
+            },
+        )
+    )
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_call_completed",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "status": "denied",
+                "target": "secrets.txt",
+                "error": {
+                    "error_class": "policy_denied",
+                    "message": "Approval denied.",
+                    "source": "toolbroker",
+                    "recoverable": True,
+                },
+            },
+        )
+    )
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_result",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "status": "denied",
+                "output": None,
+                "redacted_output": None,
+                "artifact_ids": [],
+            },
+        )
+    )
+
+    assert controller.drain_stream_events() == 3
+    assert [event.kind for event in view.events] == ["tool_block"]
+    assert view.events[0].payload["name"] == "write_file"
+    assert view.events[0].payload["status"] == "denied"
+    assert view.events[0].payload["metadata"] == {
+        "tool_call_id": "tool_1",
+        "model_call_id": "model_1",
+        "tool_name": "write_file",
+        "target": "secrets.txt",
+    }
+    assert view.events[0].payload.get("preview") is None
+
+
+def test_streamed_shell_policy_denial_result_does_not_duplicate_tool_summary() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_call_started",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "name": "shell_exec",
+            },
+        )
+    )
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_call_completed",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "status": "denied",
+                "target": "rm -rf target",
+                "error": {
+                    "error_class": "policy_denied",
+                    "message": "Command denied by builtin shell policy.",
+                    "source": "toolbroker",
+                    "recoverable": True,
+                },
+            },
+        )
+    )
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_result",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "status": "denied",
+                "output": None,
+                "redacted_output": None,
+                "artifact_ids": [],
+            },
+        )
+    )
+
+    assert controller.drain_stream_events() == 3
+    assert [event.kind for event in view.events] == ["tool_block"]
+    assert view.events[0].payload["name"] == "shell_exec"
+    assert view.events[0].payload["status"] == "denied"
+    assert view.events[0].payload["metadata"] == {
+        "tool_call_id": "tool_1",
+        "model_call_id": "model_1",
+        "tool_name": "shell_exec",
+        "target": "rm -rf target",
+    }
+    assert view.events[0].payload.get("preview") is None
+
+
+def test_streamed_tool_failure_result_does_not_duplicate_tool_summary() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_call_started",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "name": "shell_exec",
+            },
+        )
+    )
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_call_completed",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "status": "error",
+                "target": "pytest tests",
+                "execution_duration_ms": 1400,
+                "error": {
+                    "error_class": "tool_error",
+                    "message": "pytest failed",
+                    "source": "toolbroker",
+                    "recoverable": True,
+                },
+            },
+        )
+    )
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_result",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "status": "error",
+                "output": None,
+                "redacted_output": None,
+                "artifact_ids": [],
+            },
+        )
+    )
+
+    assert controller.drain_stream_events() == 3
+    assert [event.kind for event in view.events] == ["tool_block"]
+    assert view.events[0].payload["name"] == "shell_exec"
+    assert view.events[0].payload["status"] == "error"
+    assert view.events[0].payload["metadata"] == {
+        "tool_call_id": "tool_1",
+        "model_call_id": "model_1",
+        "tool_name": "shell_exec",
+        "target": "pytest tests",
+        "execution_duration_ms": 1400,
+    }
+    assert view.events[0].payload.get("preview") is None
+
+
+def test_streamed_error_result_with_preview_appends_preview_only_detail() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_call_started",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "name": "shell_exec",
+            },
+        )
+    )
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_call_completed",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "status": "error",
+                "target": "pytest tests",
+                "execution_duration_ms": 1400,
+                "error": {
+                    "error_class": "tool_error",
+                    "message": "pytest failed",
+                    "source": "toolbroker",
+                    "recoverable": True,
+                },
+            },
+        )
+    )
+    controller.on_agent_stream_event(
+        AgentStreamEvent(
+            kind="stream_tool_result",
+            payload={
+                "tool_call_id": "tool_1",
+                "model_call_id": "model_1",
+                "status": "error",
+                "output": "failure details",
+                "redacted_output": None,
+                "artifact_ids": ["artifact_1"],
+            },
+        )
+    )
+
+    assert controller.drain_stream_events() == 3
+    assert [event.kind for event in view.events] == ["tool_block", "tool_block"]
+    assert view.events[0].payload["status"] == "error"
+    assert view.events[0].payload["metadata"] == {
+        "tool_call_id": "tool_1",
+        "model_call_id": "model_1",
+        "tool_name": "shell_exec",
+        "target": "pytest tests",
+        "execution_duration_ms": 1400,
+    }
+    assert view.events[1].payload["status"] == "result"
+    assert view.events[1].payload["metadata"] == {
+        "tool_call_id": "tool_1",
+        "model_call_id": "model_1",
+        "tool_name": "shell_exec",
+    }
+    assert "target" not in view.events[1].payload["metadata"]
+    assert "duration_ms" not in view.events[1].payload["metadata"]
+    assert "execution_duration_ms" not in view.events[1].payload["metadata"]
+    assert view.events[1].payload["preview"].text == "> failure details"
+    assert view.events[1].payload["preview"].artifact_ids == ["artifact_1"]
+
+
 def test_interrupt_marks_runtime_cancelled_and_shows_cancel_summary() -> None:
     from debug_agent.cli.repl_controller import ReplController
 
@@ -1269,10 +1584,8 @@ def test_approval_denial_turn_abort_renders_neutral_status_not_error() -> None:
     assert runtime.failed_results == []
     assert controller.exit_code == 0
     assert view.errors == []
-    assert view.events[-1] == ReplViewEvent(
-        kind="system_message",
-        payload={"message": "Approval denied. Current turn ended."},
-    )
+    assert view.events == []
+    assert view.turn_statuses[-1][1] == "failed"
     assert view.input_enabled[-1] is True
 
 

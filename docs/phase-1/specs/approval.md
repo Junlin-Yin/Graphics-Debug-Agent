@@ -735,15 +735,21 @@ execution duration.
 TTY tool blocks use this presentation shape:
 
 ```text
-read_file: src/app.py (0.1s)
+🟢 read_file: src/app.py (0.1s)
 <successful stdout or preview>
 
-write_file: secrets.txt
+🔴 write_file: secrets.txt
 Denied by user.
 
-shell_exec: rm -rf target
+🔴 shell_exec: rm -rf target
 Denied by shell/path policy.
 
-shell_exec: pytest tests (1.4s)
+🔴 shell_exec: pytest tests (1.4s)
 <concrete error messages>
 ```
+
+The status emoji prefix is presentation-only. The required summary content is
+the broker-normalized `tool_name: target` text plus an execution duration only
+when the tool actually ran. Streaming tool result observations must append only
+result preview or artifact detail for an already summarized tool call; they must
+not re-render a second summary block for denied, failed, or successful calls.

@@ -15,6 +15,7 @@ from debug_agent.runtime.policy import (
     build_builtin_policy,
 )
 from debug_agent.tools.broker import FakeApprovalProvider, ToolBroker
+from debug_agent.tools.shell import FakeShellRunner
 
 
 def _runtime(tmp_path, *, approval_mode: str = "normal", policy_facts=None):
@@ -486,3 +487,82 @@ def test_native_handlers_do_not_write_audit_events_directly(tmp_path) -> None:
     ]
     assert events[-1].payload["result"] == result.to_dict()
     assert json.dumps(events[-1].payload)
+
+
+def test_tool_audit_payload_includes_broker_normalized_target_for_native_search_and_shell(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    workspace = runtime["workspace"]
+    (workspace / "src").mkdir()
+    (workspace / "src" / "app.py").write_text("needle\n", encoding="utf-8")
+
+    read = _invoke(runtime, "read_file", {"path": "src/app.py"})
+    search = _invoke(runtime, "search_text", {"path": "src", "query": "needle"})
+    shell = _invoke(
+        runtime,
+        "shell_exec",
+        {"argv": ["pytest", "tests"], "cwd": "."},
+        shell_runner=FakeShellRunner(stdout="ok\n"),
+    )
+
+    completed = [
+        event.payload
+        for event in runtime["events"].list_for_run("run_1")
+        if event.kind == "tool_call_completed"
+    ]
+    assert read.status == "ok"
+    assert search.status == "ok"
+    assert shell.status == "ok"
+    assert completed[0]["target"] == str((workspace / "src/app.py").resolve())
+    assert completed[1]["target"] == f"needle in {(workspace / 'src').resolve()}"
+    assert completed[2]["target"] == "pytest tests"
+    runtime["db"].close()
+
+
+def test_approval_wait_duration_is_persisted_and_excluded_from_execution_duration(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    ticks = iter([10.0, 11.25, 11.5, 11.5, 11.75])
+    monkeypatch.setattr("debug_agent.tools.broker.monotonic", lambda: next(ticks))
+
+    result = _invoke(
+        runtime,
+        "read_file",
+        {"path": str(outside)},
+        approval_provider=FakeApprovalProvider("approved_once"),
+    )
+
+    completed = [
+        event.payload
+        for event in runtime["events"].list_for_run("run_1")
+        if event.kind == "tool_call_completed"
+    ][0]
+    assert result.status == "ok"
+    assert completed["approval_wait_duration_ms"] == 250
+    assert completed["execution_duration_ms"] == 250
+    assert completed["duration"] == 0.25
+    runtime["db"].close()
+
+
+def test_non_executed_denials_record_zero_approval_wait_and_no_execution_duration(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+
+    result = _invoke(runtime, "shell_exec", {"argv": ["rm", "-rf", "target"]})
+
+    denied = [
+        event.payload
+        for event in runtime["events"].list_for_run("run_1")
+        if event.kind == "tool_call_denied"
+    ][0]
+    assert result.status == "denied"
+    assert denied["target"] == "rm -rf target"
+    assert denied["approval_wait_duration_ms"] == 0
+    assert "execution_duration_ms" not in denied
+    runtime["db"].close()

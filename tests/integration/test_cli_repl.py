@@ -225,6 +225,81 @@ def test_streaming_repl_controller_renders_fake_model_deltas(tmp_path) -> None:
         )
 
 
+def test_streaming_repl_controller_tool_block_payloads_use_broker_metadata(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("hello\n", encoding="utf-8")
+
+    class ToolStreamingModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stream(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                yield FakeModelResponse(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_read",
+                            "name": "read_file",
+                            "args": {"path": "notes.txt"},
+                        }
+                    ],
+                    usage={},
+                )
+                return
+            yield FakeModelResponse(content="done", tool_calls=[], usage={})
+
+    class RecordingFactory:
+        def create(self, config_snapshot: dict[str, object]) -> ModelFactoryResult:
+            return ModelFactoryResult(model=ToolStreamingModel(), error=None)
+
+    monkeypatch.setattr(orchestrator_module, "ModelFactory", RecordingFactory)
+    view = FakeControllerView()
+    controller = ReplController.start(
+        config_snapshot=_fake_config_snapshot("unused", stream_chunks=["unused"]),
+        workspace_root=workspace,
+        view=view,
+    )
+
+    try:
+        controller.on_submit("read notes")
+        controller.wait_for_active_turn(timeout=2)
+        controller.drain_stream_events()
+        assert controller.drain_completed_turns() == 1
+    finally:
+        controller.close()
+
+    tool_blocks = [event for event in view.events if event.kind == "tool_block"]
+    assert len(tool_blocks) == 2
+    assert tool_blocks[0].payload["metadata"]["tool_name"] == "read_file"
+    assert tool_blocks[0].payload["metadata"]["target"] == str(
+        (workspace / "notes.txt").resolve()
+    )
+    assert isinstance(
+        tool_blocks[0].payload["metadata"]["execution_duration_ms"], int
+    )
+    assert "duration_ms" not in tool_blocks[0].payload["metadata"]
+    assert tool_blocks[1].payload["preview"].text == "> hello"
+
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        payload = json.loads(
+            conn.execute(
+                """
+                SELECT payload_json
+                FROM run_events
+                WHERE kind = 'tool_call_completed'
+                """
+            ).fetchone()[0]
+        )
+    assert payload["target"] == str((workspace / "notes.txt").resolve())
+    assert payload["approval_wait_duration_ms"] == 0
+    assert isinstance(payload["execution_duration_ms"], int)
+
+
 def test_streaming_repl_controller_warns_on_non_streaming_fallback(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -501,9 +576,14 @@ def test_repl_approval_denial_aborts_turn_and_is_visible_to_next_turn(
         assert controller.is_executing is False
         assert view.input_enabled[-1] is True
         assert view.errors == []
-        assert view.events[-1] == ReplViewEvent(
+        assert ReplViewEvent(
             kind="system_message",
             payload={"message": "Approval denied. Current turn ended."},
+        ) not in view.events
+        assert not any(
+            event.kind == "system_message"
+            and event.payload.get("message") == "Approval denied. Current turn ended."
+            for event in view.events
         )
         denied_messages = [
             message

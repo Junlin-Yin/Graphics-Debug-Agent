@@ -784,40 +784,61 @@ approval wait timing persisted for tool audit events, execution-only duration in
 TUI for tools that actually ran, stdout-first successful shell output, and
 distinct user-denial, policy-denial, and tool-failure messages.
 
-- [ ] Promote the broker approval target to a general tool `target` metadata
+- [x] Promote the broker approval target to a general tool `target` metadata
   field for all model-visible tool calls.
-- [ ] Define target rendering for Phase 1 tools:
+- [x] Define target rendering for Phase 1 tools:
   - `read_file`, `list_dir`, `write_file`, and `edit_file`: normalized path.
   - `search_text`: query plus normalized path.
   - `shell_exec`: normalized command preview, with cwd only when it materially
     clarifies the target.
   - `activate_skill`: `skill <name>`.
   - `load_skill_ref_file`: `skill reference <skill_name>:<path>`.
-- [ ] Measure interactive approval wait time from approval request handoff to
+- [x] Measure interactive approval wait time from approval request handoff to
   approval decision return.
-- [ ] Persist `approval_wait_duration_ms` on `tool_call_completed`,
+- [x] Persist `approval_wait_duration_ms` on `tool_call_completed`,
   `tool_call_failed`, and `tool_call_denied` payloads; record `0` for
   auto-allow, audit-only, policy denial, schema/config denial, and
   non-interactive denial paths.
-- [ ] Ensure tool execution duration excludes approval wait time and is exposed
+- [x] Ensure tool execution duration excludes approval wait time and is exposed
   to the TUI as `execution_duration_ms` for tools that actually ran.
-- [ ] Ensure TTY tool blocks display `tool_name: target (N.Ns)` only when the
+- [x] Ensure TTY tool blocks display `tool_name: target (N.Ns)` only when the
   tool actually ran; user-denied and policy-denied calls display no duration.
-- [ ] Match the documented TTY tool-block examples in
+- [x] Ensure streaming tool result observations append only result preview or
+  artifact detail and never re-render a second tool summary block for the same
+  tool call.
+- [x] Match the documented TTY tool-block examples in
   `docs/phase-1/specs/approval.md` and `docs/phase-1/tests.md`.
-- [ ] Render successful shell tool output as stdout-first preview and do not
+- [x] Render successful shell tool output as stdout-first preview and do not
   display the raw `ToolResult` JSON structure as the primary TUI output.
-- [ ] Render user approval denial as `Denied by user.`
-- [ ] Render shell/path policy denial as `Denied by shell/path policy.`
-- [ ] Render tool failures with the concrete tool or broker error message.
-- [ ] Add unit tests for target metadata, approval wait persistence, execution
+- [x] Render user approval denial as `Denied by user.` without appending a
+  separate System block solely for the denial.
+- [x] Render shell/path policy denial as `Denied by shell/path policy.`
+- [x] Render tool failures with the concrete tool or broker error message.
+- [x] Add unit tests for target metadata, approval wait persistence, execution
   duration separation, and TUI formatting for success, user denial, policy
   denial, and tool failure.
-- [ ] Add integration coverage where deterministic injected I/O can verify TUI
+- [x] Add integration coverage where deterministic injected I/O can verify TUI
   event payloads without requiring live terminal interaction.
-- [ ] Run canonical verification from `docs/phase-1/operations.md`.
-- [ ] Run manual TTY checks for tool-block target, duration, success preview,
+- [x] Run canonical verification from `docs/phase-1/operations.md`.
+- [x] Run manual TTY checks for tool-block target, duration, success preview,
   user denial, policy denial, and tool failure display.
+
+Manual TTY evidence for Milestone 7:
+
+- Terminal application: Windows 11 pwsh.
+- Command sequence: run the Phase 1 TTY REPL, trigger successful tool
+  execution, user approval denial, shell/path policy denial, and tool failure
+  paths.
+- Expected result: tool blocks show the status emoji, `tool_name: target`,
+  execution duration only for tools that actually ran, stdout-first success
+  previews, concrete failure messages, `Denied by user.` for user denial,
+  `Denied by shell/path policy.` for policy denial, no duplicate summary block
+  from `stream_tool_result`, and no separate System block solely for user
+  approval denial.
+- Observed result: human manual testing reported all six Milestone 7 TTY checks
+  passed, and the final no-System-block denial tweak was manually verified
+  after implementation.
+- Known limitation: manual evidence was recorded on Windows 11 pwsh only.
 
 Modified boundaries: ToolBroker audit metadata, adapter/controller stream tool
 metadata, TTY tool-block formatting, tool preview formatting, and tests for

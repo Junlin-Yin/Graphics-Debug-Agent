@@ -80,7 +80,7 @@ class NormalizedBrokerArguments:
     paths: tuple[Path, ...]
     shell_argv: tuple[str, ...]
     scope_signature: str
-    approval_target: str
+    target: str
     runtime_control_valid: bool = True
     runtime_control_error_message: str | None = None
     runtime_control_error_class: str = "config_error"
@@ -157,17 +157,22 @@ class ToolBroker:
         context: dict,
     ) -> ToolResult:
         start = monotonic()
+        approval_wait_duration_ms = 0
+        tool_audit_recorder = context.get("tool_audit_recorder")
         if not isinstance(arguments, dict):
             result = _denied_result("Tool arguments must be an object.", error_class="user_error")
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
                 kind="tool_call_denied",
+                audit_recorder=tool_audit_recorder,
                 payload=_audit_payload(
                     tool_name=tool_name,
                     arguments={"invalid_arguments": repr(arguments)},
                     result=result,
                     duration_seconds=monotonic() - start,
+                    target="",
+                    approval_wait_duration_ms=0,
                 ),
             )
             return result
@@ -185,11 +190,14 @@ class ToolBroker:
                 session_id=session_id,
                 run_id=run_id,
                 kind="tool_call_denied",
+                audit_recorder=tool_audit_recorder,
                 payload=_audit_payload(
                     tool_name=tool_name,
                     arguments=normalized_arguments,
                     result=result,
                     duration_seconds=monotonic() - start,
+                    target="",
+                    approval_wait_duration_ms=0,
                 ),
             )
             return result
@@ -201,11 +209,14 @@ class ToolBroker:
                 session_id=session_id,
                 run_id=run_id,
                 kind="tool_call_denied",
+                audit_recorder=tool_audit_recorder,
                 payload=_audit_payload(
                     tool_name=tool_name,
                     arguments=normalized_arguments,
                     result=result,
                     duration_seconds=monotonic() - start,
+                    target="",
+                    approval_wait_duration_ms=0,
                 ),
             )
             return result
@@ -233,11 +244,14 @@ class ToolBroker:
                 session_id=session_id,
                 run_id=run_id,
                 kind="tool_call_denied",
+                audit_recorder=tool_audit_recorder,
                 payload=_audit_payload(
                     tool_name=tool_name,
                     arguments=normalized_arguments,
                     result=result,
                     duration_seconds=monotonic() - start,
+                    target=normalized.target,
+                    approval_wait_duration_ms=0,
                 ),
             )
             return result
@@ -278,11 +292,14 @@ class ToolBroker:
                 session_id=session_id,
                 run_id=run_id,
                 kind="tool_call_denied",
+                audit_recorder=tool_audit_recorder,
                 payload=_audit_payload(
                     tool_name=tool_name,
                     arguments=normalized_arguments,
                     result=result,
                     duration_seconds=monotonic() - start,
+                    target=normalized.target,
+                    approval_wait_duration_ms=0,
                 ),
             )
             return result
@@ -290,7 +307,7 @@ class ToolBroker:
             approval_provider = context.get("approval_provider") or NonInteractiveApprovalProvider()
             request = _approval_request(
                 tool_name=tool_name,
-                target=normalized.approval_target,
+                target=normalized.target,
                 risk_level=definition.risk_level,
                 grant_scope="once or session",
             )
@@ -301,7 +318,7 @@ class ToolBroker:
                 "tool_name": tool_name,
                 "risk_level": definition.risk_level,
                 "scope_signature": scope_signature,
-                "target": normalized.approval_target,
+                "target": normalized.target,
                 "grant_scope": "once or session",
             }
             if is_interactive_prompt:
@@ -314,10 +331,15 @@ class ToolBroker:
                         "approval_request": request,
                     },
                 )
+            approval_start = monotonic()
             approval = approval_provider.request_approval(
                 request,
                 approval_facts,
             )
+            if is_interactive_prompt:
+                approval_wait_duration_ms = max(
+                    0, round((monotonic() - approval_start) * 1000)
+                )
             if is_interactive_prompt:
                 self._write_event(
                     session_id=session_id,
@@ -328,6 +350,7 @@ class ToolBroker:
                         "decision": approval.decision,
                         "grant_scope": approval.grant_scope,
                         "message": approval.message,
+                        "approval_wait_duration_ms": approval_wait_duration_ms,
                     },
                 )
                 _record_approval(
@@ -350,15 +373,19 @@ class ToolBroker:
                     session_id=session_id,
                     run_id=run_id,
                     kind="tool_call_denied",
+                    audit_recorder=tool_audit_recorder,
                     payload=_audit_payload(
                         tool_name=tool_name,
                         arguments=normalized_arguments,
                         result=result,
                         duration_seconds=monotonic() - start,
+                        target=normalized.target,
+                        approval_wait_duration_ms=approval_wait_duration_ms,
                     ),
                 )
                 return result
 
+        execution_start = monotonic()
         tool_context = ToolUseContext(
             session_id=session_id,
             run_id=run_id,
@@ -382,6 +409,7 @@ class ToolBroker:
             session_id=session_id,
             run_id=run_id,
             kind="tool_call_started",
+            audit_recorder=tool_audit_recorder,
             payload={
                 "tool_name": tool_name,
                 "arguments": normalized_arguments,
@@ -406,11 +434,15 @@ class ToolBroker:
                 session_id=session_id,
                 run_id=run_id,
                 kind="tool_call_failed",
+                audit_recorder=tool_audit_recorder,
                 payload=_audit_payload(
                     tool_name=tool_name,
                     arguments=normalized_arguments,
                     result=result,
-                    duration_seconds=monotonic() - start,
+                    duration_seconds=monotonic() - execution_start,
+                    target=normalized.target,
+                    approval_wait_duration_ms=approval_wait_duration_ms,
+                    include_execution_duration=True,
                 ),
             )
             return result
@@ -422,11 +454,15 @@ class ToolBroker:
                 session_id=session_id,
                 run_id=run_id,
                 kind="tool_call_failed",
+                audit_recorder=tool_audit_recorder,
                 payload=_audit_payload(
                     tool_name=tool_name,
                     arguments=normalized_arguments,
                     result=result,
-                    duration_seconds=monotonic() - start,
+                    duration_seconds=monotonic() - execution_start,
+                    target=normalized.target,
+                    approval_wait_duration_ms=approval_wait_duration_ms,
+                    include_execution_duration=True,
                 ),
             )
             return result
@@ -445,11 +481,15 @@ class ToolBroker:
             session_id=session_id,
             run_id=run_id,
             kind=event_kind,
+            audit_recorder=tool_audit_recorder,
             payload=_audit_payload(
                 tool_name=tool_name,
                 arguments=normalized_arguments,
                 result=result,
-                duration_seconds=monotonic() - start,
+                duration_seconds=monotonic() - execution_start,
+                target=normalized.target,
+                approval_wait_duration_ms=approval_wait_duration_ms,
+                include_execution_duration=True,
             ),
         )
         self._write_runtime_control_observability_event(
@@ -618,7 +658,13 @@ class ToolBroker:
         )
 
     def _write_event(
-        self, *, session_id: str, run_id: str, kind: str, payload: dict[str, Any]
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        kind: str,
+        payload: dict[str, Any],
+        audit_recorder: Any = None,
     ) -> None:
         self.event_writer.append(
             RunEvent(
@@ -631,6 +677,8 @@ class ToolBroker:
                 payload=payload,
             )
         )
+        if callable(audit_recorder):
+            audit_recorder(kind, payload)
 
     def _write_runtime_control_observability_event(
         self,
@@ -751,7 +799,7 @@ def _normalize_tool_arguments(
         paths=(canonical_path,),
         shell_argv=(),
         scope_signature=scope_signature,
-        approval_target=str(canonical_path),
+        target=_target_for_path_tool(definition.name, normalized_arguments, canonical_path),
     )
 
 
@@ -809,7 +857,7 @@ def _normalize_runtime_control_arguments(
             paths=(),
             shell_argv=(),
             scope_signature=scope_signature,
-            approval_target=f"skill {skill_name}",
+            target=f"skill {skill_name}",
             runtime_control_valid=target.valid,
             runtime_control_error_message=target.error_message,
             runtime_control_error_class=target.error_class,
@@ -831,7 +879,7 @@ def _normalize_runtime_control_arguments(
         paths=(),
         shell_argv=(),
         scope_signature=scope_signature,
-        approval_target=f"skill reference {skill_name}:{reference_path}",
+        target=f"skill reference {skill_name}:{reference_path}",
         runtime_control_valid=target.valid,
         runtime_control_error_message=target.error_message,
         runtime_control_error_class=target.error_class,
@@ -879,8 +927,23 @@ def _normalize_shell_arguments(
         paths=paths,
         shell_argv=shell_argv,
         scope_signature=scope_signature,
-        approval_target=" ".join(normalized_arguments["argv"]),
+        target=_target_for_shell(normalized_arguments["argv"], policy_cwd, workspace_root),
     )
+
+
+def _target_for_path_tool(
+    tool_name: str, arguments: dict[str, Any], canonical_path: Path
+) -> str:
+    if tool_name == "search_text":
+        return f"{arguments['query']} in {canonical_path}"
+    return str(canonical_path)
+
+
+def _target_for_shell(argv: list[str], policy_cwd: Path, workspace_root: Path) -> str:
+    command_preview = " ".join(argv)
+    if policy_cwd == workspace_root:
+        return command_preview
+    return f"{command_preview} (cwd: {policy_cwd})"
 
 
 def _execution_cwd_for_shell(cwd: str | None, workspace_root: Path) -> Path:
@@ -1034,14 +1097,21 @@ def _audit_payload(
     arguments: dict[str, Any],
     result: ToolResult,
     duration_seconds: float,
+    target: str,
+    approval_wait_duration_ms: int,
+    include_execution_duration: bool = False,
 ) -> dict[str, Any]:
     payload = {
         "tool_name": tool_name,
         "arguments": arguments,
+        "target": target,
         "status": result.status,
         "duration": duration_seconds,
+        "approval_wait_duration_ms": approval_wait_duration_ms,
         "artifact_ids": result.artifacts,
     }
+    if include_execution_duration:
+        payload["execution_duration_ms"] = max(0, round(duration_seconds * 1000))
     if result.error is not None:
         payload["error_class"] = result.error["error_class"]
         payload["message"] = result.error["message"]

@@ -756,6 +756,9 @@ def _format_tool_block(payload: dict) -> str:
             lines.append(f"    artifacts: {', '.join(preview.artifact_ids)}")
         return "\n".join(lines)
     lines = ["", _format_tool_summary(tool_name, status, metadata)]
+    message = _tool_status_message(status, payload.get("error"))
+    if message is not None:
+        lines.append(f"    {message}")
     if preview is not None:
         lines.extend(_indented_preview_lines(preview))
         if preview.artifact_ids:
@@ -764,10 +767,36 @@ def _format_tool_block(payload: dict) -> str:
 
 
 def _format_tool_summary(tool_name: str, status: object, metadata: dict) -> str:
+    target = metadata.get("target")
+    display_name = tool_name if not isinstance(target, str) or not target else f"{tool_name}: {target}"
     indicator = "🟢" if str(status) in {"ok", "completed"} else "🔴"
-    duration = _format_duration(metadata.get("duration_ms"))
+    duration_source = metadata.get("execution_duration_ms")
+    if duration_source is None:
+        duration_source = metadata.get("duration_ms")
+    duration = _format_duration(duration_source)
     suffix = "" if duration is None else f" ({duration})"
-    return f"{indicator} {tool_name}{suffix}"
+    return f"{indicator} {display_name}{suffix}"
+
+
+def _tool_status_message(status: object, error: object) -> str | None:
+    if str(status) == "denied":
+        message = ""
+        error_class = ""
+        if isinstance(error, dict):
+            message = str(error.get("message") or "")
+            error_class = str(error.get("error_class") or "")
+        if message == "Approval denied.":
+            return "Denied by user."
+        if error_class == "policy_denied":
+            return "Denied by shell/path policy."
+        return message or "Denied."
+    if str(status) in {"error", "timeout", "cancelled"}:
+        if isinstance(error, dict):
+            message = error.get("message")
+            if isinstance(message, str) and message:
+                return message
+        return "Tool failed."
+    return None
 
 
 def _indented_preview_lines(preview: object) -> list[str]:

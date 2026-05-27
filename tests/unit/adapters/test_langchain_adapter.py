@@ -961,6 +961,98 @@ def test_langchain_adapter_feeds_tool_results_back_to_model() -> None:
     ]
 
 
+def test_langchain_adapter_stream_propagates_tool_display_metadata_from_broker_events() -> None:
+    events: list[AgentStreamEvent] = []
+    recorded_events: list[tuple[str, dict[str, Any]]] = []
+
+    class ToolStreamingModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stream(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                yield type(
+                    "Chunk",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "provider_tool_1",
+                                "name": "shell_exec",
+                                "args": {"argv": ["pytest", "tests"]},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+                return
+            yield type(
+                "Chunk",
+                (),
+                {"content": "done", "tool_calls": [], "usage": {}},
+            )()
+
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            context["tool_audit_recorder"](
+                "tool_call_completed",
+                {
+                    "tool_name": "shell_exec",
+                    "target": "pytest tests",
+                    "status": "ok",
+                    "execution_duration_ms": 1400,
+                    "approval_wait_duration_ms": 0,
+                    "result": {},
+                },
+            )
+            return ToolResult(
+                status="ok",
+                output={"stdout": "ok\n", "stderr": "", "returncode": 0},
+                error=None,
+                artifacts=[],
+                metadata={},
+                redacted_output=None,
+            )
+
+    context = RunContext(
+        workspace_root="/repo",
+        artifact_root="/repo/.sessions/sess_1/artifacts",
+        approval_mode="yolo",
+        cancellation_token=None,
+        metadata={},
+        model_event_recorder=lambda kind, payload: recorded_events.append((kind, payload)),
+    )
+
+    result = LangChainAgentLoopAdapter(
+        model=ToolStreamingModel(),
+        tool_broker=RecordingBroker(),
+    ).stream(_request(), context, events.append)
+
+    assert result.status == "completed"
+    assert _event_payloads(events, "stream_tool_call_completed") == [
+        {
+            "tool_call_id": "provider_tool_1",
+            "model_call_id": _event_payloads(events, "stream_model_call_started")[0]["model_call_id"],
+            "name": "shell_exec",
+            "status": "ok",
+            "target": "pytest tests",
+            "execution_duration_ms": 1400,
+            "duration_ms": 1400,
+        }
+    ]
+    assert _event_payloads(events, "stream_tool_result") == [
+        {
+            "tool_call_id": "provider_tool_1",
+            "model_call_id": _event_payloads(events, "stream_model_call_started")[0]["model_call_id"],
+            "output": {"stdout": "ok\n", "stderr": "", "returncode": 0},
+            "redacted_output": None,
+            "artifact_ids": [],
+        }
+    ]
+
+
 def test_langchain_adapter_preserves_tool_call_ids_after_context_refresh() -> None:
     from langchain_core.messages import convert_to_messages
 

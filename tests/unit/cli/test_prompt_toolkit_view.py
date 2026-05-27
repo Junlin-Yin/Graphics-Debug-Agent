@@ -326,7 +326,9 @@ def test_prompt_toolkit_view_renders_tool_blocks_separately() -> None:
     )
 
     rendered = view.rendered_text()
-    assert "🟢 read_file" in rendered
+    assert "\n🟢 read_file\n" in rendered
+    assert "read_file:" not in rendered
+    assert "🔴" not in rendered
     assert "tool: read_file" not in rendered
     assert "status: ok" not in rendered
     assert "    > line 1" in rendered
@@ -377,7 +379,8 @@ def test_prompt_toolkit_view_appends_tool_completion_and_result_blocks() -> None
     )
 
     rendered = view.rendered_text()
-    assert rendered.count("🟢 git_status (1.2s)") == 1
+    assert rendered.count("\n🟢 git_status (1.2s)") == 1
+    assert "🔴" not in rendered
     assert "tool: git_status" not in rendered
     assert "tool: unknown" not in rendered
     assert "status: running" not in rendered
@@ -385,6 +388,119 @@ def test_prompt_toolkit_view_appends_tool_completion_and_result_blocks() -> None
     assert "status: result" not in rendered
     assert "duration: 1.2s" not in rendered
     assert "    > M file.py" in rendered
+
+
+def test_prompt_toolkit_view_formats_phase_1_tool_blocks_with_target_and_messages() -> None:
+    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+
+    view = _prompt_toolkit_view()
+
+    view.append_view_event(
+        ReplViewEvent(
+            kind="tool_block",
+            payload={
+                "name": "read_file",
+                "status": "ok",
+                "metadata": {
+                    "tool_name": "read_file",
+                    "target": "src/app.py",
+                    "execution_duration_ms": 100,
+                },
+                "preview": ToolResultPreview(
+                    text="> contents",
+                    truncated=False,
+                    shown_lines=1,
+                    total_lines=1,
+                    artifact_ids=[],
+                ),
+            },
+        )
+    )
+    view.append_view_event(
+        ReplViewEvent(
+            kind="tool_block",
+            payload={
+                "name": "write_file",
+                "status": "denied",
+                "error": {"message": "Approval denied.", "error_class": "policy_denied"},
+                "metadata": {"tool_name": "write_file", "target": "secrets.txt"},
+            },
+        )
+    )
+    view.append_view_event(
+        ReplViewEvent(
+            kind="tool_block",
+            payload={
+                "name": "shell_exec",
+                "status": "denied",
+                "error": {
+                    "message": "Command denied by builtin shell policy.",
+                    "error_class": "policy_denied",
+                },
+                "metadata": {"tool_name": "shell_exec", "target": "rm -rf target"},
+            },
+        )
+    )
+    view.append_view_event(
+        ReplViewEvent(
+            kind="tool_block",
+            payload={
+                "name": "shell_exec",
+                "status": "error",
+                "error": {"message": "pytest failed", "error_class": "tool_error"},
+                "metadata": {
+                    "tool_name": "shell_exec",
+                    "target": "pytest tests",
+                    "execution_duration_ms": 1400,
+                },
+            },
+        )
+    )
+
+    rendered = view.rendered_text()
+    lines = rendered.splitlines()
+    assert "🟢 read_file: src/app.py (0.1s)" in lines
+    assert "    > contents" in rendered
+    assert "🔴 write_file: secrets.txt" in lines
+    assert "write_file: secrets.txt (" not in rendered
+    assert "Denied by user." in rendered
+    assert "🔴 shell_exec: rm -rf target" in lines
+    assert "Denied by shell/path policy." in rendered
+    assert "🔴 shell_exec: pytest tests (1.4s)" in lines
+    assert "pytest failed" in rendered
+
+
+def test_prompt_toolkit_view_shell_success_preview_is_stdout_first_not_tool_json() -> None:
+    view = _prompt_toolkit_view()
+
+    view.append_view_event(
+        ReplViewEvent(
+            kind="tool_block",
+            payload={
+                "name": "shell_exec",
+                "status": "ok",
+                "metadata": {
+                    "tool_name": "shell_exec",
+                    "target": "pytest tests",
+                    "execution_duration_ms": 1400,
+                },
+                "preview": ToolResultPreview(
+                    text="> passed\n> stderr: warning",
+                    truncated=False,
+                    shown_lines=2,
+                    total_lines=2,
+                    artifact_ids=[],
+                ),
+            },
+        )
+    )
+
+    rendered = view.rendered_text()
+    assert "🟢 shell_exec: pytest tests (1.4s)" in rendered.splitlines()
+    assert "    > passed" in rendered
+    assert "🔴" not in rendered
+    assert '"stdout"' not in rendered
+    assert '"returncode"' not in rendered
 
 
 def test_prompt_toolkit_view_truncated_tool_result_includes_detail_line() -> None:
@@ -478,7 +594,8 @@ def test_prompt_toolkit_view_formats_failed_tool_completion_with_red_indicator()
     )
 
     rendered = view.rendered_text()
-    assert "🔴 run_tests (0.1s)" in rendered
+    assert "\n🔴 run_tests (0.1s)" in rendered
+    assert "🟢" not in rendered
     assert "status: failed" not in rendered
 
 
@@ -526,7 +643,9 @@ def test_prompt_toolkit_view_does_not_clear_or_replace_tool_blocks(
         )
     )
 
-    assert "🟢 git_status (1.2s)" in view.rendered_text()
+    rendered = view.rendered_text()
+    assert "\n🟢 git_status (1.2s)" in rendered
+    assert "🔴" not in rendered
 
 
 def test_prompt_toolkit_view_keeps_large_model_text_plain() -> None:

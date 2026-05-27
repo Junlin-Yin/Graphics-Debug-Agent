@@ -329,3 +329,28 @@ def test_load_skill_ref_file_denies_missing_and_hash_mismatch_before_approval(tm
     assert corrupt.error["error_class"] == "config_error"
     assert provider.requests == []
     runtime["db"].close()
+
+
+def test_runtime_control_audit_payload_uses_broker_normalized_targets(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="semi-auto")
+    _snapshot_skill(runtime, name="alpha")
+
+    activated = _invoke(runtime, "activate_skill", {"name": "alpha"})
+    loaded = _invoke(
+        runtime,
+        "load_skill_ref_file",
+        {"skill_name": "alpha", "path": "references/guide.txt"},
+    )
+
+    completed = [
+        event.payload
+        for event in runtime["events"].list_for_run("run_1")
+        if event.kind == "tool_call_completed"
+    ]
+    assert activated.status == "ok"
+    assert loaded.status == "ok"
+    assert completed[0]["target"] == "skill alpha"
+    assert completed[1]["target"] == "skill reference alpha:references/guide.txt"
+    assert completed[0]["approval_wait_duration_ms"] == 0
+    assert completed[1]["approval_wait_duration_ms"] == 0
+    runtime["db"].close()

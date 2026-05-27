@@ -300,7 +300,7 @@ class ReplController:
                 self._append_result_events(result)
         elif _is_turn_scoped_failure(result):
             if _is_approval_denied_abort(result):
-                self._append_system_message("Approval denied. Current turn ended.")
+                pass
             else:
                 message = (
                     result.error["message"] if result.error else "Prompt execution failed."
@@ -446,9 +446,19 @@ class ReplController:
             state["name"] = name
         tool_name = _required_str(state, "name")
         state["status"] = str(event.payload.get("status") or "unknown")
-        duration_ms = event.payload.get("duration_ms")
-        if isinstance(duration_ms, int):
-            state["duration_ms"] = duration_ms
+        target = event.payload.get("target")
+        if isinstance(target, str) and target:
+            state["target"] = target
+        execution_duration_ms = event.payload.get("execution_duration_ms")
+        if isinstance(execution_duration_ms, int):
+            state["execution_duration_ms"] = execution_duration_ms
+        elif str(event.payload.get("status") or "") not in {"denied"}:
+            duration_ms = event.payload.get("duration_ms")
+            if isinstance(duration_ms, int):
+                state["duration_ms"] = duration_ms
+        error = event.payload.get("error")
+        if isinstance(error, dict):
+            state["error"] = error
         self._streamed_output_seen = True
         self._emit_stream_tool_block(
             tool_call_id,
@@ -465,14 +475,23 @@ class ReplController:
         model_call_id = _required_str(event.payload, "model_call_id")
         state = self._streamed_tool_state(tool_call_id, model_call_id)
         tool_name = _required_str(state, "name")
+        error = event.payload.get("error")
+        if isinstance(error, dict):
+            state["error"] = error
         preview = ToolResultPreviewFormatter().format(
             output=event.payload.get("output"),
             redacted_output=event.payload.get("redacted_output"),
             artifact_ids=list(event.payload.get("artifact_ids", [])),
         )
+        if not _tool_result_preview_has_detail(preview):
+            return
         state["preview"] = preview
         self._streamed_output_seen = True
-        result_state = {**state, "status": "result"}
+        result_state = {
+            "status": "result",
+            "model_call_id": state.get("model_call_id"),
+            "preview": preview,
+        }
         self._emit_stream_tool_block(
             tool_call_id,
             model_call_id,
@@ -511,11 +530,21 @@ class ReplController:
         duration_ms = state.get("duration_ms")
         if include_duration and isinstance(duration_ms, int):
             metadata["duration_ms"] = duration_ms
+        target = state.get("target")
+        if isinstance(target, str) and target:
+            metadata["target"] = target
+        execution_duration_ms = state.get("execution_duration_ms")
+        if include_duration and isinstance(execution_duration_ms, int):
+            metadata["execution_duration_ms"] = execution_duration_ms
+            metadata.pop("duration_ms", None)
         payload: dict[str, Any] = {
             "name": tool_name,
             "status": state.get("status", "unknown"),
             "metadata": metadata,
         }
+        error = state.get("error")
+        if isinstance(error, dict):
+            payload["error"] = error
         preview = state.get("preview")
         if preview is not None:
             payload["preview"] = preview
@@ -739,6 +768,17 @@ def _required_str(payload: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"missing stream payload field: {key}")
     return value
+
+
+def _tool_result_preview_has_detail(preview: Any) -> bool:
+    artifact_ids = getattr(preview, "artifact_ids", [])
+    if artifact_ids:
+        return True
+    text = getattr(preview, "text", "")
+    for line in str(text).splitlines():
+        if line.removeprefix("> ").strip():
+            return True
+    return False
 
 
 def _error_result(status: str, error_class: str, message: str) -> AgentRunResult:
