@@ -96,6 +96,10 @@ by any approval mode.
 runtime-control category tool with `read` risk over the frozen session skill
 snapshot. It does not access source files and has its own approval rule:
 
+- if `activate_skill` targets a skill that is already active in the current run
+  with the same frozen content hash, the request is an idempotent no-op. It is
+  audit-only in every approval mode, does not request interactive approval, and
+  does not write a new `approval_grants` row.
 - if the target skill is already active, the requested path resolves to a frozen
   reference snapshot for that skill, and the frozen reference hash validates,
   the tool is audit-only in every approval mode and does not request interactive
@@ -130,9 +134,12 @@ Phase 1 does not define per-tool approval metadata such as
 `requires_approval`. Approval behavior is derived from approval mode plus
 runtime-owned risk level, category, access, path policy, and shell policy.
 
-In `normal` mode, `runtime_control` tools such as `activate_skill` require
-approval. A user may choose approval for the current session so repeated
-same-scope activations can proceed without asking again.
+In `normal` mode, `runtime_control` tools such as the first valid
+`activate_skill` request for a skill require approval. A user may choose
+approval for the current session so repeated same-scope activations can proceed
+without asking again. If the skill is already active in the current run with the
+same frozen content hash, `activate_skill` is an idempotent no-op and does not
+ask again even without a reusable approval grant.
 
 ## Permission Decision Pipeline
 

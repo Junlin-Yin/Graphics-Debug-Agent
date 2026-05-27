@@ -309,8 +309,11 @@ Execution rules:
   skills are not present as activation targets.
 - missing, corrupt, or hash-mismatched frozen snapshots return
   `ToolResult(status="denied")` without prompting for approval.
-- repeated activation is idempotent.
-- successful activation updates run-scoped `active_skills`.
+- repeated activation of the same frozen skill content in the same run is an
+  idempotent no-op. It must not request approval again, must not append a
+  duplicate active skill record, and must not emit another `skill_activated`
+  event.
+- first successful activation updates run-scoped `active_skills`.
 - active skill `SKILL.md` content becomes visible starting with the next model
   call.
 - activation writes audit events.

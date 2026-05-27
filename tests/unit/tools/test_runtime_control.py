@@ -151,11 +151,12 @@ def test_activate_skill_requires_approval_in_normal_and_is_idempotent(tmp_path) 
         {"name": "alpha"},
         approval_provider=FakeApprovalProvider("approved_once"),
     )
+    repeated_provider = FakeApprovalProvider("denied")
     again = _invoke(
         runtime,
         "activate_skill",
         {"name": "alpha"},
-        approval_provider=FakeApprovalProvider("approved_once"),
+        approval_provider=repeated_provider,
     )
 
     active = runtime["runs"].get("run_1").active_skills
@@ -171,7 +172,9 @@ def test_activate_skill_requires_approval_in_normal_and_is_idempotent(tmp_path) 
             "scope": "run",
         }
     ]
-    assert _event_kinds(runtime).count("approval_requested") == 3
+    assert not repeated_provider.requests
+    assert _event_kinds(runtime).count("approval_requested") == 2
+    assert _event_kinds(runtime).count("skill_activated") == 1
     runtime["db"].close()
 
 

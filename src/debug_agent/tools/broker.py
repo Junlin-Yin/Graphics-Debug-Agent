@@ -84,6 +84,7 @@ class NormalizedBrokerArguments:
     runtime_control_valid: bool = True
     runtime_control_error_message: str | None = None
     runtime_control_error_class: str = "config_error"
+    runtime_control_already_active: bool = False
 
 
 @dataclass(frozen=True)
@@ -268,6 +269,7 @@ class ToolBroker:
             shell_argv=normalized.shell_argv,
             approval_scope_signature=scope_signature,
             runtime_control_valid=normalized.runtime_control_valid,
+            runtime_control_already_active=normalized.runtime_control_already_active,
         )
         approval_grants = context.get("approval_grants")
         reusable = _load_reusable_grant(
@@ -700,6 +702,8 @@ class ToolBroker:
             return
         metadata = result.metadata if isinstance(result.metadata, dict) else {}
         if tool_name == "activate_skill":
+            if metadata.get("already_active") is True:
+                return
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
@@ -869,6 +873,7 @@ def _normalize_runtime_control_arguments(
             runtime_control_valid=target.valid,
             runtime_control_error_message=target.error_message,
             runtime_control_error_class=target.error_class,
+            runtime_control_already_active=target.already_active,
         )
     skill_name = arguments["skill_name"]
     reference_path = target.normalized_path or arguments["path"]

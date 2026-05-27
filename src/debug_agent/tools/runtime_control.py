@@ -22,6 +22,7 @@ class RuntimeControlTarget:
     skill: FrozenSkillSnapshot | None = None
     reference: FrozenReferenceSnapshot | None = None
     normalized_path: str | None = None
+    already_active: bool = False
 
 
 @dataclass(frozen=True)
@@ -97,21 +98,28 @@ def activate_skill(context: Any, arguments: dict[str, Any]) -> RuntimeControlHan
             error_message="Run store is required for skill activation.",
             error_class="internal_error",
         )
-    run_store.activate_skill(
-        context.run_id,
-        name=target.skill.skill_name,
-        content_hash=target.skill.overall_content_hash,
-        activation_reason="model_requested",
-        scope="run",
+    if not target.already_active:
+        run_store.activate_skill(
+            context.run_id,
+            name=target.skill.skill_name,
+            content_hash=target.skill.overall_content_hash,
+            activation_reason="model_requested",
+            scope="run",
+        )
+    message = (
+        "Skill already active"
+        if target.already_active
+        else "Skill activated"
     )
     return RuntimeControlHandlerResult(
         "ok",
-        output=f"Skill activated: {target.skill.skill_name} ({target.skill.overall_content_hash})",
+        output=f"{message}: {target.skill.skill_name} ({target.skill.overall_content_hash})",
         metadata={
             "skill_name": target.skill.skill_name,
             "content_hash": target.skill.overall_content_hash,
             "activation_reason": "model_requested",
             "scope": "run",
+            "already_active": target.already_active,
         },
     )
 
@@ -165,7 +173,14 @@ def _validate_activation(context: Any, arguments: dict[str, Any]) -> RuntimeCont
     )
     if skill is None:
         return RuntimeControlTarget(False, f"Unknown skill: {arguments['name']}")
-    return _validated_skill(store, skill)
+    target = _validated_skill(store, skill)
+    if not target.valid:
+        return target
+    return RuntimeControlTarget(
+        True,
+        skill=target.skill,
+        already_active=_skill_is_active(context, skill),
+    )
 
 
 def _validate_reference(context: Any, arguments: dict[str, Any]) -> RuntimeControlTarget:
@@ -221,6 +236,19 @@ def _validated_skill(store: Any, skill: FrozenSkillSnapshot) -> RuntimeControlTa
     if expected != skill.overall_content_hash:
         return RuntimeControlTarget(False, f"Frozen skill hash mismatch: {skill.skill_name}")
     return RuntimeControlTarget(True, skill=skill)
+
+
+def _skill_is_active(context: Any, skill: FrozenSkillSnapshot) -> bool:
+    run_store = getattr(context, "run_store", None)
+    if run_store is None:
+        return False
+    active = run_store.get(context.run_id).active_skills
+    return any(
+        isinstance(record, dict)
+        and record.get("name") == skill.skill_name
+        and record.get("content_hash") == skill.overall_content_hash
+        for record in active
+    )
 
 
 def _reference_hash_valid(context: Any, reference: FrozenReferenceSnapshot) -> bool:

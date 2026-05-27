@@ -136,6 +136,7 @@ class NormalizedToolCall:
     shell_argv: tuple[str, ...] = ()
     approval_scope_signature: str = ""
     runtime_control_valid: bool = True
+    runtime_control_already_active: bool = False
 
 
 @dataclass(frozen=True)
@@ -194,6 +195,8 @@ class PermissionEvaluator:
                 "policy_denied",
                 "Invalid runtime-control target.",
             )
+        if call.tool_name == "activate_skill" and call.runtime_control_already_active:
+            return PermissionDecision("allow", "runtime_control_already_active")
         path_classes = [self.classify_path(path) for path in call.paths]
         denied_path = next(
             (item for item in path_classes if item.classification == "denied"), None
