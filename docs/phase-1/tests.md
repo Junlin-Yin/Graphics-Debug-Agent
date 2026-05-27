@@ -463,6 +463,8 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
   suffixes for policy matching.
 - shell cwd is checked against path policy.
 - shell stdout and stderr are captured and normalized into `ToolResult`.
+- shell non-zero process exit code returns a failed tool result with a concrete
+  message derived from stderr or stdout.
 - large shell stdout and stderr become text artifacts.
 - shell timeout returns `ToolResult(status="timeout")`.
 - model-visible `git_status` native tool is not exposed in Phase 1.
@@ -747,6 +749,8 @@ Denied by shell/path policy.
 - shell cwd under blacklisted path.
 - shell classified argv path under blacklisted path.
 - shell timeout.
+- shell non-zero process exit code returns a failed tool result with a concrete
+  message derived from stderr or stdout.
 - shell stdout/stderr large enough to artifact.
 - approval provider unavailable.
 - approval denied.
@@ -833,6 +837,8 @@ Fake tool or fixture workspace must cover:
 - shell path-qualified `argv[0]` blacklist denial.
 - shell classified argv path blacklist denial.
 - shell timeout.
+- shell non-zero process exit code returns a failed tool result with a concrete
+  message derived from stderr or stdout.
 - shell stdout and stderr artifacting.
 - denied `git` command after `git_status` removal.
 - denied path-qualified git and supported transparent-wrapper git command after

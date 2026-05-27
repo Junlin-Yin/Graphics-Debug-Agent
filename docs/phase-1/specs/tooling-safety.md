@@ -455,6 +455,9 @@ Rules:
 - default `cwd` is `workspace_root`; a provided `cwd` is resolved against
   `workspace_root` and checked by path policy.
 - stdout and stderr are captured separately, then normalized into `ToolResult`.
+- a non-zero process exit code is a tool failure, not a successful tool call;
+  the failure message must prefer concrete stderr/stdout text from the tool and
+  may append the exit code for clarity.
 - large stdout/stderr are stored as artifacts.
 - timeout returns `ToolResult(status="timeout")`.
 

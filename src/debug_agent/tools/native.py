@@ -263,7 +263,12 @@ def _dominant_line_ending(raw: bytes) -> str:
     return winner if count > 0 else "\n"
 
 
-def tool_error_result(message: str, *, source: str) -> ToolResult:
+def tool_error_result(
+    message: str,
+    *,
+    source: str,
+    metadata: dict[str, Any] | None = None,
+) -> ToolResult:
     return ToolResult(
         status="error",
         output=None,
@@ -274,6 +279,6 @@ def tool_error_result(message: str, *, source: str) -> ToolResult:
             "recoverable": True,
         },
         artifacts=[],
-        metadata={},
+        metadata=metadata or {},
         redacted_output=None,
     )

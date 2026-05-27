@@ -132,6 +132,12 @@ def shell_exec(context: Any, arguments: dict[str, Any]) -> ShellHandlerResult:
             error_message=str(exc),
             metadata={"effective_timeout_seconds": timeout_seconds},
         )
+    if result.returncode != 0:
+        return ShellHandlerResult(
+            status="error",
+            error_message=_nonzero_exit_message(result),
+            metadata={"effective_timeout_seconds": timeout_seconds},
+        )
     return ShellHandlerResult(
         status="ok",
         output={
@@ -145,3 +151,10 @@ def shell_exec(context: Any, arguments: dict[str, Any]) -> ShellHandlerResult:
 
 def tool_handlers() -> dict[str, Any]:
     return {"shell_exec": shell_exec}
+
+
+def _nonzero_exit_message(result: ShellRunResult) -> str:
+    detail = result.stderr.strip() or result.stdout.strip()
+    if detail:
+        return f"{detail} (exit code {result.returncode})"
+    return f"Command exited with exit code {result.returncode}."

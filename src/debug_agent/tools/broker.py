@@ -510,7 +510,11 @@ class ToolBroker:
     ) -> ToolResult:
         if isinstance(output, NativeHandlerResult):
             if output.status == "error":
-                return tool_error_result(output.error_message or "Tool failed.", source=tool_name)
+                return tool_error_result(
+                    output.error_message or "Tool failed.",
+                    source=tool_name,
+                    metadata=output.metadata or {},
+                )
             return self._ok_result(
                 session_id=session_id,
                 run_id=run_id,
@@ -525,7 +529,11 @@ class ToolBroker:
                     metadata=output.metadata or {},
                 )
             if output.status == "error":
-                return tool_error_result(output.error_message or "Tool failed.", source=tool_name)
+                return tool_error_result(
+                    output.error_message or "Tool failed.",
+                    source=tool_name,
+                    metadata=output.metadata or {},
+                )
             return self._shell_ok_result(
                 session_id=session_id,
                 run_id=run_id,

@@ -132,14 +132,14 @@ def test_shell_schema_rejects_raw_strings_empty_argv_and_unknown_fields(
     runtime["db"].close()
 
 
-def test_shell_resolves_cwd_timeout_and_runs_fake_runner(tmp_path) -> None:
+def test_shell_nonzero_exit_code_is_tool_failure_with_concrete_message(tmp_path) -> None:
     runner = FakeShellRunner(stdout="out", stderr="err", returncode=7)
     runtime = _runtime(tmp_path, default_timeout=10, runner=runner)
 
     result = _invoke(runtime, {"argv": ["echo", "ok"], "timeout_seconds": 99})
 
-    assert result.status == "ok"
-    assert result.output == {"stdout": "out", "stderr": "err", "returncode": 7}
+    assert result.status == "error"
+    assert result.error["message"] == "err (exit code 7)"
     assert result.metadata["effective_timeout_seconds"] == 10
     assert runner.calls == [
         {
@@ -148,7 +148,7 @@ def test_shell_resolves_cwd_timeout_and_runs_fake_runner(tmp_path) -> None:
             "timeout_seconds": 10,
         }
     ]
-    assert _event_kinds(runtime) == ["tool_call_started", "tool_call_completed"]
+    assert _event_kinds(runtime) == ["tool_call_started", "tool_call_failed"]
     runtime["db"].close()
 
 
