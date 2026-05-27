@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import debug_agent.cli.repl as repl_module
+import debug_agent.runtime.orchestrator as orchestrator_module
+from debug_agent.adapters.model_factory import FakeModelResponse, ModelFactoryResult
 from debug_agent.cli.main import main
 from debug_agent.cli.repl_controller import ReplController
+from debug_agent.cli.repl_controller import ControllerApprovalProvider
 from debug_agent.cli.repl_view import ReplViewEvent
 from debug_agent.cli.repl import run_repl
 from debug_agent.cli.plain_repl_view import PlainReplView
@@ -93,6 +98,12 @@ class FakeControllerView:
 
     def show_error(self, message: str) -> None:
         self.errors.append(message)
+
+
+def _provider_message_content(message: object) -> str:
+    if isinstance(message, dict):
+        return str(message.get("content", ""))
+    return str(getattr(message, "content", ""))
 
 
 class TtyStringIO(io.StringIO):
@@ -366,6 +377,184 @@ Use alpha.
     assert "approval_requested" not in event_kinds
     assert "approval_decision_recorded" not in event_kinds
     assert "alpha" in active_skills_json
+
+
+def test_repl_idle_approval_mode_cycle_persists_event_and_engine_log(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    view = FakeControllerView()
+    controller = ReplController.start(
+        config_snapshot=_fake_config_snapshot("unused"),
+        workspace_root=workspace,
+        view=view,
+    )
+
+    try:
+        assert controller.on_approval_mode_cycle() is True
+    finally:
+        controller.close()
+
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        session_id, approval_mode = conn.execute(
+            "SELECT session_id, approval_mode FROM sessions"
+        ).fetchone()
+        row = conn.execute(
+            "SELECT payload_json FROM run_events WHERE kind = 'approval_mode_changed'"
+        ).fetchone()
+    assert approval_mode == "semi-auto"
+    assert row is not None
+    payload = json.loads(row[0])
+    assert payload["old_mode"] == "normal"
+    assert payload["new_mode"] == "semi-auto"
+    assert view.status_bars[-1].approval_mode == "semi-auto"
+
+    log_path = workspace / ".sessions" / session_id / "logs" / "engine.log"
+    log_events = [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(
+        event["event"] == "approval_mode_changed"
+        and event["metadata"]["payload"]["new_mode"] == "semi-auto"
+        for event in log_events
+    )
+
+
+def test_repl_approval_denial_aborts_turn_and_is_visible_to_next_turn(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+
+    class RecordingModel:
+        def __init__(self) -> None:
+            self.messages_by_call: list[list[object]] = []
+
+        def invoke(self, messages: list[object]) -> FakeModelResponse:
+            self.messages_by_call.append(messages)
+            if len(self.messages_by_call) == 1:
+                return FakeModelResponse(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "read_file",
+                            "args": {"path": str(outside), "limit": 10},
+                            "id": "call_read",
+                        }
+                    ],
+                    usage={},
+                )
+            return FakeModelResponse(
+                content="second turn saw prior denial",
+                tool_calls=[],
+                usage={},
+            )
+
+    model = RecordingModel()
+
+    class RecordingFactory:
+        def create(self, config_snapshot: dict[str, object]) -> ModelFactoryResult:
+            return ModelFactoryResult(model=model, error=None)
+
+    monkeypatch.setattr(orchestrator_module, "ModelFactory", RecordingFactory)
+    view = FakeControllerView()
+    controller = ReplController.start(
+        config_snapshot=_fake_config_snapshot("unused"),
+        workspace_root=workspace,
+        view=view,
+    )
+    controller.runtime.set_approval_provider(ControllerApprovalProvider(controller))
+    completed_results = []
+    original_on_turn_finished = controller.on_turn_finished
+
+    def record_finished_turn(result):
+        completed_results.append(result)
+        original_on_turn_finished(result)
+
+    controller.on_turn_finished = record_finished_turn
+
+    try:
+        controller.on_submit("read outside")
+        _wait_for(lambda: controller._approval_pending)
+        assert "Tool: read_file" in view.events[-1].payload["message"]
+
+        controller.on_submit("n")
+        controller.wait_for_active_turn(timeout=2)
+        assert controller.drain_completed_turns() == 1
+
+        assert len(model.messages_by_call) == 1
+        assert controller.is_executing is False
+        assert view.input_enabled[-1] is True
+        assert view.errors == []
+        assert view.events[-1] == ReplViewEvent(
+            kind="system_message",
+            payload={"message": "Approval denied. Current turn ended."},
+        )
+        denied_messages = [
+            message
+            for message in controller.runtime.conversation
+            if message["kind"] == "tool_result"
+        ]
+        assert len(denied_messages) == 1
+        assert denied_messages[0]["metadata"]["terminal_observation"] is True
+        assert denied_messages[0]["tool_call_id"] == "call_read"
+        assert denied_messages[0]["content"] == {
+            "message_type": "tool_result",
+            "content": (
+                '{"error": {"error_class": "policy_denied", '
+                '"message": "Approval denied.", "recoverable": true, '
+                '"source": "toolbroker"}, "status": "denied"}'
+            ),
+            "tool_call_id": "call_read",
+        }
+
+        with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+            session_status, run_status = conn.execute(
+                """
+                SELECT sessions.status, runs.status
+                FROM sessions
+                JOIN runs ON runs.session_id = sessions.session_id
+                """
+            ).fetchone()
+        assert (session_status, run_status) == ("running", "running")
+        assert completed_results[0].metadata["continuation_history"] == [
+            "initial_model_call",
+            "approval_denied_abort",
+        ]
+        assert completed_results[0].metadata["query_state"]["continuation_reason"] == (
+            "approval_denied_abort"
+        )
+
+        controller.on_submit("continue")
+        controller.wait_for_active_turn(timeout=2)
+        assert controller.drain_completed_turns() == 1
+
+        assert len(model.messages_by_call) == 2
+        second_call_text = "\n".join(
+            _provider_message_content(message)
+            for message in model.messages_by_call[1]
+        )
+        assert "policy_denied" in second_call_text
+        assert "Approval denied." in second_call_text
+        assert "second turn saw prior denial" in [
+            event.payload.get("text") for event in view.events
+        ]
+    finally:
+        controller.close()
+
+
+def _wait_for(predicate, *, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition was not met before timeout")
 
 
 def test_tty_repl_selects_prompt_toolkit_view(tmp_path, monkeypatch) -> None:

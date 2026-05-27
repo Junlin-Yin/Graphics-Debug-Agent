@@ -961,6 +961,231 @@ def test_langchain_adapter_feeds_tool_results_back_to_model() -> None:
     ]
 
 
+def test_langchain_adapter_preserves_tool_call_ids_after_context_refresh() -> None:
+    from langchain_core.messages import convert_to_messages
+
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="ok",
+                output="file text",
+                error=None,
+                artifacts=[],
+                metadata={},
+                redacted_output=None,
+            )
+
+    class AnthropicLikeToolLoopModel:
+        def __init__(self) -> None:
+            self.messages_by_call = []
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            self.messages_by_call.append(messages)
+            if len(self.messages_by_call) == 1:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "read_file_0",
+                            "name": "read_file",
+                            "args": {"path": "a.txt"},
+                        }
+                    ],
+                )
+            converted = convert_to_messages(messages)
+            assert converted[-2].tool_calls[0]["id"] == "read_file_0"
+            assert converted[-1].tool_call_id == "read_file_0"
+            return AIMessage(content="a.txt contains file text")
+
+    def refresh_model_context_frame(tool_loop_messages):
+        converted = []
+        for index, message in enumerate(tool_loop_messages, start=1):
+            role = getattr(message, "type", None)
+            if role == "ai":
+                role = "assistant"
+            content = getattr(message, "content", "")
+            if role == "assistant":
+                content = {
+                    "content": content,
+                    "tool_calls": [
+                        {
+                            "id": call["id"],
+                            "name": call["name"],
+                            "args": call.get("args", {}),
+                        }
+                        for call in getattr(message, "tool_calls", [])
+                    ],
+                }
+            converted.append(
+                ConversationMessage(
+                    seq=index,
+                    role=str(role),
+                    kind="tool_result" if role == "tool" else "tool_call",
+                    turn_id="turn-1",
+                    model_call_id=None,
+                    tool_call_id=getattr(message, "tool_call_id", None),
+                    content={
+                        "message_type": "tool_result",
+                        "content": content,
+                        "tool_call_id": getattr(message, "tool_call_id"),
+                    }
+                    if role == "tool"
+                    else content,
+                )
+            )
+        return ModelContextFrame(
+            message_segments=[
+                ConversationMessage(
+                    seq=0,
+                    role="user",
+                    kind="current_user_input",
+                    turn_id="turn-1",
+                    model_call_id=None,
+                    tool_call_id=None,
+                    content="hello",
+                ),
+                *converted,
+            ],
+            tool_schema_bindings=_frame_request().model_context_frame.tool_schema_bindings,
+        )
+
+    model = AnthropicLikeToolLoopModel()
+    context = _context()
+    context.metadata["refresh_model_context_frame"] = refresh_model_context_frame
+
+    result = LangChainAgentLoopAdapter(model=model, tool_broker=RecordingBroker()).run(
+        _frame_request(),
+        context,
+    )
+
+    assert result.status == "completed"
+    assert result.assistant_output == "a.txt contains file text"
+
+
+def test_langchain_adapter_short_circuits_same_turn_after_approval_denial() -> None:
+    class ApprovalDeniedBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="denied",
+                output=None,
+                error={
+                    "error_class": "policy_denied",
+                    "message": "Approval denied.",
+                    "source": "toolbroker",
+                    "recoverable": True,
+                },
+                artifacts=[],
+                metadata={"turn_aborted": True},
+                redacted_output=None,
+            )
+
+    class ToolThenAnswerModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "read_file_0",
+                                "name": "read_file",
+                                "args": {"path": "outside.txt"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "should not be called", "tool_calls": [], "usage": {}},
+            )()
+
+    model = ToolThenAnswerModel()
+
+    result = LangChainAgentLoopAdapter(
+        model=model,
+        tool_broker=ApprovalDeniedBroker(),
+    ).run(_request(), _context())
+
+    assert model.calls == 1
+    assert result.status == "failed"
+    assert result.error["error_class"] == "policy_denied"
+    assert result.metadata["failure_scope"] == "turn"
+    assert result.metadata["approval_denied_abort"] is True
+    assert result.tool_results[0]["metadata"]["turn_aborted"] is True
+
+
+def test_langchain_adapter_materializes_denied_terminal_observation_for_next_turn() -> None:
+    from langchain_core.messages import convert_to_messages
+
+    denied_tool_call = ConversationMessage(
+        seq=30,
+        role="assistant",
+        kind="tool_call",
+        turn_id="turn-1",
+        model_call_id="repl_turn_1_denied",
+        tool_call_id=None,
+        content={
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "read_file_0",
+                    "name": "read_file",
+                    "args": {"path": "outside.txt"},
+                }
+            ],
+        },
+        metadata={"terminal_observation": True},
+    )
+    denied_observation = ConversationMessage(
+        seq=40,
+        role="tool",
+        kind="tool_result",
+        turn_id="turn-1",
+        model_call_id=None,
+        tool_call_id="read_file_0",
+        content={
+            "message_type": "tool_result",
+            "content": "Approval denied.",
+            "tool_call_id": "read_file_0",
+        },
+        metadata={
+            "turn_aborted": True,
+            "tool_call_id": "read_file_0",
+            "terminal_observation": True,
+        },
+    )
+
+    class ProviderValidatingModel:
+        def invoke(self, messages):
+            converted = convert_to_messages(messages)
+            assert converted[-1].tool_call_id == "read_file_0"
+            return AIMessage(content="saw denial")
+
+    request = _frame_request()
+    request.model_context_frame.message_segments.extend(
+        [denied_tool_call, denied_observation]
+    )
+
+    result = LangChainAgentLoopAdapter(model=ProviderValidatingModel()).run(
+        request,
+        _context(),
+    )
+
+    assert result.status == "completed"
+    assert result.assistant_output == "saw denial"
+
+
 def test_langchain_adapter_aggregates_usage_across_tool_loop_model_calls() -> None:
     class RecordingBroker:
         def invoke(self, session_id, run_id, tool_name, arguments, context):

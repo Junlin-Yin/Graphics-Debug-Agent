@@ -94,6 +94,7 @@ class PromptAgentExecutor:
         conversation: list[dict[str, Any]] | None = None,
         prompt_turn_counter: int = 1,
         agent_stream_callback: Callable[[AgentStreamEvent], None] | None = None,
+        approval_provider: object | None = None,
     ) -> AgentRunResult:
         self._append_event(
             session_id=session.session_id,
@@ -329,6 +330,7 @@ class PromptAgentExecutor:
             metadata={
                 "skill_snapshot_store": self.skill_snapshot_store,
                 "run_store": self.run_store,
+                "approval_provider": approval_provider,
                 "refresh_model_context_frame": lambda tool_loop_messages: self._record_followup_composition(
                     session=session,
                     run=run,
@@ -361,11 +363,18 @@ class PromptAgentExecutor:
             result = self.adapter.run(request, context)
         else:
             result = self.adapter.stream(request, context, stream_callback)
+        continuation_reason = (
+            "approval_denied_abort"
+            if result.metadata.get("approval_denied_abort") is True
+            else (
+                "final_assistant_response"
+                if result.status == "completed"
+                else query_state_box["state"].continuation_reason
+            )
+        )
         query_state = query_control.record_continuation(
             query_state_box["state"].query_id,
-            "final_assistant_response"
-            if result.status == "completed"
-            else query_state_box["state"].continuation_reason,
+            continuation_reason,
         )
         continuation_history.append(query_state.continuation_reason)
         query_state_box["state"] = query_state
@@ -1501,6 +1510,17 @@ def _provider_messages_to_conversation(
         else:
             kind = "tool_loop_message"
         content = getattr(message, "content", message)
+        tool_call_id = getattr(message, "tool_call_id", None)
+        if role == "assistant" and kind == "tool_call":
+            tool_calls = _message_tool_calls(message)
+            if tool_calls:
+                content = {"content": content, "tool_calls": tool_calls}
+        if role == "tool" and kind == "tool_result" and isinstance(tool_call_id, str):
+            content = {
+                "message_type": "tool_result",
+                "content": content,
+                "tool_call_id": tool_call_id,
+            }
         if not isinstance(content, (str, dict)):
             content = str(content)
         converted.append(
@@ -1510,11 +1530,30 @@ def _provider_messages_to_conversation(
                 kind=kind,
                 turn_id=turn_id,
                 model_call_id=None,
-                tool_call_id=getattr(message, "tool_call_id", None),
+                tool_call_id=tool_call_id,
                 content=content,
             )
         )
     return converted
+
+
+def _message_tool_calls(message: object) -> list[dict[str, Any]]:
+    tool_calls = getattr(message, "tool_calls", []) or []
+    normalized: list[dict[str, Any]] = []
+    for index, call in enumerate(tool_calls):
+        if not isinstance(call, dict):
+            continue
+        name = call.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        normalized.append(
+            {
+                "name": name,
+                "args": call.get("args", {}),
+                "id": str(call.get("id") or f"{name}_{index}"),
+            }
+        )
+    return normalized
 
 
 def _with_context_metadata(

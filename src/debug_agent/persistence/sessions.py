@@ -124,6 +124,19 @@ class SessionStore:
         self.connection.commit()
         return self.get(session_id)
 
+    def update_approval_mode(self, session_id: str, approval_mode: str) -> Session:
+        now = utc_now_iso()
+        self.connection.execute(
+            """
+            UPDATE sessions
+            SET approval_mode = ?, updated_at = ?
+            WHERE session_id = ? AND status = 'running'
+            """,
+            (approval_mode, now, session_id),
+        )
+        self.connection.commit()
+        return self.get(session_id)
+
     def mark_completed(
         self, session_id: str, latest_checkpoint_id: str | None = None
     ) -> Session:

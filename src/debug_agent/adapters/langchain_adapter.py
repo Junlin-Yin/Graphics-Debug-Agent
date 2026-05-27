@@ -74,6 +74,9 @@ class LangChainAgentLoopAdapter:
                 invoked_results = self._invoke_tool_calls(request, context, tool_calls)
                 tool_results.extend(result.to_dict() for _, result in invoked_results)
                 tool_loop_messages = _tool_loop_messages(response, invoked_results)
+                abort_result = _approval_denied_abort_result(tool_results, tool_calls)
+                if abort_result is not None:
+                    return abort_result
                 refreshed = _refresh_frame_messages(context, tool_loop_messages)
                 if refreshed is None:
                     messages.extend(tool_loop_messages)
@@ -160,6 +163,9 @@ class LangChainAgentLoopAdapter:
                     on_event=on_event,
                 )
                 tool_results.extend(result.to_dict() for _, result in invoked_results)
+                abort_result = _approval_denied_abort_result(tool_results, tool_calls)
+                if abort_result is not None:
+                    return abort_result
                 tool_loop_messages = _tool_loop_messages(response, invoked_results)
                 refreshed = _refresh_frame_messages(context, tool_loop_messages)
                 if refreshed is None:
@@ -358,8 +364,17 @@ def _request_tool_bindings(request: AgentRunRequest) -> list[dict[str, Any]]:
     return [dict(tool) for tool in request.tools or []]
 
 
-def _provider_message_from_segment(segment: ConversationMessage) -> dict[str, str]:
+def _provider_message_from_segment(segment: ConversationMessage) -> object:
     content = segment.content
+    if segment.role == "tool" and _is_structured_tool_result(content, segment):
+        return ToolMessage(
+            content=_tool_result_content(content["content"]),
+            tool_call_id=str(content["tool_call_id"]),
+        )
+    if segment.role == "assistant" and segment.kind == "tool_call":
+        assistant_content, tool_calls = _assistant_tool_call_content(content)
+        if tool_calls:
+            return AIMessage(content=assistant_content, tool_calls=tool_calls)
     if not isinstance(content, str):
         content = json.dumps(content, ensure_ascii=False, sort_keys=True)
     if segment.artifact_refs:
@@ -368,6 +383,38 @@ def _provider_message_from_segment(segment: ConversationMessage) -> dict[str, st
             f"{', '.join(segment.artifact_refs)}"
         )
     return {"role": segment.role, "content": content}
+
+
+def _tool_result_content(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    return json.dumps(content, ensure_ascii=False, sort_keys=True)
+
+
+def _is_structured_tool_result(
+    content: object,
+    segment: ConversationMessage,
+) -> bool:
+    return (
+        isinstance(content, dict)
+        and content.get("message_type") == "tool_result"
+        and isinstance(content.get("tool_call_id"), str)
+        and content.get("tool_call_id") == segment.tool_call_id
+    )
+
+
+def _assistant_tool_call_content(content: object) -> tuple[str, list[dict[str, Any]]]:
+    if not isinstance(content, dict):
+        return _tool_result_content(content), []
+    raw_tool_calls = content.get("tool_calls")
+    if not isinstance(raw_tool_calls, list):
+        return _tool_result_content(content.get("content", "")), []
+    assistant_content = content.get("content", "")
+    if not isinstance(assistant_content, str):
+        assistant_content = _tool_result_content(assistant_content)
+    return assistant_content, _normalized_tool_calls(
+        [call for call in raw_tool_calls if isinstance(call, dict)]
+    )
 
 
 def _refresh_frame_messages(
@@ -938,3 +985,43 @@ def _compression_failed_abort_result(exc: Exception) -> AgentRunResult | None:
     if result.error.get("error_class") != "compression_failed":
         return None
     return result
+
+
+def _approval_denied_abort_result(
+    tool_results: list[dict[str, Any]],
+    tool_calls: list[dict[str, Any]],
+) -> AgentRunResult | None:
+    if not tool_results:
+        return None
+    latest = tool_results[-1]
+    metadata = latest.get("metadata")
+    error = latest.get("error")
+    if not isinstance(metadata, dict) or metadata.get("turn_aborted") is not True:
+        return None
+    if not isinstance(error, dict) or error.get("error_class") != "policy_denied":
+        return None
+    return AgentRunResult(
+        status="failed",
+        assistant_output=None,
+        tool_results=list(tool_results),
+        usage={},
+        error={
+            "error_class": "policy_denied",
+            "message": str(error.get("message") or "Approval denied."),
+            "source": str(error.get("source") or "toolbroker"),
+            "recoverable": True,
+        },
+        metadata={
+            "failure_scope": "turn",
+            "approval_denied_abort": True,
+            "denied_tool_calls": [
+                {
+                    "id": str(call.get("id") or ""),
+                    "name": str(call.get("name") or ""),
+                    "args": call.get("args", {}),
+                }
+                for call in tool_calls
+                if isinstance(call, dict)
+            ],
+        },
+    )

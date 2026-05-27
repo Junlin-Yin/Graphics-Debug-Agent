@@ -35,6 +35,7 @@ RUN_EVENT_KINDS = frozenset(
         "tool_call_failed",
         "approval_requested",
         "approval_decision_recorded",
+        "approval_mode_changed",
         "skill_snapshot_created",
         "skill_activated",
         "skill_reference_loaded",

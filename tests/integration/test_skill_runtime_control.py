@@ -62,6 +62,12 @@ def _runtime(tmp_path):
     }
 
 
+def _provider_message_content(message: object) -> str:
+    if isinstance(message, dict):
+        return str(message.get("content", ""))
+    return str(getattr(message, "content", ""))
+
+
 def test_brokered_skill_activation_and_reference_load_in_fake_harness(tmp_path) -> None:
     runtime = _runtime(tmp_path)
     broker = ToolBroker(
@@ -178,7 +184,9 @@ def test_active_skill_injection_shares_adapter_model_context_frame(tmp_path) -> 
 
     assert result.status == "completed"
     assert "activate_skill" in model.bound_tool_names
-    second_call_text = "\n".join(message["content"] for message in model.messages_by_call[1])
+    second_call_text = "\n".join(
+        _provider_message_content(message) for message in model.messages_by_call[1]
+    )
     assert "[Runtime supplied active skill context]" in second_call_text
     assert "skill_id: alpha" in second_call_text
     assert "Do it." in second_call_text

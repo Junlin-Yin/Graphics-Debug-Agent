@@ -41,11 +41,15 @@ class ApprovalDecision:
 
 
 class ApprovalProvider(Protocol):
+    is_interactive: bool
+
     def request_approval(self, request: str, facts: dict[str, Any]) -> ApprovalDecision:
         ...
 
 
 class FakeApprovalProvider:
+    is_interactive = True
+
     def __init__(self, decision: str = "denied") -> None:
         self.decision = decision
         self.requests: list[tuple[str, dict[str, Any]]] = []
@@ -57,6 +61,17 @@ class FakeApprovalProvider:
         if self.decision == "approved_once":
             return ApprovalDecision("approved_once", "once")
         return ApprovalDecision("denied", "none")
+
+
+class NonInteractiveApprovalProvider:
+    is_interactive = False
+
+    def request_approval(self, request: str, facts: dict[str, Any]) -> ApprovalDecision:
+        return ApprovalDecision(
+            "denied",
+            "none",
+            "Interactive approval is unavailable.",
+        )
 
 
 @dataclass(frozen=True)
@@ -272,50 +287,65 @@ class ToolBroker:
             )
             return result
         if decision.decision == "ask":
-            approval_provider = context.get("approval_provider") or FakeApprovalProvider("denied")
-            request = _approval_request(tool_name, normalized.approval_target, definition.risk_level)
+            approval_provider = context.get("approval_provider") or NonInteractiveApprovalProvider()
+            request = _approval_request(
+                tool_name=tool_name,
+                target=normalized.approval_target,
+                risk_level=definition.risk_level,
+                grant_scope="once or session",
+            )
+            is_interactive_prompt = bool(
+                getattr(approval_provider, "is_interactive", False)
+            )
             approval_facts = {
                 "tool_name": tool_name,
                 "risk_level": definition.risk_level,
                 "scope_signature": scope_signature,
                 "target": normalized.approval_target,
+                "grant_scope": "once or session",
             }
-            self._write_event(
-                session_id=session_id,
-                run_id=run_id,
-                kind="approval_requested",
-                payload={
-                    **approval_facts,
-                    "approval_request": request,
-                },
-            )
+            if is_interactive_prompt:
+                self._write_event(
+                    session_id=session_id,
+                    run_id=run_id,
+                    kind="approval_requested",
+                    payload={
+                        **approval_facts,
+                        "approval_request": request,
+                    },
+                )
             approval = approval_provider.request_approval(
                 request,
                 approval_facts,
             )
-            self._write_event(
-                session_id=session_id,
-                run_id=run_id,
-                kind="approval_decision_recorded",
-                payload={
-                    **approval_facts,
-                    "decision": approval.decision,
-                    "grant_scope": approval.grant_scope,
-                    "message": approval.message,
-                },
-            )
-            _record_approval(
-                approval_grants=approval_grants,
-                session_id=session_id,
-                run_id=run_id,
-                tool_name=tool_name,
-                risk_level=definition.risk_level,
-                scope_signature=scope_signature,
-                approval_request=request,
-                approval=approval,
-            )
+            if is_interactive_prompt:
+                self._write_event(
+                    session_id=session_id,
+                    run_id=run_id,
+                    kind="approval_decision_recorded",
+                    payload={
+                        **approval_facts,
+                        "decision": approval.decision,
+                        "grant_scope": approval.grant_scope,
+                        "message": approval.message,
+                    },
+                )
+                _record_approval(
+                    approval_grants=approval_grants,
+                    session_id=session_id,
+                    run_id=run_id,
+                    tool_name=tool_name,
+                    risk_level=definition.risk_level,
+                    scope_signature=scope_signature,
+                    approval_request=request,
+                    approval=approval,
+                )
             if approval.decision not in {"approved_once", "approved_for_session"}:
-                result = _denied_result("Approval denied.", error_class="policy_denied")
+                result = _denied_result(
+                    approval.message or "Approval denied.",
+                    error_class="policy_denied",
+                    metadata={"turn_aborted": True},
+                )
                 self._write_event(
                     session_id=session_id,
                     run_id=run_id,
@@ -340,7 +370,8 @@ class ToolBroker:
             frozen_policy=policy_facts,
             permission_evaluator=evaluator,
             approval_grants=approval_grants,
-            approval_provider=context.get("approval_provider") or FakeApprovalProvider("denied"),
+            approval_provider=context.get("approval_provider")
+            or NonInteractiveApprovalProvider(),
             event_writer=self.event_writer,
             artifact_store=self.artifact_store,
             skill_snapshot_store=context.get("skill_snapshot_store"),
@@ -748,7 +779,8 @@ def _normalize_runtime_control_arguments(
             runtime_context.get("policy_facts") or build_builtin_policy(workspace_root)
         ),
         approval_grants=runtime_context.get("approval_grants"),
-        approval_provider=runtime_context.get("approval_provider") or FakeApprovalProvider("denied"),
+        approval_provider=runtime_context.get("approval_provider")
+        or NonInteractiveApprovalProvider(),
         event_writer=runtime_context["event_writer"]
         if "event_writer" in runtime_context
         else None,
@@ -935,8 +967,22 @@ def _record_approval(
     )
 
 
-def _approval_request(tool_name: str, target: str, risk_level: str) -> str:
-    return f"Allow {tool_name} {risk_level} access to {target}?"
+def _approval_request(
+    *,
+    tool_name: str,
+    target: str,
+    risk_level: str,
+    grant_scope: str,
+) -> str:
+    return "\n".join(
+        [
+            "=== Approval Request ===",
+            f"Tool: {tool_name}",
+            f"Target: {target}",
+            "",
+            "Allow? [y]once, [a] session, [n] deny",
+        ]
+    )
 
 
 def _artifact_text(output: str | dict[str, Any]) -> str:
@@ -945,7 +991,12 @@ def _artifact_text(output: str | dict[str, Any]) -> str:
     return json.dumps(output, ensure_ascii=False, sort_keys=True)
 
 
-def _denied_result(message: str, *, error_class: str) -> ToolResult:
+def _denied_result(
+    message: str,
+    *,
+    error_class: str,
+    metadata: dict[str, Any] | None = None,
+) -> ToolResult:
     return ToolResult(
         status="denied",
         output=None,
@@ -956,7 +1007,7 @@ def _denied_result(message: str, *, error_class: str) -> ToolResult:
             "recoverable": True,
         },
         artifacts=[],
-        metadata={},
+        metadata=metadata or {},
         redacted_output=None,
     )
 

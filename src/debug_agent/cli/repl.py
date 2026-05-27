@@ -6,8 +6,13 @@ from typing import Any, TextIO
 
 from debug_agent.cli.plain_repl_view import PlainReplView
 from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
-from debug_agent.cli.repl_controller import ReplController, ReplStartFailed
+from debug_agent.cli.repl_controller import (
+    ControllerApprovalProvider,
+    ReplController,
+    ReplStartFailed,
+)
 from debug_agent.runtime.contracts import AgentRunResult
+from debug_agent.tools.broker import ApprovalDecision, NonInteractiveApprovalProvider
 
 
 def run_repl(
@@ -42,6 +47,19 @@ def run_repl(
             injected_input=injected_input,
             injected_output=injected_output,
         )
+        if isinstance(view, PromptToolkitReplView):
+            controller.runtime.set_approval_provider(
+                ControllerApprovalProvider(controller)
+            )
+        elif _stream_isatty(input_stream) and _stream_isatty(output_stream):
+            controller.runtime.set_approval_provider(
+                PlainApprovalProvider(
+                    input_stream=input_stream,
+                    output_stream=output_stream,
+                )
+            )
+        else:
+            controller.runtime.set_approval_provider(NonInteractiveApprovalProvider())
         return view.run(controller)
     except KeyboardInterrupt:
         controller.runtime.fail(
@@ -89,3 +107,32 @@ def _select_repl_view(
         input_stream=input_stream,
         output_stream=output_stream,
     )
+
+
+def _stream_isatty(stream: TextIO) -> bool:
+    isatty = getattr(stream, "isatty", None)
+    return bool(isatty and isatty())
+
+
+class PlainApprovalProvider:
+    is_interactive = True
+
+    def __init__(self, *, input_stream: TextIO, output_stream: TextIO) -> None:
+        self.input_stream = input_stream
+        self.output_stream = output_stream
+
+    def request_approval(self, request: str, facts: dict[str, Any]) -> ApprovalDecision:
+        print(request, file=self.output_stream)
+        response = self.input_stream.readline()
+        if response == "":
+            return ApprovalDecision(
+                "denied",
+                "none",
+                "Interactive approval is unavailable.",
+            )
+        normalized = response.strip().lower()
+        if normalized == "y":
+            return ApprovalDecision("approved_once", "once")
+        if normalized == "a":
+            return ApprovalDecision("approved_for_session", "session")
+        return ApprovalDecision("denied", "none")

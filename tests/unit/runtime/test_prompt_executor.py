@@ -19,6 +19,7 @@ from debug_agent.runtime.prompt_executor import PromptAgentExecutor
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.tools.broker import ToolBroker
 from debug_agent.tools.native import tool_definitions
+from debug_agent.tools.broker import ApprovalDecision
 
 
 def _runtime(tmp_path, model):
@@ -62,6 +63,12 @@ def _runtime(tmp_path, model):
         run,
         executor,
     )
+
+
+def _provider_message_content(message: object) -> str:
+    if isinstance(message, dict):
+        return str(message.get("content", ""))
+    return str(getattr(message, "content", ""))
 
 
 def test_prompt_executor_writes_model_events_assistant_event_and_turn_checkpoint(
@@ -187,6 +194,96 @@ def test_prompt_executor_records_model_completion_before_react_tool_events(
     assert first_model_completed.payload["tool_calls"] == [
         {"id": "read_file_0", "name": "read_file", "args": {"path": "notes.txt"}}
     ]
+    db.close()
+
+
+def test_repl_runtime_denial_history_allows_next_turn_model_call(tmp_path) -> None:
+    class DenyApprovalProvider:
+        is_interactive = True
+
+        def request_approval(self, request, metadata):
+            return ApprovalDecision(decision="denied", grant_scope="none")
+
+    class DenyThenInspectModel:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.next_turn_messages = None
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "write_file_0",
+                                "name": "write_file",
+                                "args": {"path": "notes.txt", "content": "hello"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            self.next_turn_messages = messages
+            from langchain_core.messages import ToolMessage, convert_to_messages
+
+            converted = convert_to_messages(messages)
+            tool_messages = [
+                message for message in converted if isinstance(message, ToolMessage)
+            ]
+            assert tool_messages
+            assert tool_messages[-1].tool_call_id == "write_file_0"
+            return type(
+                "Response",
+                (),
+                {"content": "denial was visible", "tool_calls": [], "usage": {}},
+            )()
+
+    (
+        workspace,
+        db,
+        sessions,
+        runs,
+        events,
+        checkpoints,
+        _artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, DenyThenInspectModel())
+    session = sessions.update_approval_mode(session.session_id, "normal")
+    runtime = ReplRuntime(
+        db=db,
+        sessions=sessions,
+        runs=runs,
+        events=events,
+        checkpoints=checkpoints,
+        executor=executor,
+        session_id=session.session_id,
+        run_id=run.run_id,
+        workspace_root=workspace,
+    )
+    runtime.set_approval_provider(DenyApprovalProvider())
+
+    denied = runtime.run_turn("write notes")
+    next_turn = runtime.run_turn("what happened?")
+
+    assert denied.metadata["approval_denied_abort"] is True
+    assert denied.metadata["continuation_history"] == [
+        "initial_model_call",
+        "approval_denied_abort",
+    ]
+    assert denied.metadata["query_state"]["continuation_reason"] == (
+        "approval_denied_abort"
+    )
+    assert next_turn.status == "completed"
+    assert next_turn.assistant_output == "denial was visible"
     db.close()
 
 
@@ -367,10 +464,12 @@ def test_tool_loop_followup_runs_omission_before_second_model_call(tmp_path) -> 
 
     marker = "[Earlier tool result omitted for brevity. See artifact references or trace for full details.]"
     first_call_text = "\n".join(
-        message["content"] for message in executor.adapter.model.messages_by_call[0]
+        _provider_message_content(message)
+        for message in executor.adapter.model.messages_by_call[0]
     )
     second_call_text = "\n".join(
-        message["content"] for message in executor.adapter.model.messages_by_call[1]
+        _provider_message_content(message)
+        for message in executor.adapter.model.messages_by_call[1]
     )
     assert result.status == "completed"
     assert "full old tool output" in first_call_text
@@ -508,7 +607,8 @@ def test_tool_loop_followup_runs_compression_before_second_model_call(tmp_path) 
     )
 
     second_call_text = "\n".join(
-        message["content"] for message in executor.adapter.model.messages_by_call[1]
+        _provider_message_content(message)
+        for message in executor.adapter.model.messages_by_call[1]
     )
     assert result.status == "completed"
     assert compression_calls == 1
@@ -865,7 +965,8 @@ def test_tool_loop_current_buffer_seq_does_not_protect_retained_tool_result(
 
     marker = "[Earlier tool result omitted for brevity. See artifact references or trace for full details.]"
     second_call_text = "\n".join(
-        message["content"] for message in executor.adapter.model.messages_by_call[1]
+        _provider_message_content(message)
+        for message in executor.adapter.model.messages_by_call[1]
     )
     assert result.status == "completed"
     assert marker in second_call_text
@@ -2433,3 +2534,46 @@ def test_repl_runtime_updates_latest_context_estimate_from_stream_event(tmp_path
         "context_estimate"
     ]
     db.close()
+
+
+def test_provider_messages_to_conversation_preserves_tool_call_ids() -> None:
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    from debug_agent.runtime.prompt_executor import _provider_messages_to_conversation
+
+    messages = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": "read_file_0",
+                    "name": "read_file",
+                    "args": {"path": "a.txt"},
+                }
+            ],
+        ),
+        ToolMessage(content="file text", tool_call_id="read_file_0"),
+    ]
+
+    converted = _provider_messages_to_conversation(messages, turn_id="turn-1")
+
+    assert converted[0].role == "assistant"
+    assert converted[0].kind == "tool_call"
+    assert converted[0].content == {
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "read_file_0",
+                "name": "read_file",
+                "args": {"path": "a.txt"},
+            }
+        ],
+    }
+    assert converted[1].role == "tool"
+    assert converted[1].kind == "tool_result"
+    assert converted[1].tool_call_id == "read_file_0"
+    assert converted[1].content == {
+        "message_type": "tool_result",
+        "content": "file text",
+        "tool_call_id": "read_file_0",
+    }

@@ -95,6 +95,37 @@ def _render_message_viewport(view: object, *, width: int = 80, height: int = 5) 
     )
 
 
+def _render_input_region(view: object, *, width: int = 80) -> str:
+    height = view._input_shell_height()
+    screen = Screen()
+
+    class _DiscardedTask:
+        def add_done_callback(self, callback):
+            return None
+
+        def cancel(self):
+            return None
+
+    def _discard_background_task(coroutine):
+        coroutine.close()
+        return _DiscardedTask()
+
+    view._application.create_background_task = _discard_background_task
+    with set_app(view._application):
+        view._input_region.write_to_screen(
+            screen,
+            MouseHandlers(),
+            WritePosition(xpos=0, ypos=0, width=width, height=height),
+            "",
+            False,
+            None,
+        )
+    return "\n".join(
+        "".join(screen.data_buffer[y][x].char for x in range(width - 1)).rstrip()
+        for y in range(height)
+    )
+
+
 def _render_message_viewport_lines(
     view: object, *, width: int = 80, height: int = 5
 ) -> list[str]:
@@ -1178,6 +1209,92 @@ def test_prompt_toolkit_view_ctrl_c_invokes_existing_interrupt_path() -> None:
 
     assert controller.interrupts == 1
     assert event.app.exit_calls == 1
+
+
+def test_prompt_toolkit_view_ctrl_y_invokes_controller_mode_cycle() -> None:
+    from prompt_toolkit.keys import Keys
+
+    from debug_agent.cli.prompt_toolkit_view import _key_bindings
+
+    calls: list[str] = []
+    bindings = _key_bindings(on_approval_mode_cycle=lambda event: calls.append("cycle"))
+    binding = next(
+        binding
+        for binding in bindings.bindings
+        if tuple(binding.keys) == (Keys.ControlY,)
+    )
+
+    binding.handler(_FakeKeyEvent(buffer=None))
+
+    assert calls == ["cycle"]
+
+
+def test_prompt_toolkit_view_inline_approval_uses_input_lane_not_message_list() -> None:
+    view = _prompt_toolkit_view()
+
+    view.begin_inline_approval(
+        "=== Approval Request ===\n"
+        "Tool: shell_exec\n"
+        "Target: git status\n"
+        "\n"
+        "Allow? [y]once, [a] session, [n] deny"
+    )
+
+    rendered_input = _render_input_region(view)
+    assert "=== Approval Request ===" in view._approval_prompt_text()
+    assert "Tool: shell_exec" in view._approval_prompt_text()
+    assert "Tool: shell_exec" in rendered_input
+    assert "Target: git status" in rendered_input
+    assert "Allow? [y]once, [a] session, [n] deny" in rendered_input
+    assert "Risk:" not in rendered_input
+    assert "Grant scope:" not in rendered_input
+    assert "approval>" not in view._input_prompt_fragment_text()
+    assert view._input_prompt_width() == 0
+    assert view._input_entry_height() == 0
+    assert view._input_region_height() == view._approval_prompt_height()
+    assert view._input_buffer.read_only() is True
+    assert "Tool: shell_exec" not in view._message_region_text()
+
+    view.end_inline_approval()
+
+    assert view._approval_prompt_text() == ""
+    assert view._input_prompt_fragment_text() == "> "
+    assert view._input_prompt_width() == len("> ")
+    assert view._input_region_height() == 1
+    assert view._input_buffer.read_only() is False
+
+
+def test_prompt_toolkit_view_approval_key_dispatches_without_buffering() -> None:
+    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+
+    class Controller:
+        def __init__(self) -> None:
+            self.submitted: list[str] = []
+
+        def on_submit(self, text: str) -> None:
+            self.submitted.append(text)
+
+    controller = Controller()
+    view = _prompt_toolkit_view()
+    view._active_controller = controller
+    view.begin_inline_approval("Allow? [y]once, [a] session, [n] deny")
+    event = _FakeKeyEvent(view._input_buffer)
+
+    view.handle_approval_key_event(event, "a")
+
+    assert controller.submitted == ["a"]
+    assert view._input_buffer.text == ""
+
+
+def test_prompt_toolkit_view_approval_keys_type_normally_outside_approval() -> None:
+    view = _prompt_toolkit_view()
+    event = _FakeKeyEvent(view._input_buffer)
+
+    view.handle_approval_key_event(event, "y")
+    view.handle_approval_key_event(event, "a")
+    view.handle_approval_key_event(event, "n")
+
+    assert view._input_buffer.text == "yan"
 
 
 def test_prompt_toolkit_view_streaming_redraw_preserves_prompt_buffer() -> None:

@@ -49,6 +49,12 @@ def _runtime(tmp_path):
     }
 
 
+def _provider_message_content(message: object) -> str:
+    if isinstance(message, dict):
+        return str(message.get("content", ""))
+    return str(getattr(message, "content", ""))
+
+
 def _summary_output(completed: str) -> str:
     return json.dumps(
         {
@@ -171,7 +177,9 @@ def test_automatic_compression_runs_before_tool_loop_followup(tmp_path) -> None:
         conversation=_compressible_conversation(old_tokens=40, old_repeats=12),
     )
 
-    second_call_text = "\n".join(message["content"] for message in model.messages_by_call[1])
+    second_call_text = "\n".join(
+        _provider_message_content(message) for message in model.messages_by_call[1]
+    )
     assert result.status == "completed"
     assert "compressed follow-up history" in second_call_text
     assert "old output old output" not in second_call_text

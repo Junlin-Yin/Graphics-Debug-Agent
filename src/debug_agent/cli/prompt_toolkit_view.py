@@ -12,7 +12,14 @@ from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.input.base import Input
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import BufferControl, FormattedTextControl, HSplit, VSplit, Window
+from prompt_toolkit.layout import (
+    BufferControl,
+    ConditionalContainer,
+    FormattedTextControl,
+    HSplit,
+    VSplit,
+    Window,
+)
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.layout import Layout
 from prompt_toolkit.layout.scrollable_pane import ScrollablePane
@@ -124,9 +131,12 @@ class PromptToolkitReplView:
         self._render_dirty = False
         self._input_visible_lines = 1
         self._message_region_follow_latest = True
+        self._approval_prompt: str | None = None
         self._input_buffer = Buffer(
             multiline=True,
-            read_only=Condition(lambda: not self._input_enabled),
+            read_only=Condition(
+                lambda: not self._input_enabled or self._approval_prompt is not None
+            ),
         )
         self._input_buffer.on_text_changed += self._handle_input_text_changed
         self._application = self._build_application()
@@ -159,6 +169,18 @@ class PromptToolkitReplView:
 
     def set_input_enabled(self, enabled: bool) -> None:
         self._input_enabled = enabled
+        self._invalidate()
+
+    def begin_inline_approval(self, request: str) -> None:
+        self._approval_prompt = request
+        self._input_buffer.reset()
+        self._reset_input_region_height()
+        self._invalidate()
+
+    def end_inline_approval(self) -> None:
+        self._approval_prompt = None
+        self._input_buffer.reset()
+        self._reset_input_region_height()
         self._invalidate()
 
     def append_user_message(self, message: str) -> None:
@@ -262,6 +284,24 @@ class PromptToolkitReplView:
         if not self._closed:
             self._exit_application(getattr(event, "app", None))
 
+    def handle_approval_mode_cycle_event(self, _event: Any) -> None:
+        if self._active_controller is None:
+            return
+        cycle = getattr(self._active_controller, "on_approval_mode_cycle", None)
+        if callable(cycle):
+            cycle()
+
+    def handle_approval_key_event(self, event: Any, key: str) -> None:
+        if self._approval_prompt is None:
+            event.current_buffer.insert_text(key)
+            return
+        if self._active_controller is None:
+            return
+        self._input_buffer.reset()
+        controller_submit = getattr(self._active_controller, "on_submit", None)
+        if callable(controller_submit):
+            controller_submit(key)
+
     def scroll_message_region_down(self) -> None:
         self._scroll_message_region_down(message_scroll_step_page)
 
@@ -310,18 +350,31 @@ class PromptToolkitReplView:
             show_scrollbar=True,
             display_arrows=False,
         )
-        input_buffer_region = VSplit(
+        input_buffer_region = HSplit(
             [
-                Window(
-                    FormattedTextControl(lambda: HTML("<b>&gt;</b> ")),
-                    width=2,
-                    dont_extend_width=True,
-                    always_hide_cursor=True,
+                ConditionalContainer(
+                    Window(
+                        FormattedTextControl(self._approval_prompt_text),
+                        height=self._approval_prompt_dimension,
+                        wrap_lines=True,
+                    ),
+                    filter=Condition(lambda: self._approval_prompt is not None),
                 ),
-                Window(
-                    BufferControl(buffer=self._input_buffer),
-                    height=self._input_region_dimension,
-                    wrap_lines=True,
+                VSplit(
+                    [
+                        Window(
+                            FormattedTextControl(self._input_prompt_fragment),
+                            width=self._input_prompt_dimension,
+                            dont_extend_width=True,
+                            always_hide_cursor=True,
+                        ),
+                        Window(
+                            BufferControl(buffer=self._input_buffer),
+                            height=self._input_entry_dimension,
+                            wrap_lines=True,
+                        ),
+                    ],
+                    height=self._input_entry_dimension,
                 ),
             ],
             height=self._input_region_dimension,
@@ -367,6 +420,8 @@ class PromptToolkitReplView:
                 self.insert_input_newline,
                 self.scroll_message_region_up,
                 self.scroll_message_region_down,
+                self.handle_approval_mode_cycle_event,
+                self.handle_approval_key_event,
             ),
             full_screen=True,
             mouse_support=True,
@@ -384,6 +439,8 @@ class PromptToolkitReplView:
             controller.on_submit(text)
 
     def handle_prompt_enter(self, controller: object, event: Any) -> None:
+        if self._approval_prompt is not None:
+            return
         text = str(event.current_buffer.text)
         if not text.strip():
             event.current_buffer.reset()
@@ -476,10 +533,34 @@ class PromptToolkitReplView:
         self._message_region_follow_latest = value
 
     def _input_region_height(self) -> int:
-        return self._input_visible_lines
+        if self._approval_prompt is not None:
+            return self._approval_prompt_height() + self._input_entry_height()
+        return self._input_entry_height()
 
     def _input_region_dimension(self) -> Dimension:
         return Dimension.exact(self._input_region_height())
+
+    def _approval_prompt_height(self) -> int:
+        if self._approval_prompt is None:
+            return 0
+        return max(1, len(self._approval_prompt.splitlines()))
+
+    def _approval_prompt_dimension(self) -> Dimension:
+        return Dimension.exact(self._approval_prompt_height())
+
+    def _input_entry_height(self) -> int:
+        if self._approval_prompt is not None:
+            return 0
+        return self._input_visible_lines
+
+    def _input_entry_dimension(self) -> Dimension:
+        return Dimension.exact(self._input_entry_height())
+
+    def _input_prompt_width(self) -> int:
+        return get_cwidth(self._input_prompt_fragment_text())
+
+    def _input_prompt_dimension(self) -> Dimension:
+        return Dimension.exact(self._input_prompt_width())
 
     def _input_shell_height(self) -> int:
         return self._input_region_height() + 2
@@ -588,6 +669,17 @@ class PromptToolkitReplView:
 
     def _terminal_summary_text(self) -> str | None:
         return self._terminal_summary
+
+    def _approval_prompt_text(self) -> str:
+        return self._approval_prompt or ""
+
+    def _input_prompt_fragment_text(self) -> str:
+        if self._approval_prompt is not None:
+            return ""
+        return "> "
+
+    def _input_prompt_fragment(self) -> HTML:
+        return HTML(f"<b>{self._input_prompt_fragment_text()}</b>")
 
 
 def _format_status_bar(snapshot: StatusBarSnapshot) -> str:
@@ -727,6 +819,8 @@ def _key_bindings(
     on_insert_newline: Callable[[], None] | None = None,
     on_page_up: Callable[[], None] | None = None,
     on_page_down: Callable[[], None] | None = None,
+    on_approval_mode_cycle: Callable[[Any], None] | None = None,
+    on_approval_key: Callable[[Any, str], None] | None = None,
 ) -> KeyBindings:
     bindings = KeyBindings()
 
@@ -768,6 +862,26 @@ def _key_bindings(
     def _(event) -> None:
         if on_interrupt is not None:
             on_interrupt(event)
+
+    @bindings.add("c-y")
+    def _(event) -> None:
+        if on_approval_mode_cycle is not None:
+            on_approval_mode_cycle(event)
+
+    @bindings.add("y")
+    def _(event) -> None:
+        if on_approval_key is not None:
+            on_approval_key(event, "y")
+
+    @bindings.add("a")
+    def _(event) -> None:
+        if on_approval_key is not None:
+            on_approval_key(event, "a")
+
+    @bindings.add("n")
+    def _(event) -> None:
+        if on_approval_key is not None:
+            on_approval_key(event, "n")
 
     try:
         bindings.add("s-enter", eager=True)(

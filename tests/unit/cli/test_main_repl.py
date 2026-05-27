@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 import debug_agent.cli.main as cli_main
 from debug_agent.cli.main import main
-from debug_agent.cli.repl import run_repl
+from debug_agent.cli.repl import PlainApprovalProvider, run_repl
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
@@ -15,6 +15,30 @@ from debug_agent.persistence.sqlite import RuntimeDatabase
 class TtyStringIO(io.StringIO):
     def isatty(self) -> bool:
         return True
+
+
+def test_plain_approval_provider_maps_y_a_n_and_renders_prompt() -> None:
+    rendered = io.StringIO()
+    once = PlainApprovalProvider(
+        input_stream=io.StringIO("y\n"),
+        output_stream=rendered,
+    ).request_approval("Tool: read_file", {})
+    session = PlainApprovalProvider(
+        input_stream=io.StringIO("a\n"),
+        output_stream=io.StringIO(),
+    ).request_approval("Tool: write_file", {})
+    denied = PlainApprovalProvider(
+        input_stream=io.StringIO("n\n"),
+        output_stream=io.StringIO(),
+    ).request_approval("Tool: shell_exec", {})
+
+    assert rendered.getvalue() == "Tool: read_file\n"
+    assert (once.decision, once.grant_scope) == ("approved_once", "once")
+    assert (session.decision, session.grant_scope) == (
+        "approved_for_session",
+        "session",
+    )
+    assert (denied.decision, denied.grant_scope) == ("denied", "none")
 
 
 def _write_fake_config(

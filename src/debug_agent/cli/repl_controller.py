@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any, Callable, TextIO
 
+from debug_agent.tools.broker import ApprovalDecision
 from debug_agent.cli.repl_view import (
     ReplView,
     ReplViewEvent,
@@ -49,6 +50,11 @@ class ReplController:
     _usage_total_tokens: int | None = None
     _context_used_tokens: int | None = None
     _stream_usage_accounted: bool = False
+    _approval_condition: threading.Condition = field(
+        default_factory=threading.Condition
+    )
+    _approval_decision: ApprovalDecision | None = None
+    _approval_pending: bool = False
 
     @classmethod
     def start(
@@ -102,6 +108,9 @@ class ReplController:
     def on_submit(self, text: str) -> None:
         command = text.strip()
         if not command:
+            return
+        if self._approval_pending:
+            self._handle_approval_response(command)
             return
         if command.startswith("/"):
             self.on_slash_command(command)
@@ -173,6 +182,56 @@ class ReplController:
         self._append_system_message(f"Unsupported Phase 1 slash command: {command}")
         return True
 
+    def on_approval_mode_cycle(self) -> bool:
+        if self.is_executing or self._approval_pending:
+            return True
+        cycle = getattr(self.runtime, "cycle_approval_mode", None)
+        if not callable(cycle):
+            return True
+        cycle()
+        if self.view is not None:
+            self.view.update_status_bar(self._status_bar_snapshot())
+        return True
+
+    def request_approval(self, request: str, facts: dict[str, Any]) -> ApprovalDecision:
+        with self._approval_condition:
+            self._approval_decision = None
+            self._approval_pending = True
+        if self.view is not None and hasattr(self.view, "begin_inline_approval"):
+            self.view.begin_inline_approval(request)
+        else:
+            self._append_system_message(request)
+        if self.view is not None:
+            self.view.set_input_enabled(True)
+        self.notify_event_ready()
+        try:
+            with self._approval_condition:
+                while self._approval_decision is None:
+                    self._approval_condition.wait()
+                decision = self._approval_decision
+                self._approval_decision = None
+                self._approval_pending = False
+        finally:
+            if self.view is not None and hasattr(self.view, "end_inline_approval"):
+                self.view.end_inline_approval()
+        if self.view is not None and self.is_executing:
+            self.view.set_input_enabled(False)
+        return decision
+
+    def _handle_approval_response(self, command: str) -> None:
+        normalized = command.strip().lower()
+        if normalized == "y":
+            decision = ApprovalDecision("approved_once", "once")
+        elif normalized == "a":
+            decision = ApprovalDecision("approved_for_session", "session")
+        elif normalized == "n":
+            decision = ApprovalDecision("denied", "none")
+        else:
+            return
+        with self._approval_condition:
+            self._approval_decision = decision
+            self._approval_condition.notify_all()
+
     def on_interrupt(self) -> None:
         result = _error_result(
             "cancelled",
@@ -240,9 +299,14 @@ class ReplController:
             elif not self._streamed_output_seen:
                 self._append_result_events(result)
         elif _is_turn_scoped_failure(result):
-            message = result.error["message"] if result.error else "Prompt execution failed."
-            if self.view is not None:
-                self.view.show_error(message)
+            if _is_approval_denied_abort(result):
+                self._append_system_message("Approval denied. Current turn ended.")
+            else:
+                message = (
+                    result.error["message"] if result.error else "Prompt execution failed."
+                )
+                if self.view is not None:
+                    self.view.show_error(message)
             should_reenable_input = True
         else:
             self.runtime.fail(result)
@@ -646,6 +710,16 @@ class ReplStartFailed(RuntimeError):
         self.message = message
 
 
+class ControllerApprovalProvider:
+    is_interactive = True
+
+    def __init__(self, controller: ReplController) -> None:
+        self.controller = controller
+
+    def request_approval(self, request: str, facts: dict[str, Any]) -> ApprovalDecision:
+        return self.controller.request_approval(request, facts)
+
+
 def _usage_value(usage: dict[str, Any], *keys: str) -> int | None:
     for key in keys:
         value = usage.get(key)
@@ -704,3 +778,11 @@ def _terminal_summary_status(result: AgentRunResult) -> str:
 
 def _is_turn_scoped_failure(result: AgentRunResult) -> bool:
     return result.status == "failed" and result.metadata.get("failure_scope") == "turn"
+
+
+def _is_approval_denied_abort(result: AgentRunResult) -> bool:
+    return (
+        _is_turn_scoped_failure(result)
+        and result.metadata.get("approval_denied_abort") is True
+        and _error_class(result) == "policy_denied"
+    )

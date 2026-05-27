@@ -639,23 +639,45 @@ Objective: wire Phase 1 approval behavior into TTY/plain/non-interactive UI with
 
 Deliverables: `ApprovalProvider` implementations, inline TUI approval prompt, plain approval prompt, non-interactive denial, denial turn abort, approval mode cycling, approval persistence, and manual TTY evidence.
 
-- [ ] Implement `ApprovalProvider` for TUI, plain REPL, and non-interactive paths.
-- [ ] Implement prompt_toolkit inline approval state in the existing input lane with `y`, `a`, and `n`.
-- [ ] Keep Milestone 6B reviewable through internal checkpoints: first land concrete approval providers and approval-request persistence, then denial turn-abort semantics, then idle-only `Ctrl+Y` and manual TTY evidence.
-- [ ] Render approval prompts with at least tool name, risk level, path or command preview, and grant scope.
-- [ ] Implement plain REPL approval prompt when interactive input is available.
-- [ ] Deny non-interactive approval requests with `policy_denied` without hanging.
-- [ ] Persist interactive approval decisions to `approval_grants` only for real prompts, including the rendered `approval_request` text shown to the user.
-- [ ] Ensure policy auto-allow outcomes do not write `approval_grants` rows or `approval_requested` / `approval_decision_recorded` events.
-- [ ] Implement user denial as `TurnAborted`: record denial facts, record terminal observation visible to future turns, short-circuit same-turn follow-up model calls, and return REPL input without terminalizing long-lived session/run.
-- [ ] Ensure one-shot approval denial or unavailable approval terminalizes run/session as `failed` with `error_class="policy_denied"` and exits non-zero.
-- [ ] Implement idle-only `Ctrl+Y` cycling `normal -> semi-auto -> yolo -> normal`.
-- [ ] Record each idle `Ctrl+Y` approval-mode switch as an `approval_mode_changed` run event and an `engine.log` entry.
-- [ ] Ensure `Ctrl+Y` during active execution or inline approval prompt is a silent no-op and does not queue a later mode change.
-- [ ] Add unit tests for approval provider behavior, non-interactive denial, approval grant persistence including rendered `approval_request` text, denial turn abort, same-turn follow-up suppression, and `Ctrl+Y`.
-- [ ] Add integration tests for non-interactive approval denial, approval denial turn abort, one-shot approval denial/unavailable approval behavior, and `approval_mode_changed` observability where deterministic injected I/O can verify behavior without manual TTY interaction.
-- [ ] Run manual TTY checks for inline approval prompt, denial returning to input, `Ctrl+Y`, and approval-mode status updates; record terminal application, command sequence, expected result, observed result, and known limitation.
-- [ ] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
+- [x] Implement `ApprovalProvider` for TUI, plain REPL, and non-interactive paths.
+- [x] Implement prompt_toolkit inline approval state in the existing input lane with `y`, `a`, and `n`.
+- [x] Keep Milestone 6B reviewable through internal checkpoints: first land concrete approval providers and approval-request persistence, then denial turn-abort semantics, then idle-only `Ctrl+Y` and manual TTY evidence.
+- [x] Render approval prompts with the documented title, tool name, path or command preview, and approval choices; do not show risk level, grant scope, or an `approval>` prompt label.
+- [x] Implement plain REPL approval prompt when interactive input is available.
+- [x] Deny non-interactive approval requests with `policy_denied` without hanging.
+- [x] Persist interactive approval decisions to `approval_grants` only for real prompts, including the rendered `approval_request` text shown to the user.
+- [x] Ensure policy auto-allow outcomes do not write `approval_grants` rows or `approval_requested` / `approval_decision_recorded` events.
+- [x] Implement user denial as `TurnAborted`: record denial facts, record terminal observation visible to future turns, short-circuit same-turn follow-up model calls, and return REPL input without terminalizing long-lived session/run.
+- [x] Ensure one-shot approval denial or unavailable approval terminalizes run/session as `failed` with `error_class="policy_denied"` and exits non-zero.
+- [x] Implement idle-only `Ctrl+Y` cycling `normal -> semi-auto -> yolo -> normal`.
+- [x] Record each idle `Ctrl+Y` approval-mode switch as an `approval_mode_changed` run event and an `engine.log` entry.
+- [x] Ensure `Ctrl+Y` during active execution or inline approval prompt is a silent no-op and does not queue a later mode change.
+- [x] Add unit tests for approval provider behavior, non-interactive denial, approval grant persistence including rendered `approval_request` text, denial turn abort, same-turn follow-up suppression, and `Ctrl+Y`.
+- [x] Add integration tests for non-interactive approval denial, approval denial turn abort, one-shot approval denial/unavailable approval behavior, and `approval_mode_changed` observability where deterministic injected I/O can verify behavior without manual TTY interaction.
+- [x] Run manual TTY checks for inline approval prompt, denial returning to input, `Ctrl+Y`, and approval-mode status updates; record terminal application, command sequence, expected result, observed result, and known limitation.
+
+Manual TTY evidence for Milestone 6B:
+
+- Terminal application: Windows 11 pwsh.
+- Command sequence: start a TTY `debug-agent` REPL, trigger an approval-required
+  tool call, exercise approval `y`, approval `a`, approval `n`, submit a
+  follow-up turn after denial, cycle idle approval mode with `Ctrl+Y`, and
+  observe the approval-mode status bar.
+- Expected result: approval request renders in the prompt_toolkit input area as
+  documented, without a trailing blank line; `y`, `a`, and `n` are accepted;
+  denial returns to normal prompt input without terminalizing the session and
+  does not render as `Error`; idle `Ctrl+Y` cycles
+  `normal -> semi-auto -> yolo -> normal`; the status bar reflects the active
+  approval mode; approved and denied approval flows do not cause follow-up
+  `model_call_failed`.
+- Observed result: approval request text is visible in the documented format,
+  with no trailing blank line; `y`, `a`, and `n` are accepted; `n` returns to
+  normal prompt input with a neutral message; normal input returns to the left
+  `> ` prompt; idle `Ctrl+Y` and the approval-mode status bar work as expected;
+  approve and deny follow-up turns no longer produce `model_call_failed`.
+- Known limitation: manual evidence was recorded on Windows 11 pwsh only; macOS
+  Terminal and iTerm2 remain Milestone 6C acceptance checks.
+- [x] Verify with canonical commands `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`.
 
 Modified boundaries: REPL controller/view approval state, approval provider, approval audit, approval grant persistence, and prompt executor denial handling.
 

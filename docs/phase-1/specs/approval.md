@@ -654,11 +654,19 @@ lane.
 When approval is required:
 
 1. `ToolBroker` calls `ApprovalProvider.request(...)`.
-2. `ReplController` appends a system block describing:
-   - tool name.
-   - risk level.
-   - path or command preview.
-   - grant scope.
+2. `ReplController` shows the approval request in the existing input area using
+   this visible format:
+
+   ```text
+   === Approval Request ===
+   Tool: <tool name>
+   Target: <path or command preview>
+
+   Allow? [y]once, [a] session, [n] deny
+   ```
+
+   The visible approval request must not include risk level or grant scope, and
+   it must not display an `approval>` prompt label.
 3. The prompt input region switches to approval mode.
 4. The user enters:
    - `y`: approve once.

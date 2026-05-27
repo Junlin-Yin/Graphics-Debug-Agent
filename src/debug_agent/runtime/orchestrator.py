@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,7 +36,7 @@ from debug_agent.runtime.prompt_executor import (
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.runtime.workspace import resolve_workspace_root
 from debug_agent.skills.registry import SkillRegistry, SkillRegistryError
-from debug_agent.tools.broker import ToolBroker
+from debug_agent.tools.broker import NonInteractiveApprovalProvider, ToolBroker
 from debug_agent.tools.native import gated_user_facing_tool_definitions
 
 
@@ -97,6 +98,7 @@ class ReplRuntime:
         self.turn_counter = 0
         self.conversation: list[dict[str, Any]] = []
         self.latest_context_estimate: dict[str, Any] | None = None
+        self.approval_provider = NonInteractiveApprovalProvider()
         self.closed = False
         self._lock = threading.RLock()
 
@@ -124,6 +126,7 @@ class ReplRuntime:
                 workspace_root=str(self.workspace_root),
                 conversation=self.conversation,
                 prompt_turn_counter=self.turn_counter,
+                approval_provider=self.approval_provider,
                 agent_stream_callback=runtime_stream_callback
                 if agent_stream_callback is not None
                 else None,
@@ -167,7 +170,89 @@ class ReplRuntime:
                         },
                     }
                 )
+            elif result.metadata.get("approval_denied_abort") is True:
+                self._append_denied_turn_observation(user_input, result)
             return result
+
+    def _append_denied_turn_observation(
+        self,
+        user_input: str,
+        result: AgentRunResult,
+    ) -> None:
+        next_seq = _next_conversation_seq(self.conversation)
+        turn_id = f"turn-{self.turn_counter}"
+        self.conversation.append(
+            {
+                "seq": next_seq,
+                "role": "user",
+                "kind": "current_user_input",
+                "turn_id": turn_id,
+                "model_call_id": None,
+                "tool_call_id": None,
+                "content": user_input,
+                "artifact_refs": [],
+                "metadata": {},
+            }
+        )
+        denied_tool_calls = [
+            call
+            for call in result.metadata.get("denied_tool_calls", [])
+            if isinstance(call, dict)
+        ]
+        if denied_tool_calls:
+            self.conversation.append(
+                {
+                    "seq": next_seq + 1,
+                    "role": "assistant",
+                    "kind": "tool_call",
+                    "turn_id": turn_id,
+                    "model_call_id": f"repl_turn_{self.turn_counter}_denied",
+                    "tool_call_id": None,
+                    "content": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": str(call.get("id") or ""),
+                                "name": str(call.get("name") or ""),
+                                "args": call.get("args", {}),
+                            }
+                            for call in denied_tool_calls
+                        ],
+                    },
+                    "artifact_refs": [],
+                    "metadata": {
+                        "terminal_observation": True,
+                    },
+                }
+            )
+        for offset, tool_result in enumerate(result.tool_results, start=1):
+            metadata = dict(tool_result.get("metadata", {}))
+            metadata["terminal_observation"] = True
+            tool_call_id = str(
+                metadata.get("tool_call_id")
+                or _tool_call_id_for_result(denied_tool_calls, offset - 1)
+            )
+            self.conversation.append(
+                {
+                    "seq": next_seq + offset + (1 if denied_tool_calls else 0),
+                    "role": "tool",
+                    "kind": "tool_result",
+                    "turn_id": turn_id,
+                    "model_call_id": None,
+                    "tool_call_id": tool_call_id,
+                    "content": {
+                        "message_type": "tool_result",
+                        "content": _denied_tool_observation_content(tool_result),
+                        "tool_call_id": tool_call_id,
+                    },
+                    "artifact_refs": list(tool_result.get("artifacts", [])),
+                    "metadata": metadata,
+                }
+            )
+
+    def set_approval_provider(self, approval_provider: object) -> None:
+        with self._lock:
+            self.approval_provider = approval_provider
 
     def manual_compress(self) -> AgentRunResult:
         with self._lock:
@@ -237,6 +322,21 @@ class ReplRuntime:
                 approval_mode=session.approval_mode,
                 config_snapshot=session.config_snapshot,
             )
+
+    def cycle_approval_mode(self) -> tuple[str, str]:
+        with self._lock:
+            session = self.sessions.get(self.session_id)
+            old_mode = session.approval_mode
+            new_mode = _next_approval_mode(old_mode)
+            session = self.sessions.update_approval_mode(session.session_id, new_mode)
+            _append_event(
+                self.events,
+                session.session_id,
+                self.run_id,
+                "approval_mode_changed",
+                {"old_mode": old_mode, "new_mode": new_mode},
+            )
+            return old_mode, new_mode
 
     def complete(self) -> None:
         with self._lock:
@@ -1032,6 +1132,16 @@ def _tool_enabled_status(
         return True, "limited by shell allowlist"
     return True, None
 
+
+def _next_approval_mode(current: str) -> str:
+    modes = ["normal", "semi-auto", "yolo"]
+    try:
+        index = modes.index(current)
+    except ValueError:
+        return "normal"
+    return modes[(index + 1) % len(modes)]
+
+
 def _mark_failed_terminal(
     *,
     sessions: SessionStore,
@@ -1182,6 +1292,30 @@ def _consumed_model_call_ids(conversation: list[dict[str, Any]]) -> list[str]:
         if isinstance(model_call_id, str) and model_call_id not in consumed:
             consumed.append(model_call_id)
     return consumed
+
+
+def _tool_call_id_for_result(tool_calls: list[dict[str, Any]], index: int) -> str:
+    if 0 <= index < len(tool_calls):
+        tool_call_id = tool_calls[index].get("id")
+        if isinstance(tool_call_id, str):
+            return tool_call_id
+    return ""
+
+
+def _denied_tool_observation_content(tool_result: dict[str, Any]) -> str:
+    error = tool_result.get("error")
+    return json.dumps(
+        {
+            "status": "denied",
+            "error": error
+            if isinstance(error, dict)
+            else {
+                "error_class": "policy_denied",
+                "message": "Approval denied.",
+            },
+        },
+        sort_keys=True,
+    )
 
 
 def _active_conflict_message(session_id: str) -> str:

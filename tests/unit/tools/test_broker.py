@@ -150,6 +150,64 @@ def test_interactive_approval_writes_requested_and_decision_audit_events(
     runtime["db"].close()
 
 
+def test_interactive_approval_prompt_renders_required_facts_and_denial_aborts_turn(
+    tmp_path,
+) -> None:
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    provider = FakeApprovalProvider("denied")
+
+    result = _invoke(
+        runtime,
+        "read_file",
+        {"path": str(outside)},
+        approval_provider=provider,
+    )
+    rows = runtime["db"].connection.execute(
+        """
+        SELECT decision, grant_scope, approval_request
+        FROM approval_grants
+        ORDER BY rowid
+        """
+    ).fetchall()
+
+    assert result.status == "denied"
+    assert result.metadata["turn_aborted"] is True
+    assert provider.requests
+    request_text, facts = provider.requests[0]
+    assert request_text == (
+        "=== Approval Request ===\n"
+        "Tool: read_file\n"
+        f"Target: {outside.resolve()}\n"
+        "\n"
+        "Allow? [y]once, [a] session, [n] deny"
+    )
+    assert "Tool: read_file" in request_text
+    assert f"Target: {outside.resolve()}" in request_text
+    assert "Risk:" not in request_text
+    assert "Grant scope:" not in request_text
+    assert facts["grant_scope"] == "once or session"
+    assert rows == [("denied", "none", request_text)]
+    runtime["db"].close()
+
+
+def test_policy_auto_allow_does_not_write_approval_audit_or_grants(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    (runtime["workspace"] / "notes.txt").write_text("hello", encoding="utf-8")
+
+    result = _invoke(runtime, "read_file", {"path": "notes.txt"})
+    grant_count = runtime["db"].connection.execute(
+        "SELECT COUNT(*) FROM approval_grants"
+    ).fetchone()[0]
+
+    assert result.status == "ok"
+    assert grant_count == 0
+    assert "approval_requested" not in _event_kinds(runtime)
+    assert "approval_decision_recorded" not in _event_kinds(runtime)
+    runtime["db"].close()
+
+
 def test_write_approval_matrix_for_normal_and_semi_auto(tmp_path) -> None:
     normal = _runtime(tmp_path / "normal", approval_mode="normal")
     semi = _runtime(tmp_path / "semi", approval_mode="semi-auto")

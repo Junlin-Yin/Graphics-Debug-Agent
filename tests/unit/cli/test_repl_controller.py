@@ -17,6 +17,8 @@ class FakeView:
         self.status_bars: list[Any] = []
         self.closed_summaries: list[Any] = []
         self.errors: list[str] = []
+        self.inline_approval_started: list[str] = []
+        self.inline_approval_ended = 0
 
     def run(self, controller: object) -> int:
         return 0
@@ -46,6 +48,12 @@ class FakeView:
 
     def show_error(self, message: str) -> None:
         self.errors.append(message)
+
+    def begin_inline_approval(self, request: str) -> None:
+        self.inline_approval_started.append(request)
+
+    def end_inline_approval(self) -> None:
+        self.inline_approval_ended += 1
 
 
 class FakeSessions:
@@ -120,6 +128,7 @@ class FakeRuntime:
             },
         )
         self.compress_calls = 0
+        self.approval_mode_changes: list[tuple[str, str]] = []
 
     def run_turn(self, user_input: str, agent_stream_callback=None) -> AgentRunResult:
         self.run_inputs.append(user_input)
@@ -150,6 +159,27 @@ class FakeRuntime:
 
     def complete(self) -> None:
         self.completed = True
+
+    def cycle_approval_mode(self) -> tuple[str, str]:
+        order = ["normal", "semi-auto", "yolo"]
+        old = self.approval_mode
+        new = order[(order.index(old) + 1) % len(order)]
+        self.approval_mode = new
+        self.sessions.session = Session(
+            session_id=self.sessions.session.session_id,
+            workspace_root=self.sessions.session.workspace_root,
+            status=self.sessions.session.status,
+            approval_mode=new,
+            active_run_id=self.sessions.session.active_run_id,
+            artifact_root=self.sessions.session.artifact_root,
+            config_snapshot=self.sessions.session.config_snapshot,
+            latest_checkpoint_id=self.sessions.session.latest_checkpoint_id,
+            created_at=self.sessions.session.created_at,
+            updated_at=self.sessions.session.updated_at,
+            error_summary=self.sessions.session.error_summary,
+        )
+        self.approval_mode_changes.append((old, new))
+        return old, new
 
     def fail(self, result: AgentRunResult) -> None:
         self.failed_results.append(result)
@@ -688,6 +718,106 @@ def test_active_prompt_is_rejected_without_runtime_call() -> None:
     controller.drain_completed_turns()
 
 
+def test_idle_ctrl_y_cycles_approval_mode_and_updates_status_bar() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    assert controller.on_approval_mode_cycle() is True
+    assert controller.on_approval_mode_cycle() is True
+    assert controller.on_approval_mode_cycle() is True
+
+    assert runtime.approval_mode_changes == [
+        ("normal", "semi-auto"),
+        ("semi-auto", "yolo"),
+        ("yolo", "normal"),
+    ]
+    assert [snapshot.approval_mode for snapshot in view.status_bars[-3:]] == [
+        "semi-auto",
+        "yolo",
+        "normal",
+    ]
+
+
+def test_ctrl_y_is_silent_noop_during_active_execution() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    runtime.block_turn = True
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_submit("first")
+    assert runtime.turn_started.wait(timeout=2)
+    assert controller.on_approval_mode_cycle() is True
+
+    runtime.release_turn.set()
+    controller.wait_for_active_turn(timeout=2)
+    controller.drain_completed_turns()
+
+    assert runtime.approval_mode_changes == []
+    assert runtime.approval_mode == "normal"
+
+
+def test_ctrl_y_is_silent_noop_during_inline_approval_prompt() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+    controller._approval_pending = True
+
+    assert controller.on_approval_mode_cycle() is True
+
+    assert runtime.approval_mode_changes == []
+    assert runtime.approval_mode == "normal"
+    assert view.status_bars == []
+
+
+def test_controller_approval_provider_uses_input_lane_for_session_approval() -> None:
+    from debug_agent.cli.repl_controller import (
+        ControllerApprovalProvider,
+        ReplController,
+    )
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+    provider = ControllerApprovalProvider(controller)
+    decisions: list[object] = []
+    approval_request = (
+        "=== Approval Request ===\n"
+        "Tool: write_file\n"
+        "Target: /repo/a.txt\n"
+        "\n"
+        "Allow? [y]once, [a] session, [n] deny"
+    )
+    worker = threading.Thread(
+        target=lambda: decisions.append(
+            provider.request_approval(
+                approval_request,
+                {"tool_name": "write_file"},
+            )
+        )
+    )
+
+    worker.start()
+    assert view.input_enabled == [True]
+    assert view.inline_approval_started == [approval_request]
+    assert view.events == []
+
+    controller.on_submit("a")
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert decisions[0].decision == "approved_for_session"
+    assert decisions[0].grant_scope == "session"
+    assert controller._approval_pending is False
+    assert view.inline_approval_ended == 1
+
+
 def test_plain_repl_turn_scoped_failure_does_not_terminalize_runtime() -> None:
     from io import StringIO
 
@@ -1075,6 +1205,36 @@ def test_recoverable_turn_failure_keeps_session_open_and_allows_next_prompt() ->
         kind="model_markdown_final",
         payload={"text": "next answer"},
     )
+
+
+def test_approval_denial_turn_abort_renders_neutral_status_not_error() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime(
+        _result(
+            "failed",
+            error={
+                "error_class": "policy_denied",
+                "message": "Approval denied.",
+                "source": "toolbroker",
+                "recoverable": True,
+            },
+            metadata={"failure_scope": "turn", "approval_denied_abort": True},
+        )
+    )
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_turn_finished(runtime.result)
+
+    assert runtime.failed_results == []
+    assert controller.exit_code == 0
+    assert view.errors == []
+    assert view.events[-1] == ReplViewEvent(
+        kind="system_message",
+        payload={"message": "Approval denied. Current turn ended."},
+    )
+    assert view.input_enabled[-1] is True
 
 
 def test_terminal_turn_failure_closes_session_and_keeps_input_disabled() -> None:
