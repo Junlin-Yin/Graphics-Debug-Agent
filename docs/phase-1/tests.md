@@ -529,8 +529,15 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
   first line `- <skill-name> (<global|project>) [<inactive|active>]`,
   second line `<description>`.
 - `/skills` does not read live skill source files after startup.
-- `/tools` lists runtime-visible tools, category, risk, access, approval
-  behavior, enabled status, and disabled reason.
+- `/tools` lists runtime-visible tools before path policy and shell policy.
+- `/tools` tool entries show only tool name, normalized approval policy, and
+  tool description.
+- `/tools` normalizes approval policies to `allow`, `ask-all`, or
+  `ask-distrust`.
+- `/tools` renders `Path policy:` with separate `trust = ...` and
+  `deny  = ...` lines.
+- `/tools` renders `Shell policy:` with separate `allow = ...` and
+  `deny  = ...` lines.
 - `/compress` triggers manual compression only while idle.
 - `/compress` during active execution is suppressed without runtime side
   effects.
@@ -592,7 +599,8 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 - loaded reference file outputs may be omitted or compressed as ordinary
   conversation observations.
 - `/skills` shows prompt skills.
-- `/tools` shows available and disabled tools with reasons.
+- `/tools` shows runtime-visible tools with normalized approval policy and
+  description before path policy and shell policy details.
 - `/compress` while idle writes a context snapshot and updates
   `runs.context_snapshot_id`.
 - `/compress` while idle and with empty durable conversation displays a no-op

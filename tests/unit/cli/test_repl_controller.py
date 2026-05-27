@@ -109,8 +109,20 @@ class FakeRuntime:
         ]
         self.runtime_tool_lines = [
             "Tools:",
-            "- read_file | category: native | risk: read | access: read | approval: auto-allow | enabled",
-            "- activate_skill | category: runtime_control | risk: runtime_control | access: runtime_control | approval: ask | enabled",
+            "",
+            "- read_file [allow]",
+            "Read file contents.",
+            "",
+            "- activate_skill [ask-all]",
+            "Activate a frozen prompt skill for this run.",
+            "",
+            "Path policy:",
+            "- trust = /repo",
+            "- deny  = .sessions/",
+            "",
+            "Shell policy:",
+            "- allow = none",
+            "- deny  = none",
         ]
         self.compress_result = _result(
             "completed",
@@ -909,6 +921,22 @@ def test_runtime_tool_listing_includes_policy_and_mode_context() -> None:
     lines = format_tool_listing(
         [
             ToolDefinition(
+                name="load_skill_ref_file",
+                description="Load a frozen skill reference file.",
+                input_schema={"type": "object"},
+                category="runtime_control",
+                risk_level="runtime_control",
+                access=["runtime_control"],
+            ),
+            ToolDefinition(
+                name="read_file",
+                description="Read a file.",
+                input_schema={"type": "object"},
+                category="native",
+                risk_level="read",
+                access=["read"],
+            ),
+            ToolDefinition(
                 name="shell_exec",
                 description="Run shell.",
                 input_schema={"type": "object"},
@@ -917,7 +945,7 @@ def test_runtime_tool_listing_includes_policy_and_mode_context() -> None:
                 access=["execute"],
             )
         ],
-        approval_mode="semi-auto",
+        approval_mode="normal",
         config_snapshot={
             "context": {"window_tokens": 1000},
             "policy": {
@@ -929,15 +957,26 @@ def test_runtime_tool_listing_includes_policy_and_mode_context() -> None:
         },
     )
 
-    rendered = "\n".join(lines)
-    assert "Approval mode: semi-auto" in rendered
-    assert "Path policy: trusted=../trusted/; denied=.sessions/, secrets/" in rendered
-    assert "Shell policy: allow=git; deny=rm" in rendered
-    assert (
-        "- shell_exec | category: shell | risk: execute | access: execute | "
-        "approval: auto-allow in trusted paths; ask outside trusted paths | "
-        "enabled | note: limited by shell allowlist"
-    ) in rendered
+    assert lines == [
+        "Tools:",
+        "",
+        "- load_skill_ref_file [allow]",
+        "Load a frozen skill reference file.",
+        "",
+        "- read_file [ask-distrust]",
+        "Read a file.",
+        "",
+        "- shell_exec [ask-all]",
+        "Run shell.",
+        "",
+        "Path policy:",
+        "- trust = ../trusted/",
+        "- deny  = .sessions/, secrets/",
+        "",
+        "Shell policy:",
+        "- allow = git",
+        "- deny  = rm",
+    ]
 
 
 def test_compress_slash_command_uses_runtime_manual_compress() -> None:

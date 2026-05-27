@@ -607,7 +607,7 @@ Objective: expose Phase 1 local command and status surfaces before adding intera
 
 Deliverables: `/tools`, consolidated local slash-command assertions, unsupported command handling, CLI approval-mode option parsing for one-shot and REPL initial mode, approval-mode status source, and exact Phase 1 status bar format.
 
-- [x] Add `/tools` as a local REPL command listing current runtime-visible tools, category, risk, access, approval behavior, enabled status, and disabled reason.
+- [x] Add `/tools` as a local REPL command listing current runtime-visible tools with tool name, normalized approval policy, and description before path policy and shell policy details.
 - [x] Ensure `/tools` reflects current frozen session config, active approval mode, path policy, and shell policy.
 - [x] Ensure `/skills`, `/tools`, and `/compress` are local and never sent to the model.
 - [x] Ensure `/compress` during active execution is suppressed without runtime side effects.

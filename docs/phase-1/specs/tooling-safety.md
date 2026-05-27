@@ -246,15 +246,39 @@ Phase 1 adds local slash command:
 
 `/tools` is handled locally by the REPL and is never sent to the model.
 
-Minimum fields:
+`/tools` first lists all runtime-visible tools, then lists path policy and
+shell policy details last.
+
+Each tool entry includes only:
 
 - tool name.
-- tool category: `native`, `shell`, or `runtime_control`.
-- risk level.
-- access scope.
-- approval behavior under the current approval mode.
-- enabled or disabled status.
-- disabled reason, when disabled.
+- normalized approval policy.
+- tool description.
+
+Normalized approval policy values:
+
+- `allow`: rendered for approval behavior `auto-allow`, `audit-only`, and
+  `audit-only when target is valid`.
+- `ask-all`: rendered for approval behavior `ask`.
+- `ask-distrust`: rendered for approval behavior
+  `auto-allow in trusted paths; ask outside trusted paths`.
+
+`/tools` renders path policy and shell policy after all tools:
+
+```text
+Tools:
+
+- <tool-name> [<allow|ask-distrust|ask-all>]
+<tool description>
+
+Path policy:
+- trust = <trusted paths>
+- deny  = <denied paths>
+
+Shell policy:
+- allow = <allowed commands>
+- deny  = <denied commands>
+```
 
 `/tools` must reflect the current frozen session config, active approval mode,
 path policy, and shell policy.

@@ -1045,33 +1045,33 @@ def format_tool_listing(
                 shell_allow = shell["allow"]
             if isinstance(shell.get("deny"), list):
                 shell_deny = shell["deny"]
-    lines = [
-        "Tools:",
-        f"Approval mode: {approval_mode}",
-        f"Path policy: trusted={_format_policy_values(path_trust)}; denied={_format_policy_values(path_deny)}",
-        f"Shell policy: allow={_format_shell_prefixes(shell_allow)}; deny={_format_shell_prefixes(shell_deny)}",
-    ]
+    lines = ["Tools:"]
     for definition in tool_definitions:
-        access = ", ".join(definition.access or [definition.risk_level])
         approval = _tool_approval_behavior(
             name=definition.name,
             category=definition.category,
             risk_level=definition.risk_level,
             approval_mode=approval_mode,
         )
-        enabled, disabled_reason = _tool_enabled_status(
-            category=definition.category,
-            shell_allow=shell_allow,
+        lines.extend(
+            [
+                "",
+                f"- {definition.name} [{_normalized_tool_approval(approval)}]",
+                definition.description,
+            ]
         )
-        status = "enabled" if enabled else "disabled"
-        if disabled_reason:
-            label = "note" if enabled else "disabled reason"
-            status = f"{status} | {label}: {disabled_reason}"
-        lines.append(
-            f"- {definition.name} | category: {definition.category} | "
-            f"risk: {definition.risk_level} | access: {access} | "
-            f"approval: {approval} | {status}"
-        )
+    lines.extend(
+        [
+            "",
+            "Path policy:",
+            f"- trust = {_format_policy_values(path_trust)}",
+            f"- deny  = {_format_policy_values(path_deny)}",
+            "",
+            "Shell policy:",
+            f"- allow = {_format_shell_prefixes(shell_allow)}",
+            f"- deny  = {_format_shell_prefixes(shell_deny)}",
+        ]
+    )
     return lines
 
 
@@ -1121,16 +1121,18 @@ def _tool_approval_behavior(
     return "ask"
 
 
-def _tool_enabled_status(
-    *,
-    category: str,
-    shell_allow: list[Any],
-) -> tuple[bool, str | None]:
-    if category != "shell":
-        return True, None
-    if shell_allow:
-        return True, "limited by shell allowlist"
-    return True, None
+def _normalized_tool_approval(approval: str) -> str:
+    if approval in {
+        "auto-allow",
+        "audit-only",
+        "audit-only when target is valid",
+    }:
+        return "allow"
+    if approval == "ask":
+        return "ask-all"
+    if approval == "auto-allow in trusted paths; ask outside trusted paths":
+        return "ask-distrust"
+    return approval
 
 
 def _next_approval_mode(current: str) -> str:

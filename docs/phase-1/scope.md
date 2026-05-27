@@ -305,7 +305,8 @@ Phase 1 is complete when:
 - in one-shot mode, the same context-limit condition records the same event and
   checkpoint fact, then terminalizes the one-shot run/session as `failed` and
   exits non-zero.
-- `/tools` lists current runtime-visible tools and disabled reasons.
+- `/tools` lists current runtime-visible tools with normalized approval policy
+  and description, then path policy and shell policy details.
 - status bar context percentage is based on deterministic `ModelContextFrame`
   estimates.
 - Phase 1 acceptance is evaluated against the Phase 1 schema and safety policy.

@@ -325,7 +325,10 @@ def test_injected_io_repl_local_tools_skills_and_compress_do_not_call_model(
     rendered = output.getvalue()
     assert exit_code == 0
     assert "Tools:" in rendered
-    assert "read_file | category: native" in rendered
+    assert "- read_file [ask-distrust]" in rendered
+    assert "Read file contents." in rendered
+    assert "Path policy:\n- trust = " in rendered
+    assert "\nShell policy:\n- allow = " in rendered
     assert "inactive" in rendered or "Skills: none" in rendered
     assert "No compressible history." in rendered
     assert "model must not run" not in rendered
