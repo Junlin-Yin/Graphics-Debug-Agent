@@ -7,6 +7,7 @@ from uuid import uuid4
 from time import monotonic
 
 from debug_agent.persistence.artifacts import ArtifactStore
+from debug_agent.persistence.approval_grants import ApprovalGrantStore
 from debug_agent.persistence.checkpoints import CheckpointStore
 from debug_agent.persistence.context_snapshots import ContextSnapshotStore
 from debug_agent.persistence.events import EventWriter
@@ -351,6 +352,7 @@ class PromptAgentExecutor:
         tool_metadata = {
             "skill_snapshot_store": self.skill_snapshot_store,
             "run_store": self.run_store,
+            "approval_grants": ApprovalGrantStore(self.event_writer.connection),
             "approval_provider": approval_provider,
             "refresh_model_context_frame": refresh_model_context_frame,
         }

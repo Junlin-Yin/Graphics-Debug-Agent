@@ -295,6 +295,91 @@ def test_repl_runtime_denial_history_allows_next_turn_model_call(tmp_path) -> No
     db.close()
 
 
+def test_prompt_executor_reuses_session_approval_grant_for_same_tool_scope(
+    tmp_path,
+) -> None:
+    class SessionApprovalProvider:
+        is_interactive = True
+
+        def __init__(self) -> None:
+            self.requests = []
+
+        def request_approval(self, request, metadata):
+            self.requests.append((request, metadata))
+            return ApprovalDecision(
+                decision="approved_for_session",
+                grant_scope="session",
+            )
+
+    class RepeatWriteModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls in {1, 2}:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": f"write_file_{self.calls}",
+                                "name": "write_file",
+                                "args": {
+                                    "path": "notes.txt",
+                                    "content": f"hello {self.calls}",
+                                },
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "done", "tool_calls": [], "usage": {}},
+            )()
+
+    (
+        workspace,
+        db,
+        sessions,
+        _runs,
+        events,
+        _checkpoints,
+        _artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, RepeatWriteModel())
+    session = sessions.update_approval_mode(session.session_id, "normal")
+    approval_provider = SessionApprovalProvider()
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="write twice",
+        workspace_root=str(workspace),
+        approval_provider=approval_provider,
+    )
+
+    assert result.status == "completed"
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == "hello 2"
+    assert len(approval_provider.requests) == 1
+    assert db.connection.execute(
+        "SELECT COUNT(*) FROM approval_grants WHERE decision = 'approved_for_session'"
+    ).fetchone()[0] == 1
+    assert [event.kind for event in events.list_for_run(run.run_id)].count(
+        "approval_requested"
+    ) == 1
+    db.close()
+
+
 def test_repl_runtime_denial_history_without_tool_id_uses_plain_observation(
     tmp_path,
 ) -> None:
