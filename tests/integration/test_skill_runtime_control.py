@@ -68,7 +68,7 @@ def _provider_message_content(message: object) -> str:
     return str(getattr(message, "content", ""))
 
 
-def test_brokered_skill_activation_and_reference_load_in_fake_harness(tmp_path) -> None:
+def test_brokered_skill_activation_and_resource_load_in_fake_harness(tmp_path) -> None:
     runtime = _runtime(tmp_path)
     broker = ToolBroker(
         event_writer=runtime["events"],
@@ -91,17 +91,18 @@ def test_brokered_skill_activation_and_reference_load_in_fake_harness(tmp_path) 
         {"name": "alpha"},
         context,
     )
-    reference = broker.invoke(
+    resource = broker.invoke(
         runtime["session"].session_id,
         runtime["run"].run_id,
-        "load_skill_ref_file",
+        "load_skill_resource",
         {"skill_name": "alpha", "path": "references/guide.txt"},
         context,
     )
 
     assert activation.status == "ok"
-    assert reference.status == "ok"
-    assert reference.output["content"] == "guide"
+    assert resource.status == "ok"
+    assert resource.output["content"] == "guide"
+    assert resource.output["resource_kind"] == "reference"
     assert runtime["runs"].get("run_1").active_skills == [
         {
             "name": "alpha",
@@ -116,7 +117,7 @@ def test_brokered_skill_activation_and_reference_load_in_fake_harness(tmp_path) 
         "skill_activated",
         "tool_call_started",
         "tool_call_completed",
-        "skill_reference_loaded",
+        "skill_resource_loaded",
     ]
     runtime["db"].close()
 
@@ -243,7 +244,7 @@ def test_tool_loop_context_refresh_preserves_prior_skill_activation_result(tmp_p
                         "tool_calls": [
                             {
                                 "id": "load_alpha_guide",
-                                "name": "load_skill_ref_file",
+                                "name": "load_skill_resource",
                                 "args": {
                                     "skill_name": "alpha",
                                     "path": "references/guide.txt",

@@ -38,7 +38,7 @@ RUN_EVENT_KINDS = frozenset(
         "approval_mode_changed",
         "skill_snapshot_created",
         "skill_activated",
-        "skill_reference_loaded",
+        "skill_resource_loaded",
         "context_optimized",
         "compression_failed",
         "context_limit_exceeded",

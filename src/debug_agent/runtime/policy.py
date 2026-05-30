@@ -475,8 +475,9 @@ def scope_signature_for_tool(
     classified_paths: list[Path] | None = None,
     skill_name: str | None = None,
     skill_content_hash: str | None = None,
-    reference_path: str | None = None,
-    reference_content_hash: str | None = None,
+    resource_path: str | None = None,
+    resource_kind: str | None = None,
+    resource_content_hash: str | None = None,
 ) -> str:
     if tool_name in {"read_file", "list_dir", "search_text", "write_file", "edit_file"}:
         access = "read" if risk_level == "read" else "write"
@@ -496,11 +497,11 @@ def scope_signature_for_tool(
             f"activate_skill|{risk_level}|skill:{skill_name}|"
             f"skill_hash:{skill_content_hash}"
         )
-    if tool_name == "load_skill_ref_file":
+    if tool_name == "load_skill_resource":
         return (
-            f"load_skill_ref_file|{risk_level}|skill:{skill_name}|"
-            f"skill_hash:{skill_content_hash}|ref:{reference_path}|"
-            f"ref_hash:{reference_content_hash}"
+            f"load_skill_resource|{risk_level}|skill:{skill_name}|"
+            f"skill_hash:{skill_content_hash}|resource:{resource_path}|"
+            f"resource_kind:{resource_kind}|resource_hash:{resource_content_hash}"
         )
     return f"{tool_name}|{risk_level}"
 
@@ -649,7 +650,7 @@ def _approval_mode_decision(
     category: str,
     tool_name: str,
 ) -> str:
-    if tool_name == "load_skill_ref_file":
+    if tool_name == "load_skill_resource":
         return "allow"
     if risk_level == "runtime_control":
         return "ask" if approval_mode == "normal" else "allow"

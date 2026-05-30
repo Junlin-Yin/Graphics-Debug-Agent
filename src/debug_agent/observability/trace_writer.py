@@ -197,8 +197,8 @@ def _summarize_payload(payload: dict[str, Any], kind: str | None = None) -> str:
         return _summarize_skill_snapshot(payload)
     if kind == "skill_activated":
         return _summarize_skill_activation(payload)
-    if kind == "skill_reference_loaded":
-        return _summarize_skill_reference_loaded(payload)
+    if kind == "skill_resource_loaded":
+        return _summarize_skill_resource_loaded(payload)
     if kind == "approval_requested":
         return _summarize_approval_requested(payload)
     if kind == "approval_decision_recorded":
@@ -260,7 +260,7 @@ def _summarize_skill_snapshot(payload: dict[str, Any]) -> str:
         f"mode={payload.get('execution_mode', '')}, "
         f"scope={payload.get('source_scope', '')}, "
         f"hash={payload.get('content_hash', '')}, "
-        f"references={payload.get('reference_count', 0)}"
+        f"resources={payload.get('resource_count', 0)}"
         "}"
     )
 
@@ -276,13 +276,14 @@ def _summarize_skill_activation(payload: dict[str, Any]) -> str:
     )
 
 
-def _summarize_skill_reference_loaded(payload: dict[str, Any]) -> str:
+def _summarize_skill_resource_loaded(payload: dict[str, Any]) -> str:
     return (
         "{"
         f"skill={payload.get('skill_name', '')}, "
         f"skill_hash={payload.get('skill_content_hash', '')}, "
-        f"reference={payload.get('reference_path', '')}, "
-        f"reference_hash={payload.get('reference_content_hash', '')}, "
+        f"resource={payload.get('resource_path', '')}, "
+        f"resource_kind={payload.get('resource_kind', '')}, "
+        f"resource_hash={payload.get('resource_content_hash', '')}, "
         f"media={payload.get('media_kind', '')}, "
         f"bytes={payload.get('size_bytes', 0)}, "
         f"artifact_id={payload.get('artifact_id') or ''}"

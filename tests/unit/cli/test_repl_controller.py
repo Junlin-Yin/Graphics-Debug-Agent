@@ -1264,8 +1264,8 @@ def test_runtime_tool_listing_includes_policy_and_mode_context() -> None:
     lines = format_tool_listing(
         [
             ToolDefinition(
-                name="load_skill_ref_file",
-                description="Load a frozen skill reference file.",
+                name="load_skill_resource",
+                description="Load a frozen skill resource file.",
                 input_schema={"type": "object"},
                 category="runtime_control",
                 risk_level="runtime_control",
@@ -1303,8 +1303,8 @@ def test_runtime_tool_listing_includes_policy_and_mode_context() -> None:
     assert lines == [
         "Tools:",
         "",
-        "- load_skill_ref_file [allow]",
-        "Load a frozen skill reference file.",
+        "- load_skill_resource [allow]",
+        "Load a frozen skill resource file.",
         "",
         "- read_file [ask-distrust]",
         "Read a file.",

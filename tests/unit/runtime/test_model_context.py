@@ -320,7 +320,7 @@ def test_parse_continuity_summary_defaults_visible_fields_and_canonicalizes_json
         "constraints": ["no manual command"],
         "visible_artifact_refs": [],
         "visible_active_skills": [],
-        "visible_loaded_skill_reference_files": [],
+        "visible_loaded_skill_resources": [],
         "visible_policy_or_approval_facts": [],
     }
     assert ContextManager().canonical_summary_json(summary).startswith(

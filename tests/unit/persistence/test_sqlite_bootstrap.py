@@ -39,7 +39,7 @@ def test_runtime_database_bootstrap_creates_phase_1_tables_and_user_version(
         "artifacts",
         "approval_grants",
         "skill_snapshots",
-        "skill_reference_snapshots",
+        "skill_resource_snapshots",
         "context_snapshots",
     }.issubset(table_names)
 
@@ -61,7 +61,7 @@ def test_runtime_database_schema_matches_contract_columns(tmp_path) -> None:
                 "artifacts",
                 "approval_grants",
                 "skill_snapshots",
-                "skill_reference_snapshots",
+                "skill_resource_snapshots",
                 "context_snapshots",
             )
         }
@@ -153,13 +153,14 @@ def test_runtime_database_schema_matches_contract_columns(tmp_path) -> None:
         "created_at",
         "version",
     ]
-    assert columns["skill_reference_snapshots"] == [
-        "reference_snapshot_id",
+    assert columns["skill_resource_snapshots"] == [
+        "resource_snapshot_id",
         "skill_snapshot_id",
         "session_id",
         "run_id",
         "skill_name",
-        "reference_path",
+        "resource_path",
+        "resource_kind",
         "media_kind",
         "size_bytes",
         "content_hash",
@@ -226,7 +227,7 @@ def test_context_snapshot_trigger_constraint_rejects_unknown_values(tmp_path) ->
     db.close()
 
 
-def test_skill_snapshot_uniqueness_and_reference_foreign_key(tmp_path) -> None:
+def test_skill_snapshot_uniqueness_and_resource_foreign_key(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     db = RuntimeDatabase.bootstrap(workspace)
@@ -247,14 +248,14 @@ def test_skill_snapshot_uniqueness_and_reference_foreign_key(tmp_path) -> None:
     )
     db.connection.execute(
         """
-        INSERT INTO skill_reference_snapshots (
-            reference_snapshot_id, skill_snapshot_id, session_id, run_id,
-            skill_name, reference_path, media_kind, size_bytes, content_hash,
+        INSERT INTO skill_resource_snapshots (
+            resource_snapshot_id, skill_snapshot_id, session_id, run_id,
+            skill_name, resource_path, resource_kind, media_kind, size_bytes, content_hash,
             inline_text_payload, created_at, version
         )
         VALUES (
             'ref_1', 'sk_1', 'sess_1', 'run_1', 'debugging',
-            'references/a.md', 'text', 4, 'sha256:3', 'body',
+            'references/a.md', 'reference', 'text', 4, 'sha256:3', 'body',
             '2026-05-25T00:00:00Z', 1
         )
         """
@@ -278,14 +279,14 @@ def test_skill_snapshot_uniqueness_and_reference_foreign_key(tmp_path) -> None:
     with pytest.raises(sqlite3.IntegrityError):
         db.connection.execute(
             """
-            INSERT INTO skill_reference_snapshots (
-                reference_snapshot_id, skill_snapshot_id, session_id, run_id,
-                skill_name, reference_path, media_kind, size_bytes, content_hash,
+            INSERT INTO skill_resource_snapshots (
+                resource_snapshot_id, skill_snapshot_id, session_id, run_id,
+                skill_name, resource_path, resource_kind, media_kind, size_bytes, content_hash,
                 created_at, version
             )
             VALUES (
                 'ref_2', 'missing', 'sess_1', 'run_1', 'debugging',
-                'references/b.md', 'text', 4, 'sha256:6',
+                'references/b.md', 'reference', 'text', 4, 'sha256:6',
                 '2026-05-25T00:00:00Z', 1
             )
             """

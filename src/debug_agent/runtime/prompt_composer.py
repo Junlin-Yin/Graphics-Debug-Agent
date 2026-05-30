@@ -150,15 +150,19 @@ class PromptComposer:
             )
             if skill is None or skill.overall_content_hash != content_hash:
                 continue
-            references = self._skill_snapshot_store.list_references(
+            resources = self._skill_snapshot_store.list_resources(
                 skill_snapshot_id=skill.skill_snapshot_id
             )
-            reference_lines = [
-                f"    - path: {reference.reference_path}; content_hash: {reference.content_hash}"
-                for reference in references
+            resource_lines = [
+                (
+                    f"    - path: {resource.resource_path}; "
+                    f"resource_kind: {resource.resource_kind}; "
+                    f"content_hash: {resource.content_hash}"
+                )
+                for resource in resources
             ]
-            if not reference_lines:
-                reference_lines = ["    - none"]
+            if not resource_lines:
+                resource_lines = ["    - none"]
             entries.append(
                 "\n".join(
                     [
@@ -170,8 +174,8 @@ class PromptComposer:
                         f"  scope: {active.get('scope', 'run')}",
                         "  instructions:",
                         _indent(skill.skill_md_content, "    "),
-                        "  available_references:",
-                        *reference_lines,
+                        "  available_resources:",
+                        *resource_lines,
                     ]
                 )
             )

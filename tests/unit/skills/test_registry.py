@@ -121,13 +121,17 @@ def test_invalid_manifests_fail_config_error(tmp_path, front_matter, message) ->
     db.close()
 
 
-def test_hash_is_stable_and_ignores_files_outside_references(tmp_path) -> None:
+def test_hash_is_stable_and_ignores_files_outside_resource_roots(tmp_path) -> None:
     workspace, home, db, session, run = _runtime(tmp_path)
     skill_dir = workspace / ".debug-agent" / "skills" / "alpha"
     (skill_dir / "references").mkdir(parents=True)
+    (skill_dir / "assets").mkdir(parents=True)
+    (skill_dir / "scripts").mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(_skill_md("alpha"), encoding="utf-8")
     (skill_dir / "notes.txt").write_text("ignored", encoding="utf-8")
     (skill_dir / "references" / "guide.txt").write_text("guide\r\n", encoding="utf-8")
+    (skill_dir / "assets" / "sprite.txt").write_text("asset", encoding="utf-8")
+    (skill_dir / "scripts" / "helper.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     registry = SkillRegistry(
         workspace_root=workspace,
         home_dir=home,
@@ -140,11 +144,16 @@ def test_hash_is_stable_and_ignores_files_outside_references(tmp_path) -> None:
 
     assert first.overall_content_hash == second.overall_content_hash
     assert first.skill_md_content_hash.startswith("sha256:")
-    assert first.references[0].content_hash.startswith("sha256:")
+    assert [resource.resource_kind for resource in first.resources] == [
+        "asset",
+        "reference",
+        "script",
+    ]
+    assert first.resources[0].content_hash.startswith("sha256:")
     db.close()
 
 
-def test_text_reference_hashes_normalized_utf8_content(tmp_path) -> None:
+def test_text_resource_hashes_normalized_utf8_content(tmp_path) -> None:
     workspace, home, db, session, run = _runtime(tmp_path)
     crlf_dir = workspace / ".debug-agent" / "skills" / "crlf"
     lf_dir = home / ".debug-agent" / "skills" / "lf"
@@ -168,10 +177,10 @@ def test_text_reference_hashes_normalized_utf8_content(tmp_path) -> None:
     ).snapshot(session_id="sess_2", run_id="run_2")[0]
 
     expected_hash = "sha256:" + hashlib.sha256(b"a\nb\n").hexdigest()
-    assert project_snapshot.references[0].content_hash == expected_hash
-    assert global_snapshot.references[0].content_hash == expected_hash
-    assert project_snapshot.references[0].size_bytes == len(b"a\r\nb\r\n")
-    assert global_snapshot.references[0].size_bytes == len(b"a\nb\n")
+    assert project_snapshot.resources[0].content_hash == expected_hash
+    assert global_snapshot.resources[0].content_hash == expected_hash
+    assert project_snapshot.resources[0].size_bytes == len(b"a\r\nb\r\n")
+    assert global_snapshot.resources[0].size_bytes == len(b"a\nb\n")
     db.close()
 
 
@@ -195,12 +204,14 @@ def test_direct_child_skill_directory_missing_root_skill_md_fails_config_error(
     db.close()
 
 
-def test_reference_artifacting_and_snapshot_payload_artifacting_persist_rows(
+def test_resource_discovery_artifacting_and_snapshot_payload_artifacting_persist_rows(
     tmp_path,
 ) -> None:
     workspace, home, db, session, run = _runtime(tmp_path)
     skill_dir = workspace / ".debug-agent" / "skills" / "alpha"
     (skill_dir / "references").mkdir(parents=True)
+    (skill_dir / "assets").mkdir(parents=True)
+    (skill_dir / "scripts").mkdir(parents=True)
     large_body = "x" * (17 * 1024)
     (skill_dir / "SKILL.md").write_text(
         _skill_md("alpha", body=large_body), encoding="utf-8"
@@ -209,6 +220,9 @@ def test_reference_artifacting_and_snapshot_payload_artifacting_persist_rows(
         "r" * (17 * 1024), encoding="utf-8"
     )
     (skill_dir / "references" / "binary.bin").write_bytes(b"\xff\x00")
+    (skill_dir / "assets" / "sprite.txt").write_text("asset", encoding="utf-8")
+    (skill_dir / "scripts" / "helper.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (skill_dir / "notes.txt").write_text("ignored", encoding="utf-8")
 
     snapshots = SkillRegistry(
         workspace_root=workspace,
@@ -221,22 +235,24 @@ def test_reference_artifacting_and_snapshot_payload_artifacting_persist_rows(
         skill_payload_artifact = conn.execute(
             "SELECT payload_artifact_id FROM skill_snapshots WHERE skill_name = 'alpha'"
         ).fetchone()[0]
-        reference_rows = conn.execute(
+        resource_rows = conn.execute(
             """
-            SELECT reference_path, media_kind, inline_text_payload, payload_artifact_id
-            FROM skill_reference_snapshots
-            ORDER BY reference_path
+            SELECT resource_path, resource_kind, media_kind, inline_text_payload, payload_artifact_id
+            FROM skill_resource_snapshots
+            ORDER BY resource_path
             """
         ).fetchall()
         artifacts = conn.execute("SELECT artifact_id FROM artifacts").fetchall()
 
     assert skill_payload_artifact is not None
-    assert reference_rows == [
-        ("references/binary.bin", "binary", None, reference_rows[0][3]),
-        ("references/large.txt", "text", None, reference_rows[1][3]),
+    assert resource_rows == [
+        ("assets/sprite.txt", "asset", "text", "asset", None),
+        ("references/binary.bin", "reference", "binary", None, resource_rows[1][4]),
+        ("references/large.txt", "reference", "text", None, resource_rows[2][4]),
+        ("scripts/helper.sh", "script", "text", "#!/bin/sh\n", None),
     ]
-    assert reference_rows[0][3] is not None
-    assert reference_rows[1][3] is not None
+    assert resource_rows[1][4] is not None
+    assert resource_rows[2][4] is not None
     assert len(artifacts) == 3
     db.close()
 
@@ -324,7 +340,7 @@ def test_persisted_skill_md_content_verifies_against_content_hash(tmp_path) -> N
     db.close()
 
 
-def test_unreadable_reference_fails_startup_config_error(tmp_path, monkeypatch) -> None:
+def test_unreadable_resource_fails_startup_config_error(tmp_path, monkeypatch) -> None:
     workspace, home, db, session, run = _runtime(tmp_path)
     skill_dir = workspace / ".debug-agent" / "skills" / "alpha"
     (skill_dir / "references").mkdir(parents=True)
@@ -348,5 +364,5 @@ def test_unreadable_reference_fails_startup_config_error(tmp_path, monkeypatch) 
         ).snapshot(session_id=session.session_id, run_id=run.run_id)
 
     assert raised.value.error_class == "config_error"
-    assert "Unreadable reference file" in str(raised.value)
+    assert "Unreadable resource file" in str(raised.value)
     db.close()

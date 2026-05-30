@@ -182,7 +182,7 @@ def test_one_shot_default_path_exposes_phase1_tools_through_model_context_frame(
         "edit_file",
         "shell_exec",
         "activate_skill",
-        "load_skill_ref_file",
+        "load_skill_resource",
     ]
 
 

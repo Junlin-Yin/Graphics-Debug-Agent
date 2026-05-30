@@ -181,7 +181,7 @@ def test_trace_command_renders_phase1_skill_approval_tool_and_compression_events
                         "execution_mode": "prompt",
                         "source_scope": "project",
                         "content_hash": "sha256:alpha",
-                        "reference_count": 1,
+                        "resource_count": 1,
                     },
                 ),
                 (

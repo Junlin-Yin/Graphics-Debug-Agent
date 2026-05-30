@@ -31,13 +31,14 @@ class SkillListingRecord:
 
 
 @dataclass(frozen=True)
-class FrozenReferenceSnapshot:
-    reference_snapshot_id: str
+class FrozenResourceSnapshot:
+    resource_snapshot_id: str
     skill_snapshot_id: str
     session_id: str
     run_id: str
     skill_name: str
-    reference_path: str
+    resource_path: str
+    resource_kind: str
     media_kind: str
     size_bytes: int
     content_hash: str
@@ -78,31 +79,32 @@ class SkillSnapshotStore:
                     snapshot.version,
                 ),
             )
-            for reference in snapshot.references:
+            for resource in snapshot.resources:
                 self.connection.execute(
                     """
-                    INSERT INTO skill_reference_snapshots (
-                        reference_snapshot_id, skill_snapshot_id, session_id,
-                        run_id, skill_name, reference_path, media_kind,
+                    INSERT INTO skill_resource_snapshots (
+                        resource_snapshot_id, skill_snapshot_id, session_id,
+                        run_id, skill_name, resource_path, resource_kind, media_kind,
                         size_bytes, content_hash, inline_text_payload,
                         payload_artifact_id, created_at, version
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        reference.reference_snapshot_id,
+                        resource.resource_snapshot_id,
                         snapshot.skill_snapshot_id,
                         snapshot.session_id,
                         snapshot.run_id,
                         snapshot.name,
-                        reference.reference_path,
-                        reference.media_kind,
-                        reference.size_bytes,
-                        reference.content_hash,
-                        reference.inline_text_payload,
-                        reference.payload_artifact_id,
-                        reference.created_at,
-                        reference.version,
+                        resource.resource_path,
+                        resource.resource_kind,
+                        resource.media_kind,
+                        resource.size_bytes,
+                        resource.content_hash,
+                        resource.inline_text_payload,
+                        resource.payload_artifact_id,
+                        resource.created_at,
+                        resource.version,
                     ),
                 )
         self.connection.commit()
@@ -194,65 +196,67 @@ class SkillSnapshotStore:
             overall_content_hash=row[8],
         )
 
-    def get_reference(
+    def get_resource(
         self,
         *,
         skill_snapshot_id: str,
-        reference_path: str,
-    ) -> FrozenReferenceSnapshot | None:
+        resource_path: str,
+    ) -> FrozenResourceSnapshot | None:
         row = self.connection.execute(
             """
-            SELECT reference_snapshot_id, skill_snapshot_id, session_id,
-                   run_id, skill_name, reference_path, media_kind,
+            SELECT resource_snapshot_id, skill_snapshot_id, session_id,
+                   run_id, skill_name, resource_path, resource_kind, media_kind,
                    size_bytes, content_hash, inline_text_payload,
                    payload_artifact_id
-            FROM skill_reference_snapshots
-            WHERE skill_snapshot_id = ? AND reference_path = ?
+            FROM skill_resource_snapshots
+            WHERE skill_snapshot_id = ? AND resource_path = ?
             """,
-            (skill_snapshot_id, reference_path),
+            (skill_snapshot_id, resource_path),
         ).fetchone()
         if row is None:
             return None
-        return FrozenReferenceSnapshot(
-            reference_snapshot_id=row[0],
+        return FrozenResourceSnapshot(
+            resource_snapshot_id=row[0],
             skill_snapshot_id=row[1],
             session_id=row[2],
             run_id=row[3],
             skill_name=row[4],
-            reference_path=row[5],
-            media_kind=row[6],
-            size_bytes=row[7],
-            content_hash=row[8],
-            inline_text_payload=row[9],
-            payload_artifact_id=row[10],
+            resource_path=row[5],
+            resource_kind=row[6],
+            media_kind=row[7],
+            size_bytes=row[8],
+            content_hash=row[9],
+            inline_text_payload=row[10],
+            payload_artifact_id=row[11],
         )
 
-    def list_references(self, *, skill_snapshot_id: str) -> list[FrozenReferenceSnapshot]:
+    def list_resources(self, *, skill_snapshot_id: str) -> list[FrozenResourceSnapshot]:
         rows = self.connection.execute(
             """
-            SELECT reference_snapshot_id, skill_snapshot_id, session_id,
-                   run_id, skill_name, reference_path, media_kind,
+            SELECT resource_snapshot_id, skill_snapshot_id, session_id,
+                   run_id, skill_name, resource_path, resource_kind, media_kind,
                    size_bytes, content_hash, inline_text_payload,
                    payload_artifact_id
-            FROM skill_reference_snapshots
+            FROM skill_resource_snapshots
             WHERE skill_snapshot_id = ?
-            ORDER BY reference_path ASC
+            ORDER BY resource_path ASC
             """,
             (skill_snapshot_id,),
         ).fetchall()
         return [
-            FrozenReferenceSnapshot(
-                reference_snapshot_id=row[0],
+            FrozenResourceSnapshot(
+                resource_snapshot_id=row[0],
                 skill_snapshot_id=row[1],
                 session_id=row[2],
                 run_id=row[3],
                 skill_name=row[4],
-                reference_path=row[5],
-                media_kind=row[6],
-                size_bytes=row[7],
-                content_hash=row[8],
-                inline_text_payload=row[9],
-                payload_artifact_id=row[10],
+                resource_path=row[5],
+                resource_kind=row[6],
+                media_kind=row[7],
+                size_bytes=row[8],
+                content_hash=row[9],
+                inline_text_payload=row[10],
+                payload_artifact_id=row[11],
             )
             for row in rows
         ]

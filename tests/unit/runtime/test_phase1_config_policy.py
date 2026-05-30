@@ -413,13 +413,14 @@ def test_scope_signatures_are_narrow_and_deterministic(tmp_path) -> None:
         skill_content_hash="sha256:abc",
     ) == "activate_skill|runtime_control|skill:debugging|skill_hash:sha256:abc"
     assert scope_signature_for_tool(
-        "load_skill_ref_file",
+        "load_skill_resource",
         risk_level="read",
         skill_name="debugging",
         skill_content_hash="sha256:abc",
-        reference_path="references/a.md",
-        reference_content_hash="sha256:def",
+        resource_path="scripts/a.sh",
+        resource_kind="script",
+        resource_content_hash="sha256:def",
     ) == (
-        "load_skill_ref_file|read|skill:debugging|skill_hash:sha256:abc|"
-        "ref:references/a.md|ref_hash:sha256:def"
+        "load_skill_resource|read|skill:debugging|skill_hash:sha256:abc|"
+        "resource:scripts/a.sh|resource_kind:script|resource_hash:sha256:def"
     )

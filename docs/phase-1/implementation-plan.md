@@ -877,69 +877,69 @@ This milestone supersedes the reference-only behavior implemented by Milestones
 newly implementing resources; implement this milestone as a focused corrective
 slice on top of the existing Phase 1 runtime.
 
-- [ ] Rename the frozen child snapshot persistence model from reference rows to
+- [x] Rename the frozen child snapshot persistence model from reference rows to
   resource rows: create `skill_resource_snapshots` with
   `resource_snapshot_id`, `resource_path`, `resource_kind`, `media_kind`,
   `size_bytes`, `content_hash`, `inline_text_payload`,
   `payload_artifact_id`, `created_at`, and `version`, preserving the owning
   `skill_snapshots.skill_snapshot_id` foreign-key boundary from
   `docs/phase-1/specs/skills.md`.
-- [ ] Update skill snapshot bootstrap and persistence code so new Phase 1
+- [x] Update skill snapshot bootstrap and persistence code so new Phase 1
   sessions write and read only `skill_resource_snapshots` for resource loading;
   do not add a `load_skill_ref_file` compatibility alias or a model-visible
   fallback to `skill_reference_snapshots`.
-- [ ] Update `SkillRegistry` discovery to snapshot files under exactly
+- [x] Update `SkillRegistry` discovery to snapshot files under exactly
   `references/**`, `assets/**`, and `scripts/**`, while continuing to ignore all
   files outside `SKILL.md` and those resource roots.
-- [ ] Derive `resource_kind` from the top-level resource root:
+- [x] Derive `resource_kind` from the top-level resource root:
   `references/**` -> `reference`, `assets/**` -> `asset`, and `scripts/**` ->
   `script`.
-- [ ] Preserve deterministic resource path ordering, path normalization, UTF-8
+- [x] Preserve deterministic resource path ordering, path normalization, UTF-8
   text classification, binary artifacting, large text artifacting, unreadable
   resource startup failures, and resource content participation in the overall
   skill content hash.
-- [ ] Treat `scripts/**` as frozen skill resources only. Loading or listing a
+- [x] Treat `scripts/**` as frozen skill resources only. Loading or listing a
   script resource must not grant execution permission, bypass `shell_exec`, or
   weaken path policy, shell policy, approval, timeout, artifact handling, or
   audit.
-- [ ] Replace the runtime-control tool definition and handler
+- [x] Replace the runtime-control tool definition and handler
   `load_skill_ref_file` with `load_skill_resource`, keeping the input schema
   `{skill_name, path}` with `additionalProperties=false`.
-- [ ] Ensure `load_skill_resource` succeeds only for active skills and resolves
+- [x] Ensure `load_skill_resource` succeeds only for active skills and resolves
   `path` only against the active skill's frozen resource rows. Path traversal,
   absolute paths, inactive skills, missing resources, corrupt snapshots, and
   hash mismatches must be denied before approval and must not read live source
   files.
-- [ ] Include `resource_path`, `resource_kind`, `content_hash`, `size_bytes`,
+- [x] Include `resource_path`, `resource_kind`, `content_hash`, `size_bytes`,
   and `media_kind` in successful `load_skill_resource` outputs. Small text
   resources return inline text; large text and all non-text resources return
   controlled artifact/resource markers plus metadata.
-- [ ] Update `PermissionEvaluator`, approval scope signatures, broker target
+- [x] Update `PermissionEvaluator`, approval scope signatures, broker target
   metadata, tool audit payloads, trace rendering, engine logs, `/tools`, and TTY
   tool-block target rendering to use `load_skill_resource` and resource facts,
   including `resource_kind`.
-- [ ] Update prompt composition so active skill context lists
+- [x] Update prompt composition so active skill context lists
   `available_resources` with frozen resource paths, resource kinds, and hashes,
   without injecting resource file content automatically.
-- [ ] Update context compression continuity fields and tests from
+- [x] Update context compression continuity fields and tests from
   `visible_loaded_skill_reference_files` to `visible_loaded_skill_resources`,
   preserving the rule that loaded resource outputs are ordinary durable
   conversation observations and not runtime-owned active skill state.
-- [ ] Remove `load_skill_ref_file` from all model-visible tool bindings,
+- [x] Remove `load_skill_ref_file` from all model-visible tool bindings,
   provider/fake-model fixtures, orchestrator gates, tests, trace examples,
   status/tool listings, and documentation-derived expected strings.
-- [ ] Add or update unit tests for persistence schema shape, registry discovery
+- [x] Add or update unit tests for persistence schema shape, registry discovery
   of `references/**`, `assets/**`, and `scripts/**`, ignored out-of-root files,
   resource hash stability, binary and large-resource artifacting, unreadable
   resource startup failure, `scripts/**` non-execution semantics,
   `load_skill_resource` success/denial cases, approval scope signatures,
   active context `available_resources`, compression continuity fields, trace/log
   rendering, `/tools`, and TTY target formatting.
-- [ ] Add or update integration tests proving brokered `load_skill_resource`
+- [x] Add or update integration tests proving brokered `load_skill_resource`
   works through the fake model/tool loop, the provider tool surface exposes
   `load_skill_resource` and not `load_skill_ref_file`, and active skill
   resource metadata survives the real Phase 1 prompt-composition path.
-- [ ] Verify with canonical commands `uv run pytest tests/unit -v` and
+- [x] Verify with canonical commands `uv run pytest tests/unit -v` and
   `uv run pytest tests/integration -v`.
 
 Modified boundaries: skill registry snapshotting, skill snapshot persistence,

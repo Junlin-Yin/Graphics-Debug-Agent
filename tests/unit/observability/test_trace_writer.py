@@ -154,7 +154,7 @@ def _persist_session_with_events(tmp_path):
                 "execution_mode": "prompt",
                 "source_scope": "project",
                 "content_hash": "sha256:alpha",
-                "reference_count": 1,
+                "resource_count": 1,
             },
         ),
         (
@@ -167,12 +167,13 @@ def _persist_session_with_events(tmp_path):
             },
         ),
         (
-            "skill_reference_loaded",
+            "skill_resource_loaded",
             {
                 "skill_name": "alpha",
                 "skill_content_hash": "sha256:alpha",
-                "reference_path": "references/guide.md",
-                "reference_content_hash": "sha256:guide",
+                "resource_path": "references/guide.md",
+                "resource_kind": "reference",
+                "resource_content_hash": "sha256:guide",
                 "media_kind": "text",
                 "size_bytes": 42,
                 "artifact_id": None,
@@ -359,12 +360,13 @@ def test_trace_writer_renders_required_sections_and_metadata(tmp_path) -> None:
     assert "mode=prompt" in content
     assert "scope=project" in content
     assert "hash=sha256:alpha" in content
-    assert "references=1" in content
+    assert "resources=1" in content
     assert "skill_activated" in content
     assert "reason=model_requested" in content
-    assert "skill_reference_loaded" in content
-    assert "reference=references/guide.md" in content
-    assert "reference_hash=sha256:guide" in content
+    assert "skill_resource_loaded" in content
+    assert "resource=references/guide.md" in content
+    assert "resource_kind=reference" in content
+    assert "resource_hash=sha256:guide" in content
     assert "context_optimized" in content
     assert "trigger=omission | compression" in content
     assert "context_snapshot_id=ctx_trace" in content

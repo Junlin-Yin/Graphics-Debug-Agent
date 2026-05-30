@@ -90,7 +90,7 @@ def _message_for_event(kind: str, payload: dict[str, Any]) -> str:
     if kind in {
         "skill_snapshot_created",
         "skill_activated",
-        "skill_reference_loaded",
+        "skill_resource_loaded",
     }:
         return skill_log_message(kind, payload)
     if kind in {
@@ -121,11 +121,12 @@ def skill_log_message(kind: str, payload: dict[str, Any]) -> str:
             f"skill={payload.get('skill_name', '')} "
             f"hash={payload.get('content_hash', '')}"
         )
-    if kind == "skill_reference_loaded":
+    if kind == "skill_resource_loaded":
         return (
-            "skill_reference_loaded "
+            "skill_resource_loaded "
             f"skill={payload.get('skill_name', '')} "
-            f"reference={payload.get('reference_path', '')}"
+            f"resource={payload.get('resource_path', '')} "
+            f"kind={payload.get('resource_kind', '')}"
         )
     return kind
 

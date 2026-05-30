@@ -717,17 +717,18 @@ class ToolBroker:
                 },
             )
             return
-        if tool_name == "load_skill_ref_file":
+        if tool_name == "load_skill_resource":
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
-                kind="skill_reference_loaded",
+                kind="skill_resource_loaded",
                 payload={
                     "skill_name": metadata.get("skill_name", ""),
                     "skill_content_hash": metadata.get("skill_content_hash", ""),
-                    "reference_path": metadata.get("reference_path", ""),
-                    "reference_content_hash": metadata.get(
-                        "reference_content_hash", ""
+                    "resource_path": metadata.get("resource_path", ""),
+                    "resource_kind": metadata.get("resource_kind", ""),
+                    "resource_content_hash": metadata.get(
+                        "resource_content_hash", ""
                     ),
                     "media_kind": metadata.get("media_kind", ""),
                     "size_bytes": metadata.get("size_bytes", 0),
@@ -886,7 +887,7 @@ def _normalize_runtime_control_arguments(
             runtime_control_already_active=target.already_active,
         )
     skill_name = arguments["skill_name"]
-    reference_path = target.normalized_path or arguments["path"]
+    resource_path = target.normalized_path or arguments["path"]
     if target.normalized_path is not None:
         normalized_arguments["path"] = target.normalized_path
     scope_signature = scope_signature_for_tool(
@@ -894,15 +895,17 @@ def _normalize_runtime_control_arguments(
         risk_level=definition.risk_level,
         skill_name=skill_name,
         skill_content_hash=target.skill.overall_content_hash if target.skill else None,
-        reference_path=reference_path,
-        reference_content_hash=target.reference.content_hash if target.reference else None,
+        resource_path=resource_path,
+        resource_kind=target.resource.resource_kind if target.resource else None,
+        resource_content_hash=target.resource.content_hash if target.resource else None,
     )
+    resource_kind = target.resource.resource_kind if target.resource else "unknown"
     return NormalizedBrokerArguments(
         arguments=normalized_arguments,
         paths=(),
         shell_argv=(),
         scope_signature=scope_signature,
-        target=f"skill reference {skill_name}:{reference_path}",
+        target=f"skill resource {skill_name}:{resource_path} ({resource_kind})",
         runtime_control_valid=target.valid,
         runtime_control_error_message=target.error_message,
         runtime_control_error_class=target.error_class,

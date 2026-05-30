@@ -68,10 +68,14 @@ def _runtime(tmp_path, *, approval_mode: str = "semi-auto"):
 def _snapshot_skill(runtime, *, name: str = "alpha", reference_text: str = "guide") -> None:
     skill_dir = runtime["workspace"] / ".debug-agent" / "skills" / name
     (skill_dir / "references").mkdir(parents=True)
+    (skill_dir / "assets").mkdir(parents=True)
+    (skill_dir / "scripts").mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(_skill_md(name, body="ORIGINAL"), encoding="utf-8")
     (skill_dir / "references" / "guide.txt").write_text(reference_text, encoding="utf-8")
     (skill_dir / "references" / "large.txt").write_text("x" * (17 * 1024), encoding="utf-8")
     (skill_dir / "references" / "blob.bin").write_bytes(b"\xff\x00")
+    (skill_dir / "assets" / "sprite.txt").write_text("asset text", encoding="utf-8")
+    (skill_dir / "scripts" / "helper.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     snapshots = SkillRegistry(
         workspace_root=runtime["workspace"],
         home_dir=runtime["home"],
@@ -105,9 +109,10 @@ def test_runtime_control_tool_definitions_are_strict() -> None:
         "required": ["name"],
         "additionalProperties": False,
     }
-    assert definitions["load_skill_ref_file"].category == "runtime_control"
-    assert definitions["load_skill_ref_file"].risk_level == "read"
-    assert definitions["load_skill_ref_file"].input_schema == {
+    assert "load_skill_ref_file" not in definitions
+    assert definitions["load_skill_resource"].category == "runtime_control"
+    assert definitions["load_skill_resource"].risk_level == "read"
+    assert definitions["load_skill_resource"].input_schema == {
         "type": "object",
         "properties": {
             "skill_name": {"type": "string"},
@@ -123,8 +128,8 @@ def test_runtime_control_tool_definitions_are_strict() -> None:
     [
         ("activate_skill", {}),
         ("activate_skill", {"name": "alpha", "extra": True}),
-        ("load_skill_ref_file", {"skill_name": "alpha"}),
-        ("load_skill_ref_file", {"skill_name": "alpha", "path": "references/guide.txt", "extra": True}),
+        ("load_skill_resource", {"skill_name": "alpha"}),
+        ("load_skill_resource", {"skill_name": "alpha", "path": "references/guide.txt", "extra": True}),
     ],
 )
 def test_runtime_control_schema_rejects_missing_and_unknown_fields(
@@ -218,29 +223,39 @@ def test_activate_skill_denies_unknown_and_corrupt_snapshot_before_approval(tmp_
     runtime["db"].close()
 
 
-def test_load_skill_ref_file_requires_active_skill_and_valid_relative_reference(tmp_path) -> None:
+def test_load_skill_resource_requires_active_skill_and_valid_relative_resource(tmp_path) -> None:
     runtime = _runtime(tmp_path, approval_mode="yolo")
     _snapshot_skill(runtime, name="alpha", reference_text="guide text")
 
     inactive = _invoke(
         runtime,
-        "load_skill_ref_file",
+        "load_skill_resource",
         {"skill_name": "alpha", "path": "references/guide.txt"},
     )
     _invoke(runtime, "activate_skill", {"name": "alpha"})
     loaded = _invoke(
         runtime,
-        "load_skill_ref_file",
+        "load_skill_resource",
         {"skill_name": "alpha", "path": "references/guide.txt"},
+    )
+    loaded_asset = _invoke(
+        runtime,
+        "load_skill_resource",
+        {"skill_name": "alpha", "path": "assets/sprite.txt"},
+    )
+    loaded_script = _invoke(
+        runtime,
+        "load_skill_resource",
+        {"skill_name": "alpha", "path": "scripts/helper.sh"},
     )
     traversal = _invoke(
         runtime,
-        "load_skill_ref_file",
+        "load_skill_resource",
         {"skill_name": "alpha", "path": "../SKILL.md"},
     )
     absolute = _invoke(
         runtime,
-        "load_skill_ref_file",
+        "load_skill_resource",
         {"skill_name": "alpha", "path": str(runtime["workspace"] / "x.txt")},
     )
 
@@ -248,8 +263,11 @@ def test_load_skill_ref_file_requires_active_skill_and_valid_relative_reference(
     assert inactive.error["error_class"] == "config_error"
     assert loaded.status == "ok"
     assert loaded.output["content"] == "guide text"
-    assert loaded.output["reference_path"] == "references/guide.txt"
+    assert loaded.output["resource_path"] == "references/guide.txt"
+    assert loaded.output["resource_kind"] == "reference"
     assert loaded.output["content_hash"].startswith("sha256:")
+    assert loaded_asset.output["resource_kind"] == "asset"
+    assert loaded_script.output["resource_kind"] == "script"
     assert traversal.status == "denied"
     assert absolute.status == "denied"
     assert not runtime["context"]["approval_provider"].requests
@@ -260,26 +278,32 @@ def test_load_skill_ref_file_requires_active_skill_and_valid_relative_reference(
         "skill_activated",
         "tool_call_started",
         "tool_call_completed",
-        "skill_reference_loaded",
+        "skill_resource_loaded",
+        "tool_call_started",
+        "tool_call_completed",
+        "skill_resource_loaded",
+        "tool_call_started",
+        "tool_call_completed",
+        "skill_resource_loaded",
         "tool_call_denied",
         "tool_call_denied",
     ]
     runtime["db"].close()
 
 
-def test_load_skill_ref_file_returns_markers_for_large_text_and_binary(tmp_path) -> None:
+def test_load_skill_resource_returns_markers_for_large_text_and_binary(tmp_path) -> None:
     runtime = _runtime(tmp_path, approval_mode="semi-auto")
     _snapshot_skill(runtime, name="alpha")
     _invoke(runtime, "activate_skill", {"name": "alpha"})
 
     large = _invoke(
         runtime,
-        "load_skill_ref_file",
+        "load_skill_resource",
         {"skill_name": "alpha", "path": "references/large.txt"},
     )
     binary = _invoke(
         runtime,
-        "load_skill_ref_file",
+        "load_skill_resource",
         {"skill_name": "alpha", "path": "references/blob.bin"},
     )
 
@@ -289,12 +313,12 @@ def test_load_skill_ref_file_returns_markers_for_large_text_and_binary(tmp_path)
     assert binary.output["content"] is None
     assert large.output["artifact_id"]
     assert binary.output["artifact_id"]
-    assert large.output["reference_marker"].startswith("[skill reference stored as artifact:")
-    assert binary.output["reference_marker"].startswith("[skill reference stored as artifact:")
+    assert large.output["resource_marker"].startswith("[skill resource stored as artifact:")
+    assert binary.output["resource_marker"].startswith("[skill resource stored as artifact:")
     runtime["db"].close()
 
 
-def test_load_skill_ref_file_denies_missing_and_hash_mismatch_before_approval(tmp_path) -> None:
+def test_load_skill_resource_denies_missing_and_hash_mismatch_before_approval(tmp_path) -> None:
     runtime = _runtime(tmp_path, approval_mode="normal")
     _snapshot_skill(runtime, name="alpha")
     _invoke(
@@ -307,21 +331,21 @@ def test_load_skill_ref_file_denies_missing_and_hash_mismatch_before_approval(tm
 
     missing = _invoke(
         runtime,
-        "load_skill_ref_file",
+        "load_skill_resource",
         {"skill_name": "alpha", "path": "references/missing.txt"},
         approval_provider=provider,
     )
     runtime["db"].connection.execute(
         """
-        UPDATE skill_reference_snapshots
+        UPDATE skill_resource_snapshots
         SET inline_text_payload = 'corrupt'
-        WHERE reference_path = 'references/guide.txt'
+        WHERE resource_path = 'references/guide.txt'
         """
     )
     runtime["db"].connection.commit()
     corrupt = _invoke(
         runtime,
-        "load_skill_ref_file",
+        "load_skill_resource",
         {"skill_name": "alpha", "path": "references/guide.txt"},
         approval_provider=provider,
     )
@@ -341,7 +365,7 @@ def test_runtime_control_audit_payload_uses_broker_normalized_targets(tmp_path) 
     activated = _invoke(runtime, "activate_skill", {"name": "alpha"})
     loaded = _invoke(
         runtime,
-        "load_skill_ref_file",
+        "load_skill_resource",
         {"skill_name": "alpha", "path": "references/guide.txt"},
     )
 
@@ -353,7 +377,7 @@ def test_runtime_control_audit_payload_uses_broker_normalized_targets(tmp_path) 
     assert activated.status == "ok"
     assert loaded.status == "ok"
     assert completed[0]["target"] == "skill alpha"
-    assert completed[1]["target"] == "skill reference alpha:references/guide.txt"
+    assert completed[1]["target"] == "skill resource alpha:references/guide.txt (reference)"
     assert completed[0]["approval_wait_duration_ms"] == 0
     assert completed[1]["approval_wait_duration_ms"] == 0
     runtime["db"].close()

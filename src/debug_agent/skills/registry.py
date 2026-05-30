@@ -38,9 +38,10 @@ class SkillRegistryError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class ReferenceSnapshot:
-    reference_snapshot_id: str
-    reference_path: str
+class ResourceSnapshot:
+    resource_snapshot_id: str
+    resource_path: str
+    resource_kind: str
     media_kind: str
     size_bytes: int
     content_hash: str
@@ -64,7 +65,7 @@ class SkillSnapshot:
     skill_md_content_hash: str
     overall_content_hash: str
     payload_artifact_id: str | None
-    references: list[ReferenceSnapshot] = field(default_factory=list)
+    resources: list[ResourceSnapshot] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now_iso)
     version: int = 1
 
@@ -141,7 +142,7 @@ class SkillRegistry:
         self, *, session_id: str, run_id: str, skill: _DiscoveredSkill
     ) -> SkillSnapshot:
         created_at = utc_now_iso()
-        references = self._snapshot_references(
+        resources = self._snapshot_resources(
             session_id=session_id,
             run_id=run_id,
             skill_name=skill.manifest["name"],
@@ -152,7 +153,7 @@ class SkillRegistry:
         overall_hash = _overall_hash(
             manifest=skill.manifest,
             skill_md_text=skill.skill_md_text,
-            references=references,
+            resources=resources,
         )
         payload_artifact_id = self._artifact_skill_payload_if_needed(
             session_id=session_id,
@@ -160,7 +161,7 @@ class SkillRegistry:
             skill=skill,
             skill_md_hash=skill_md_hash,
             overall_hash=overall_hash,
-            references=references,
+            resources=resources,
         )
         return SkillSnapshot(
             skill_snapshot_id=f"skill_{uuid4().hex}",
@@ -175,11 +176,11 @@ class SkillRegistry:
             skill_md_content_hash=skill_md_hash,
             overall_content_hash=overall_hash,
             payload_artifact_id=payload_artifact_id,
-            references=references,
+            resources=resources,
             created_at=created_at,
         )
 
-    def _snapshot_references(
+    def _snapshot_resources(
         self,
         *,
         session_id: str,
@@ -187,20 +188,28 @@ class SkillRegistry:
         skill_name: str,
         skill_dir: Path,
         created_at: str,
-    ) -> list[ReferenceSnapshot]:
-        references_root = skill_dir / "references"
-        if not references_root.exists():
-            return []
-        references: list[ReferenceSnapshot] = []
-        for path in sorted(
-            (item for item in references_root.rglob("*") if item.is_file()),
-            key=lambda item: _relative_reference_path(references_root, item),
+    ) -> list[ResourceSnapshot]:
+        resources: list[ResourceSnapshot] = []
+        candidates: list[tuple[str, Path, Path]] = []
+        for root_name in ("references", "assets", "scripts"):
+            root = skill_dir / root_name
+            if not root.exists():
+                continue
+            candidates.extend(
+                (root_name, root, item)
+                for item in root.rglob("*")
+                if item.is_file()
+            )
+        for root_name, root, path in sorted(
+            candidates,
+            key=lambda item: _relative_resource_path(item[1], item[2], item[0]),
         ):
             try:
                 payload = path.read_bytes()
             except OSError as exc:
-                raise SkillRegistryError(f"Unreadable reference file: {path}") from exc
-            reference_path = _relative_reference_path(references_root, path)
+                raise SkillRegistryError(f"Unreadable resource file: {path}") from exc
+            resource_path = _relative_resource_path(root, path, root_name)
+            resource_kind = _resource_kind(root_name)
             text_payload: str | None
             media_kind: str
             artifact_id: str | None = None
@@ -224,9 +233,10 @@ class SkillRegistry:
                     filename=f"{skill_name}_{path.name}.snapshot.txt",
                     content=content,
                     metadata={
-                        "kind": "skill_reference_snapshot",
+                        "kind": "skill_resource_snapshot",
                         "skill_name": skill_name,
-                        "reference_path": reference_path,
+                        "resource_path": resource_path,
+                        "resource_kind": resource_kind,
                         "media_kind": media_kind,
                         "bytes": len(payload),
                         "content_hash": content_hash,
@@ -234,10 +244,11 @@ class SkillRegistry:
                 )
                 artifact_id = artifact.artifact_id
                 text_payload = None
-            references.append(
-                ReferenceSnapshot(
-                    reference_snapshot_id=f"skill_ref_{uuid4().hex}",
-                    reference_path=reference_path,
+            resources.append(
+                ResourceSnapshot(
+                    resource_snapshot_id=f"skill_res_{uuid4().hex}",
+                    resource_path=resource_path,
+                    resource_kind=resource_kind,
                     media_kind=media_kind,
                     size_bytes=len(payload),
                     content_hash=content_hash,
@@ -246,7 +257,7 @@ class SkillRegistry:
                     created_at=created_at,
                 )
             )
-        return references
+        return resources
 
     def _artifact_skill_payload_if_needed(
         self,
@@ -256,23 +267,24 @@ class SkillRegistry:
         skill: _DiscoveredSkill,
         skill_md_hash: str,
         overall_hash: str,
-        references: list[ReferenceSnapshot],
+        resources: list[ResourceSnapshot],
     ) -> str | None:
         payload = {
             "manifest": skill.manifest,
             "skill_md_content": skill.skill_md_text,
             "skill_md_content_hash": skill_md_hash,
             "overall_content_hash": overall_hash,
-            "references": [
+            "resources": [
                 {
-                    "reference_path": ref.reference_path,
-                    "media_kind": ref.media_kind,
-                    "size_bytes": ref.size_bytes,
-                    "content_hash": ref.content_hash,
-                    "inline_text_payload": ref.inline_text_payload,
-                    "payload_artifact_id": ref.payload_artifact_id,
+                    "resource_path": resource.resource_path,
+                    "resource_kind": resource.resource_kind,
+                    "media_kind": resource.media_kind,
+                    "size_bytes": resource.size_bytes,
+                    "content_hash": resource.content_hash,
+                    "inline_text_payload": resource.inline_text_payload,
+                    "payload_artifact_id": resource.payload_artifact_id,
                 }
-                for ref in references
+                for resource in resources
             ],
         }
         serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -361,19 +373,20 @@ def _overall_hash(
     *,
     manifest: dict[str, Any],
     skill_md_text: str,
-    references: list[ReferenceSnapshot],
+    resources: list[ResourceSnapshot],
 ) -> str:
     payload = {
         "manifest": manifest,
         "skill_md_text": skill_md_text,
-        "references": [
+        "resources": [
             {
-                "reference_path": ref.reference_path,
-                "media_kind": ref.media_kind,
-                "size_bytes": ref.size_bytes,
-                "content_hash": ref.content_hash,
+                "resource_path": resource.resource_path,
+                "resource_kind": resource.resource_kind,
+                "media_kind": resource.media_kind,
+                "size_bytes": resource.size_bytes,
+                "content_hash": resource.content_hash,
             }
-            for ref in references
+            for resource in resources
         ],
     }
     return _sha256_text(json.dumps(payload, sort_keys=True, separators=(",", ":")))
@@ -395,5 +408,13 @@ def _normalized_path(path: Path) -> str:
     return path.resolve().as_posix()
 
 
-def _relative_reference_path(references_root: Path, path: Path) -> str:
-    return ("references" / path.relative_to(references_root)).as_posix()
+def _relative_resource_path(root: Path, path: Path, root_name: str) -> str:
+    return (Path(root_name) / path.relative_to(root)).as_posix()
+
+
+def _resource_kind(root_name: str) -> str:
+    return {
+        "references": "reference",
+        "assets": "asset",
+        "scripts": "script",
+    }[root_name]

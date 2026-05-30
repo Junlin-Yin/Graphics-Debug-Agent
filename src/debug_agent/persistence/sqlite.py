@@ -118,13 +118,14 @@ CREATE TABLE IF NOT EXISTS skill_snapshots (
   UNIQUE(session_id, run_id, skill_name)
 );
 
-CREATE TABLE IF NOT EXISTS skill_reference_snapshots (
-  reference_snapshot_id TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS skill_resource_snapshots (
+  resource_snapshot_id TEXT PRIMARY KEY,
   skill_snapshot_id TEXT NOT NULL,
   session_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
   skill_name TEXT NOT NULL,
-  reference_path TEXT NOT NULL,
+  resource_path TEXT NOT NULL,
+  resource_kind TEXT NOT NULL,
   media_kind TEXT NOT NULL,
   size_bytes INTEGER NOT NULL,
   content_hash TEXT NOT NULL,
@@ -132,7 +133,7 @@ CREATE TABLE IF NOT EXISTS skill_reference_snapshots (
   payload_artifact_id TEXT,
   created_at TEXT NOT NULL,
   version INTEGER NOT NULL,
-  UNIQUE(skill_snapshot_id, reference_path),
+  UNIQUE(skill_snapshot_id, resource_path),
   FOREIGN KEY(skill_snapshot_id) REFERENCES skill_snapshots(skill_snapshot_id)
 );
 

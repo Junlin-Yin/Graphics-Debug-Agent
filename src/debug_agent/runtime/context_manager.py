@@ -54,7 +54,7 @@ COMPRESSION_REQUIRED_FIELDS = {
 COMPRESSION_OPTIONAL_VISIBLE_FIELDS = (
     "visible_artifact_refs",
     "visible_active_skills",
-    "visible_loaded_skill_reference_files",
+    "visible_loaded_skill_resources",
     "visible_policy_or_approval_facts",
 )
 
@@ -62,7 +62,7 @@ COMPRESSION_INSTRUCTION_PROMPT = """You are producing a Phase 1 debug-agent cont
 Return only a JSON object. Merge the previous summary and evicted history into
 a complete replacement summary, not a delta. Preserve task goal, completed
 work, inspected or modified files, remaining work, next plan, key decisions,
-constraints, and visible artifact, skill reference, approval, or policy facts
+constraints, and visible artifact, loaded skill resource, approval, or policy facts
 only when already visible in the previous summary or evicted history.
 Required schema:
 {
@@ -75,7 +75,7 @@ Required schema:
   "constraints": ["string"],
   "visible_artifact_refs": ["string"],
   "visible_active_skills": ["string"],
-  "visible_loaded_skill_reference_files": ["string"],
+  "visible_loaded_skill_resources": ["string"],
   "visible_policy_or_approval_facts": ["string"]
 }
 """

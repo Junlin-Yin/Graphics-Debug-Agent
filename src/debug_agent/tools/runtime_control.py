@@ -8,7 +8,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from debug_agent.persistence.skills import (
-    FrozenReferenceSnapshot,
+    FrozenResourceSnapshot,
     FrozenSkillSnapshot,
 )
 from debug_agent.runtime.contracts import ToolDefinition
@@ -20,7 +20,7 @@ class RuntimeControlTarget:
     error_message: str | None = None
     error_class: str = "config_error"
     skill: FrozenSkillSnapshot | None = None
-    reference: FrozenReferenceSnapshot | None = None
+    resource: FrozenResourceSnapshot | None = None
     normalized_path: str | None = None
     already_active: bool = False
 
@@ -50,8 +50,8 @@ def tool_definitions() -> list[ToolDefinition]:
             access=["runtime_control"],
         ),
         ToolDefinition(
-            name="load_skill_ref_file",
-            description="Load one frozen reference file for an active skill.",
+            name="load_skill_resource",
+            description="Load one frozen resource file for an active skill.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -71,15 +71,15 @@ def tool_definitions() -> list[ToolDefinition]:
 def tool_handlers() -> dict[str, Any]:
     return {
         "activate_skill": activate_skill,
-        "load_skill_ref_file": load_skill_ref_file,
+        "load_skill_resource": load_skill_resource,
     }
 
 
 def validate_target(context: Any, tool_name: str, arguments: dict[str, Any]) -> RuntimeControlTarget:
     if tool_name == "activate_skill":
         return _validate_activation(context, arguments)
-    if tool_name == "load_skill_ref_file":
-        return _validate_reference(context, arguments)
+    if tool_name == "load_skill_resource":
+        return _validate_resource(context, arguments)
     return RuntimeControlTarget(False, f"Unknown runtime-control tool: {tool_name}")
 
 
@@ -124,40 +124,42 @@ def activate_skill(context: Any, arguments: dict[str, Any]) -> RuntimeControlHan
     )
 
 
-def load_skill_ref_file(context: Any, arguments: dict[str, Any]) -> RuntimeControlHandlerResult:
-    target = validate_target(context, "load_skill_ref_file", arguments)
-    if not target.valid or target.skill is None or target.reference is None:
+def load_skill_resource(context: Any, arguments: dict[str, Any]) -> RuntimeControlHandlerResult:
+    target = validate_target(context, "load_skill_resource", arguments)
+    if not target.valid or target.skill is None or target.resource is None:
         return RuntimeControlHandlerResult(
             "denied",
             error_message=target.error_message or "Invalid runtime-control target.",
             error_class=target.error_class,
         )
-    ref = target.reference
+    resource = target.resource
     output = {
-        "skill_name": ref.skill_name,
-        "reference_path": ref.reference_path,
-        "content_hash": ref.content_hash,
-        "size_bytes": ref.size_bytes,
-        "media_kind": ref.media_kind,
-        "content": ref.inline_text_payload,
-        "artifact_id": ref.payload_artifact_id,
-        "reference_marker": None,
+        "skill_name": resource.skill_name,
+        "resource_path": resource.resource_path,
+        "resource_kind": resource.resource_kind,
+        "content_hash": resource.content_hash,
+        "size_bytes": resource.size_bytes,
+        "media_kind": resource.media_kind,
+        "content": resource.inline_text_payload,
+        "artifact_id": resource.payload_artifact_id,
+        "resource_marker": None,
     }
-    if ref.inline_text_payload is None:
-        output["reference_marker"] = (
-            f"[skill reference stored as artifact: {ref.payload_artifact_id}]"
+    if resource.inline_text_payload is None:
+        output["resource_marker"] = (
+            f"[skill resource stored as artifact: {resource.payload_artifact_id}]"
         )
     return RuntimeControlHandlerResult(
         "ok",
         output=output,
         metadata={
-            "skill_name": ref.skill_name,
+            "skill_name": resource.skill_name,
             "skill_content_hash": target.skill.overall_content_hash,
-            "reference_path": ref.reference_path,
-            "reference_content_hash": ref.content_hash,
-            "media_kind": ref.media_kind,
-            "size_bytes": ref.size_bytes,
-            "artifact_id": ref.payload_artifact_id,
+            "resource_path": resource.resource_path,
+            "resource_kind": resource.resource_kind,
+            "resource_content_hash": resource.content_hash,
+            "media_kind": resource.media_kind,
+            "size_bytes": resource.size_bytes,
+            "artifact_id": resource.payload_artifact_id,
         },
     )
 
@@ -183,14 +185,14 @@ def _validate_activation(context: Any, arguments: dict[str, Any]) -> RuntimeCont
     )
 
 
-def _validate_reference(context: Any, arguments: dict[str, Any]) -> RuntimeControlTarget:
+def _validate_resource(context: Any, arguments: dict[str, Any]) -> RuntimeControlTarget:
     store = getattr(context, "skill_snapshot_store", None)
     run_store = getattr(context, "run_store", None)
     if store is None or run_store is None:
         return RuntimeControlTarget(False, "Skill runtime state is not available.")
-    normalized = _normalize_reference_path(arguments["path"])
+    normalized = _normalize_resource_path(arguments["path"])
     if normalized is None:
-        return RuntimeControlTarget(False, "Invalid skill reference path.")
+        return RuntimeControlTarget(False, "Invalid skill resource path.")
     skill = store.get_skill(
         session_id=context.session_id,
         run_id=context.run_id,
@@ -209,18 +211,18 @@ def _validate_reference(context: Any, arguments: dict[str, Any]) -> RuntimeContr
         for record in active
     ):
         return RuntimeControlTarget(False, f"Skill is not active: {skill.skill_name}")
-    reference = store.get_reference(
+    resource = store.get_resource(
         skill_snapshot_id=skill.skill_snapshot_id,
-        reference_path=normalized,
+        resource_path=normalized,
     )
-    if reference is None:
-        return RuntimeControlTarget(False, f"Unknown skill reference: {normalized}")
-    if not _reference_hash_valid(context, reference):
-        return RuntimeControlTarget(False, f"Corrupt frozen skill reference: {normalized}")
+    if resource is None:
+        return RuntimeControlTarget(False, f"Unknown skill resource: {normalized}")
+    if not _resource_hash_valid(context, resource):
+        return RuntimeControlTarget(False, f"Corrupt frozen skill resource: {normalized}")
     return RuntimeControlTarget(
         True,
         skill=skill,
-        reference=reference,
+        resource=resource,
         normalized_path=normalized,
     )
 
@@ -231,7 +233,7 @@ def _validated_skill(store: Any, skill: FrozenSkillSnapshot) -> RuntimeControlTa
     expected = _overall_hash(
         manifest=skill.manifest,
         skill_md_text=skill.skill_md_content,
-        references=store.list_references(skill_snapshot_id=skill.skill_snapshot_id),
+        resources=store.list_resources(skill_snapshot_id=skill.skill_snapshot_id),
     )
     if expected != skill.overall_content_hash:
         return RuntimeControlTarget(False, f"Frozen skill hash mismatch: {skill.skill_name}")
@@ -251,33 +253,33 @@ def _skill_is_active(context: Any, skill: FrozenSkillSnapshot) -> bool:
     )
 
 
-def _reference_hash_valid(context: Any, reference: FrozenReferenceSnapshot) -> bool:
-    if reference.inline_text_payload is not None:
-        return _sha256_text(reference.inline_text_payload) == reference.content_hash
-    if reference.payload_artifact_id is None:
+def _resource_hash_valid(context: Any, resource: FrozenResourceSnapshot) -> bool:
+    if resource.inline_text_payload is not None:
+        return _sha256_text(resource.inline_text_payload) == resource.content_hash
+    if resource.payload_artifact_id is None:
         return False
     try:
-        payload = context.artifact_store.resolve_path(reference.payload_artifact_id).read_text(
+        payload = context.artifact_store.resolve_path(resource.payload_artifact_id).read_text(
             encoding="utf-8"
         )
     except OSError:
         return False
-    if reference.media_kind == "text":
-        return _sha256_text(payload) == reference.content_hash
+    if resource.media_kind == "text":
+        return _sha256_text(payload) == resource.content_hash
     try:
-        return _sha256_bytes(bytes.fromhex(payload)) == reference.content_hash
+        return _sha256_bytes(bytes.fromhex(payload)) == resource.content_hash
     except ValueError:
         return False
 
 
-def _normalize_reference_path(path: str) -> str | None:
+def _normalize_resource_path(path: str) -> str | None:
     if not path or path.startswith("/") or "\\" in path:
         return None
     pure = PurePosixPath(path)
     if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
         return None
     normalized = posixpath.normpath(path)
-    if not normalized.startswith("references/"):
+    if not normalized.startswith(("references/", "assets/", "scripts/")):
         return None
     return normalized
 
@@ -286,19 +288,20 @@ def _overall_hash(
     *,
     manifest: dict[str, Any],
     skill_md_text: str,
-    references: list[FrozenReferenceSnapshot],
+    resources: list[FrozenResourceSnapshot],
 ) -> str:
     payload = {
         "manifest": manifest,
         "skill_md_text": _normalize_text(skill_md_text),
-        "references": [
+        "resources": [
             {
-                "reference_path": ref.reference_path,
-                "media_kind": ref.media_kind,
-                "size_bytes": ref.size_bytes,
-                "content_hash": ref.content_hash,
+                "resource_path": resource.resource_path,
+                "resource_kind": resource.resource_kind,
+                "media_kind": resource.media_kind,
+                "size_bytes": resource.size_bytes,
+                "content_hash": resource.content_hash,
             }
-            for ref in references
+            for resource in resources
         ],
     }
     return _sha256_text(json.dumps(payload, sort_keys=True, separators=(",", ":")))

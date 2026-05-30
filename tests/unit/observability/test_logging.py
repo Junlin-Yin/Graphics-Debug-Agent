@@ -55,22 +55,23 @@ def test_failed_events_are_error_level_without_special_cases() -> None:
 def test_skill_observability_events_are_info_level() -> None:
     assert _level_for_event("skill_snapshot_created") == "INFO"
     assert _level_for_event("skill_activated") == "INFO"
-    assert _level_for_event("skill_reference_loaded") == "INFO"
+    assert _level_for_event("skill_resource_loaded") == "INFO"
 
 
 def test_skill_events_write_engine_log_fact_messages(tmp_path) -> None:
     event = RunEvent(
-        event_id="evt_skill_ref",
+        event_id="evt_skill_resource",
         timestamp="2026-05-12T00:00:00Z",
         session_id="sess_1",
         run_id="run_1",
         step_id=None,
-        kind="skill_reference_loaded",
+        kind="skill_resource_loaded",
         payload={
             "skill_name": "alpha",
             "skill_content_hash": "sha256:alpha",
-            "reference_path": "references/guide.md",
-            "reference_content_hash": "sha256:guide",
+            "resource_path": "references/guide.md",
+            "resource_kind": "reference",
+            "resource_content_hash": "sha256:guide",
         },
     )
 
@@ -79,9 +80,9 @@ def test_skill_events_write_engine_log_fact_messages(tmp_path) -> None:
     log_path = tmp_path / "sess_1" / "logs" / "engine.log"
     payload = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
     assert payload["message"] == (
-        "skill_reference_loaded skill=alpha reference=references/guide.md"
+        "skill_resource_loaded skill=alpha resource=references/guide.md kind=reference"
     )
-    assert payload["metadata"]["payload"]["reference_content_hash"] == "sha256:guide"
+    assert payload["metadata"]["payload"]["resource_content_hash"] == "sha256:guide"
 
 
 def test_phase1_engine_log_helpers_render_required_fact_messages() -> None:

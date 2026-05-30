@@ -32,6 +32,8 @@ def _runtime_with_skill(tmp_path):
     sessions.set_active_run(session.session_id, run.run_id)
     skill_dir = workspace / ".debug-agent" / "skills" / "alpha"
     (skill_dir / "references").mkdir(parents=True)
+    (skill_dir / "assets").mkdir(parents=True)
+    (skill_dir / "scripts").mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         _skill_md(
             "alpha",
@@ -44,6 +46,8 @@ def _runtime_with_skill(tmp_path):
         "reference content is loaded only on request",
         encoding="utf-8",
     )
+    (skill_dir / "assets" / "sprite.txt").write_text("asset", encoding="utf-8")
+    (skill_dir / "scripts" / "helper.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     artifacts = ArtifactStore(db.connection, db.path.parent)
     snapshots = SkillRegistry(
         workspace_root=workspace,
@@ -168,14 +172,19 @@ def test_active_skill_context_segment_shape_and_metadata(tmp_path) -> None:
     assert "Follow every line of this frozen skill body." in segment.content
     assert "Second instruction." in segment.content
     assert "references/guide.txt" in segment.content
-    assert "available_references:" in segment.content
+    assert "assets/sprite.txt" in segment.content
+    assert "scripts/helper.sh" in segment.content
+    assert "available_resources:" in segment.content
+    assert "resource_kind: reference" in segment.content
+    assert "resource_kind: asset" in segment.content
+    assert "resource_kind: script" in segment.content
     assert "content_hash:" in segment.content
     assert "Listing allowed_tools or path_policy here is non-authorizing." in segment.content
     assert "Actual authorization is decided only by runtime and ToolBroker." in segment.content
     db.close()
 
 
-def test_active_skill_context_is_not_durable_and_reference_outputs_stay_ordinary(tmp_path) -> None:
+def test_active_skill_context_is_not_durable_and_resource_outputs_stay_ordinary(tmp_path) -> None:
     db, session, run, runs, store = _runtime_with_skill(tmp_path)
     skill = store.get_skill(
         session_id=session.session_id,
@@ -198,10 +207,11 @@ def test_active_skill_context_is_not_durable_and_reference_outputs_stay_ordinary
             tool_call_id="tool-ref-1",
             content={
                 "skill_name": "alpha",
-                "reference_path": "references/guide.txt",
+                "resource_path": "references/guide.txt",
+                "resource_kind": "reference",
                 "content": "reference content is loaded only on request",
             },
-            metadata={"tool_name": "load_skill_ref_file"},
+            metadata={"tool_name": "load_skill_resource"},
         )
     ]
     composer = PromptComposer(skill_snapshot_store=store)
@@ -230,17 +240,18 @@ def test_active_skill_context_is_not_durable_and_reference_outputs_stay_ordinary
             tool_call_id="tool-ref-1",
             content={
                 "skill_name": "alpha",
-                "reference_path": "references/guide.txt",
+                "resource_path": "references/guide.txt",
+                "resource_kind": "reference",
                 "content": "reference content is loaded only on request",
             },
-            metadata={"tool_name": "load_skill_ref_file"},
+            metadata={"tool_name": "load_skill_resource"},
         )
     ]
     ordered = result.frame.ordered_message_segments()
     assert any(segment.kind == "runtime_active_skill_context" for segment in ordered)
     assert any(
         segment.kind == "tool_result"
-        and segment.metadata == {"tool_name": "load_skill_ref_file"}
+        and segment.metadata == {"tool_name": "load_skill_resource"}
         for segment in ordered
     )
     db.close()

@@ -1045,7 +1045,7 @@ def _snapshot_skills_for_startup(
                     "execution_mode": snapshot.execution_mode,
                     "source_scope": snapshot.source_scope,
                     "content_hash": snapshot.overall_content_hash,
-                    "reference_count": len(snapshot.references),
+                    "resource_count": len(snapshot.resources),
                 },
             )
         store.available_skill_headers(session_id=session_id, run_id=run_id)
@@ -1141,7 +1141,7 @@ def _tool_approval_behavior(
     risk_level: str,
     approval_mode: str,
 ) -> str:
-    if name == "load_skill_ref_file":
+    if name == "load_skill_resource":
         return "audit-only when target is valid"
     if risk_level == "runtime_control":
         return "ask" if approval_mode == "normal" else "audit-only"
