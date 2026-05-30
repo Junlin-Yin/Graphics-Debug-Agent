@@ -82,7 +82,7 @@ Runtime 不应内置 shader project 名称、Ralph Loop 状态机、业务报告
 
 - `Workflow Runtime`：适合表达稳定、可枚举、需要 step-level checkpoint/resume 的确定性流程。当前先验证 prompt skill + Todo Plan + foreground subagent 是否足够承载真实调试流程，避免过早把业务状态机下沉进 runtime。
 - `Task / Background Task System`：适合后台并发、跨 turn 查询、attach、异步完成通知等通用任务能力。当前主线只需要 foreground synchronous barrier；后台任务会显著扩大 cancellation、ownership、audit、resume 和 UI 状态语义。
-- `MCP Integration`：适合接入外部工具生态。当前已有 native/shell tools、artifact 和 skill reference path 能覆盖主线需要；MCP 一旦引入，必须先保证 raw MCP tool 不能绕过 ToolBroker、path policy、approval 和 audit。
+- `MCP Integration`：适合接入外部工具生态。当前已有 native/shell tools、artifact 和 skill resource path 能覆盖主线需要；MCP 一旦引入，必须先保证 raw MCP tool 不能绕过 ToolBroker、path policy、approval 和 audit。
 - `Plugin Packaging`：适合分发 skills、agents、MCP config 等资源包。当前优先验证本地 skill 和 named agent 的 runtime 合同；过早引入 plugin 会增加版本、覆盖、依赖、安装顺序和动态加载边界。
 - `Tool-Call Cache`：适合缓存昂贵或重复的工具调用。当前调试流程更需要可审计、可复现的真实执行结果；缓存会引入失效、命中可解释性、side effect classification 和 artifact provenance 问题。Runtime trace 和 artifact store 记录事实，供 agent 和用户复查；它们不是自动复用旧 tool result 的缓存层。
 - `Memory System`：适合跨 session 的长期偏好、经验或项目知识。当前恢复真值由 checkpoint、event log、artifact 和 runtime-owned continuity state 提供；长期 memory 容易把不可审计的历史语义混入当前调试决策，也可能污染 subagent isolation 和 schema-driven 业务输入。

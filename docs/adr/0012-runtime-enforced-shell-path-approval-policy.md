@@ -126,8 +126,8 @@ Reusable grant keys include an exact operation scope signature. Phase 1 uses
 narrow signatures: file tools include canonical path and access type,
 `shell_exec` includes normalized argv plus canonical cwd and classified argv
 paths, `activate_skill` includes skill name plus content hash, and
-`load_skill_ref_file` records skill name, skill content hash, reference path, and
-reference content hash for audit/scope consistency.
+`load_skill_resource` records skill name, skill content hash, resource path,
+resource kind, and resource content hash for audit/scope consistency.
 
 Approval mode behavior is path-aware:
 

@@ -39,13 +39,13 @@ prompt must preserve:
 - files inspected or modified.
 - remaining work and next plan.
 - key decisions and constraints.
-- visible references to artifacts, active skills, loaded skill reference files,
+- visible references to artifacts, active skills, loaded skill resources,
   approvals, and policies when they appear in history.
 
 Runtime, not the model summary, preserves authoritative state:
 
 - active skill records.
-- frozen skill and reference snapshots.
+- frozen skill and resource snapshots.
 - artifact ids.
 - approval records.
 - path policy and shell policy.

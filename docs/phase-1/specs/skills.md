@@ -8,8 +8,8 @@ Subagent skills, workflow skills, MCP-provided skills, and plugin-packaged
 skills are outside Phase 1 scope and are invalid Phase 1 skill manifests.
 
 Phase 1 intentionally does not implement section-level progressive disclosure,
-semantic reference retrieval, automatic active-skill disclosure degradation, or
-`deactivate_skill`.
+semantic skill resource retrieval, automatic active-skill disclosure degradation,
+or `deactivate_skill`.
 
 ## Discovery Paths
 
@@ -29,7 +29,7 @@ Both configured skill roots are model-visible hard-denied paths. Runtime may
 read them during startup snapshotting, but model-visible file and shell tools
 must not read, list, search, write, edit, or shell into them. Skill behavior is
 exposed to the model only through the frozen skill snapshot, `/skills`, active
-skill injection, and `load_skill_ref_file`.
+skill injection, and `load_skill_resource`.
 
 Same-name skill override is whole-skill override. Phase 1 does not merge skill
 directories or files.
@@ -41,10 +41,11 @@ the project skill replaces the global skill as a whole skill.
 Each skill can contain:
 
 - a required `SKILL.md` with YAML front matter followed by Markdown body.
-- optional reference files under `references/**`.
+- optional resource files under `references/**`, `assets/**`, and `scripts/**`.
 
-Phase 1 snapshots only `SKILL.md` and files under `references/**`. Files outside
-`references/**` are ignored even if they are present in the skill directory.
+Phase 1 snapshots only `SKILL.md` and files under `references/**`,
+`assets/**`, and `scripts/**`. Files outside those resource roots are ignored
+even if they are present in the skill directory.
 
 The skill directory name is not the runtime skill id. The runtime skill id comes
 from `SKILL.md` front matter `name`.
@@ -58,15 +59,27 @@ Discovery is intentionally shallow and deterministic:
 - nested `SKILL.md` files are ignored unless they are in a direct child skill
   directory's root.
 - symlinked skill directories are not followed.
-- skill directories and reference paths are processed in normalized path order.
+- skill directories and resource paths are processed in normalized path order.
 
 `SKILL.md` must decode as UTF-8. Startup fails with `config_error` if a
 discovered skill's `SKILL.md` is unreadable, missing, invalid, or not UTF-8.
-Reference files under `references/**` may be binary. Runtime classifies a
-reference as text when it can decode the payload as UTF-8; otherwise it stores
-the reference as non-text/binary metadata with an artifact-backed payload.
-Non-text references are always artifact-backed, regardless of size. Unreadable
-reference files fail startup with `config_error`.
+Resource files under `references/**`, `assets/**`, and `scripts/**` may be
+binary. Runtime classifies a resource as text when it can decode the payload as
+UTF-8; otherwise it stores the resource as non-text/binary metadata with an
+artifact-backed payload. Non-text resources are always artifact-backed,
+regardless of size. Unreadable resource files fail startup with `config_error`.
+
+Resource kind is derived from the top-level resource directory:
+
+- `references/**` has `resource_kind="reference"`.
+- `assets/**` has `resource_kind="asset"`.
+- `scripts/**` has `resource_kind="script"`.
+
+Phase 1 treats `scripts/**` as frozen skill resources, not as a runtime
+execution grant. Executing a script still requires ordinary model-visible tools,
+such as writing or referencing an allowed workspace path and then using
+`shell_exec`, with path policy, shell policy, approval, timeout, artifact
+handling, and audit enforced by `ToolBroker`.
 
 ## Snapshot Strategy
 
@@ -78,12 +91,13 @@ artifact root exist, `SkillRegistry`:
 
 1. reads `SKILL.md` front matter.
 2. reads the full `SKILL.md` Markdown body.
-3. reads every file under `references/**` as a file-level reference snapshot.
-4. computes stable SHA-256 content hashes for `SKILL.md`, each reference file,
+3. reads every file under `references/**`, `assets/**`, and `scripts/**` as a
+   file-level resource snapshot.
+4. computes stable SHA-256 content hashes for `SKILL.md`, each resource file,
    and the overall skill snapshot.
 5. stores manifest metadata, source path, source scope, `SKILL.md` content, file
-   reference metadata, and the session-local frozen snapshot.
-6. stores large reference payloads as artifacts according to normal artifact
+   resource metadata, and the session-local frozen snapshot.
+6. stores large resource payloads as artifacts according to normal artifact
    rules.
 
 The full `SKILL.md` body is not injected into model context at startup. It is
@@ -98,7 +112,7 @@ Skill registry snapshots are persisted separately from
 `sessions.config_snapshot_json` and associated with the session and prompt run.
 The session config snapshot records configuration and policy facts; the skill
 registry snapshot records skill manifests, hashes, `SKILL.md` content, and
-reference file snapshots.
+resource file snapshots.
 
 Minimum persisted snapshot facts:
 
@@ -108,15 +122,15 @@ Minimum persisted snapshot facts:
 - source scope and source path.
 - normalized manifest metadata.
 - `SKILL.md` content and content hash.
-- reference file path, media kind, size, content hash, inline text payload when
-  small enough, and payload artifact id when artifact-backed.
+- resource file path, resource kind, media kind, size, content hash, inline text
+  payload when small enough, and payload artifact id when artifact-backed.
 - overall content hash.
 - payload artifact id when the serialized snapshot is too large for inline
   SQLite storage.
 - version and creation timestamp.
 
 Phase 1 stores skill snapshots with one owning skill row and zero or more
-reference rows. A skill has exactly one `SKILL.md` body. Reference files are
+resource rows. A skill has exactly one `SKILL.md` body. Resource files are
 linked back to that owning frozen skill snapshot and are never resolved as
 standalone runtime objects.
 
@@ -141,13 +155,14 @@ CREATE TABLE skill_snapshots (
   UNIQUE(session_id, run_id, skill_name)
 );
 
-CREATE TABLE skill_reference_snapshots (
-  reference_snapshot_id TEXT PRIMARY KEY,
+CREATE TABLE skill_resource_snapshots (
+  resource_snapshot_id TEXT PRIMARY KEY,
   skill_snapshot_id TEXT NOT NULL,
   session_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
   skill_name TEXT NOT NULL,
-  reference_path TEXT NOT NULL,
+  resource_path TEXT NOT NULL,
+  resource_kind TEXT NOT NULL,
   media_kind TEXT NOT NULL,
   size_bytes INTEGER NOT NULL,
   content_hash TEXT NOT NULL,
@@ -155,28 +170,28 @@ CREATE TABLE skill_reference_snapshots (
   payload_artifact_id TEXT,
   created_at TEXT NOT NULL,
   version INTEGER NOT NULL,
-  UNIQUE(skill_snapshot_id, reference_path),
+  UNIQUE(skill_snapshot_id, resource_path),
   FOREIGN KEY(skill_snapshot_id) REFERENCES skill_snapshots(skill_snapshot_id)
 );
 ```
 
-`skill_reference_snapshots.skill_snapshot_id` is the authoritative reference to
+`skill_resource_snapshots.skill_snapshot_id` is the authoritative reference to
 the owning frozen skill. `session_id`, `run_id`, and `skill_name` are duplicated
-on reference rows only for trace, diagnostics, and straightforward queries.
-`load_skill_ref_file` must resolve the active skill by name and content hash to
+on resource rows only for trace, diagnostics, and straightforward queries.
+`load_skill_resource` must resolve the active skill by name and content hash to
 one `skill_snapshots` row, then resolve `path` within that row's
-`skill_reference_snapshots` children.
+`skill_resource_snapshots` children.
 
-For non-text references, `inline_text_payload` must be `NULL` and
-`payload_artifact_id` must be non-`NULL`. Text references may be stored inline
-only when they fit the inline reference threshold; otherwise they are also
+For non-text resources, `inline_text_payload` must be `NULL` and
+`payload_artifact_id` must be non-`NULL`. Text resources may be stored inline
+only when they fit the inline resource threshold; otherwise they are also
 artifact-backed.
 
 The prompt composer uses the frozen registry snapshot to build the available
 skill header shown to the model in the stable system block for ordinary task
 model calls. The header lists prompt skills as activation candidates for
-`activate_skill`. The header must not include full skill bodies or reference
-file contents.
+`activate_skill`. The header must not include full skill bodies or resource file
+contents.
 
 Available skill headers are not durable conversation messages and are not part
 of `/compress` input. Compression does not rewrite them. Ordinary task
@@ -184,8 +199,8 @@ of `/compress` input. Compression does not rewrite them. Ordinary task
 provider as part of the stable system block.
 
 The overall content hash is based on normalized manifest facts, normalized
-`SKILL.md` text, reference file paths, reference content hashes, and reference
-metadata. Session-local artifact ids are not hash inputs.
+`SKILL.md` text, resource file paths, resource kinds, resource content hashes,
+and resource metadata. Session-local artifact ids are not hash inputs.
 
 Hash normalization must be deterministic across platforms:
 
@@ -279,7 +294,7 @@ Formatting rules:
 Phase 1 exposes two skill-related runtime tools:
 
 - `activate_skill`
-- `load_skill_ref_file`
+- `load_skill_resource`
 
 Both are runtime tools. They must be exposed to the model only through the normal
 runtime tool-definition path and invoked only through `ToolBroker`.
@@ -325,12 +340,12 @@ audit just because it does not edit files.
 `Skill activated: <name> (<hash>)`. It must not return the full skill body as an
 ordinary tool output.
 
-### `load_skill_ref_file`
+### `load_skill_resource`
 
-`load_skill_ref_file` loads one file-level reference snapshot for an already
+`load_skill_resource` loads one file-level resource snapshot for an already
 active skill. It is the Phase 1 mechanism that lets prompt skills use
-`references/**` without automatically injecting every reference into every model
-call.
+`references/**`, `assets/**`, and `scripts/**` without automatically injecting
+every resource into every model call.
 
 Input schema:
 
@@ -350,30 +365,30 @@ Execution rules:
 
 - the target skill must be active in the current run.
 - `path` is a skill-local relative path and must resolve to a frozen file under
-  that skill's `references/**`.
-- path traversal, absolute paths, and paths outside the frozen reference set are
+  that skill's `references/**`, `assets/**`, or `scripts/**`.
+- path traversal, absolute paths, and paths outside the frozen resource set are
   denied before approval is requested.
 - runtime resolves the file only from the frozen session skill snapshot; it does
   not read the source file.
-- missing, corrupt, or hash-mismatched frozen reference snapshots return
+- missing, corrupt, or hash-mismatched frozen resource snapshots return
   `ToolResult(status="denied")` with `error_class="config_error"`.
 - successful loads write audit events.
 - repeated loads are allowed and produce ordinary tool observations.
 
-Text reference files that fit the inline tool-output threshold return their full
-text content plus metadata: skill name, reference path, content hash, size, and
-media kind.
+Text resource files that fit the inline tool-output threshold return their full
+text content plus metadata: skill name, resource path, resource kind, content
+hash, size, and media kind.
 
-Large text reference files return a controlled artifact/reference marker plus
-metadata. Non-text reference files always return a controlled artifact/reference
+Large text resource files return a controlled artifact/resource marker plus
+metadata. Non-text resource files always return a controlled artifact/resource
 marker plus metadata. They must not inject raw large content or binary content
 into the model-visible context.
 
-Loaded reference output is ordinary durable LLM-visible working history. It may
-be omitted or compressed later by `ContextManager`. The frozen skill snapshot
-and artifacts remain the audit truth.
+Loaded skill resource output is ordinary durable LLM-visible working history. It
+may be omitted or compressed later by `ContextManager`. The frozen skill
+snapshot and artifacts remain the audit truth.
 
-`load_skill_ref_file` is not a general file-read tool and does not grant access
+`load_skill_resource` is not a general file-read tool and does not grant access
 to `.sessions/` paths or source files. It can only expose controlled content
 from the current session's frozen skill registry snapshot.
 
@@ -398,7 +413,7 @@ Persisted database schema, checkpoints, context snapshots, traces, and
 `/skills` output must use the structured shape where active skill records are
 recorded.
 
-Loaded reference files are not active skill state. They are tool observations in
+Loaded skill resources are not active skill state. They are tool observations in
 durable conversation and may be omitted or compressed.
 
 ## Model Context Design
@@ -427,29 +442,29 @@ include available skill headers, the main agent system prompt, model-visible
 tool schema bindings, active `SKILL.md` bodies, retained recent raw messages,
 live or unconsumed suffix messages, or runtime-owned active skill records.
 
-Loaded reference file outputs are stored as ordinary durable conversation tool
+Loaded skill resource outputs are stored as ordinary durable conversation tool
 observations. They are not re-injected automatically on every later model call.
 
 Token estimates use `ModelContextFrame`, not raw conversation history.
 
 ## Injection Design Decision
 
-Phase 1 considered three ways to put active skill and reference content into
+Phase 1 considered three ways to put active skill and resource content into
 model context.
 
 ### Option A: Inject Active `SKILL.md` Content During Prompt Composition
 
 The prompt composer places active skill `SKILL.md` content before the rolling
 summary and retained raw conversation for every ordinary task model call.
-Reference files are not injected automatically; they are available through
-`load_skill_ref_file`.
+Skill resources are not injected automatically; they are available through
+`load_skill_resource`.
 
 Benefits:
 
 - `/compress` cannot accidentally summarize or delete core skill instructions.
 - active skill identity remains structured runtime state.
 - core skill behavior is reproducible from the frozen snapshot.
-- reference files are useful without becoming permanent context growth.
+- resource files are useful without becoming permanent context growth.
 
 Costs:
 
@@ -526,11 +541,13 @@ Each active skill entry must include at least:
 - `activation_reason`.
 - `scope`, such as run-scoped active skill.
 - `instructions` from the frozen `SKILL.md` body.
-- available reference file paths and hashes.
+- `available_resources`, listing frozen resource file paths, resource kinds, and
+  hashes.
 
-Reference file lists are guidance for the model. The model must call
-`load_skill_ref_file` to load a reference file's frozen content. Listing a
-reference file path does not authorize general filesystem access.
+Resource file lists are guidance for the model. The model must call
+`load_skill_resource` to load a resource file's frozen content. Listing a
+resource file path does not authorize general filesystem access or script
+execution.
 
 Skill context may include model-visible guidance such as `allowed_tools` or
 `path_policy`, but those fields are not authorization. Actual authorization is
@@ -588,6 +605,6 @@ snapshots and checkpoints preserve structured active skill records such as:
 After compression, the prompt composer reconstructs active `SKILL.md` context
 from the frozen skill snapshot and active skill records.
 
-Loaded reference file outputs are ordinary conversation history. They may be
-omitted or compressed. Compression must not mutate the frozen reference
+Loaded skill resource outputs are ordinary conversation history. They may be
+omitted or compressed. Compression must not mutate the frozen resource
 snapshots or artifacts.

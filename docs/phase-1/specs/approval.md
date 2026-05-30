@@ -92,7 +92,7 @@ allowed by the active approval mode.
 Policy denial, schema validation failure, and config errors cannot be overridden
 by any approval mode.
 
-`activate_skill` uses `runtime_control` risk. `load_skill_ref_file` is a
+`activate_skill` uses `runtime_control` risk. `load_skill_resource` is a
 runtime-control category tool with `read` risk over the frozen session skill
 snapshot. It does not access source files and has its own approval rule:
 
@@ -101,10 +101,10 @@ snapshot. It does not access source files and has its own approval rule:
   audit-only in every approval mode, does not request interactive approval, and
   does not write a new `approval_grants` row.
 - if the target skill is already active, the requested path resolves to a frozen
-  reference snapshot for that skill, and the frozen reference hash validates,
+  resource snapshot for that skill, and the frozen resource hash validates,
   the tool is audit-only in every approval mode and does not request interactive
   approval.
-- inactive skills, invalid paths, missing references, corrupt snapshots, and
+- inactive skills, invalid paths, missing resources, corrupt snapshots, and
   hash mismatches are denied before approval and cannot be overridden by any
   approval mode.
 
@@ -127,7 +127,7 @@ Minimum risk levels:
 - `execute`
 - `runtime_control`
 
-`activate_skill` uses `runtime_control`. `load_skill_ref_file` uses `read` risk
+`activate_skill` uses `runtime_control`. `load_skill_resource` uses `read` risk
 and runtime-control category.
 
 Phase 1 does not define per-tool approval metadata such as
@@ -187,7 +187,7 @@ denies, schema validation, timeout, artifact handling, or audit.
    - user path deny entries.
    - builtin shell deny patterns.
    - user shell deny prefixes.
-   - invalid runtime-control targets, including unknown skills, invalid reference
+   - invalid runtime-control targets, including unknown skills, invalid resource
      paths, missing frozen snapshots, corrupt snapshots, and hash mismatches.
 3. For `shell_exec`, apply the shell allowlist gate. If user shell `allow` is
    non-empty, the normalized command must match a user shell allow prefix. A miss
@@ -334,7 +334,7 @@ Model-visible tools also must not read, list, search, write, edit, or shell into
 `~/.debug-agent/skills/` or `<workspace_root>/.debug-agent/skills/`. A
 model-visible tool cannot bypass this denial by asking for current source files
 after startup; it must use `/skills`, active skill context, or
-`load_skill_ref_file` to see frozen skill content.
+`load_skill_resource` to see frozen skill content.
 
 For paths that do not yet exist, such as a `write_file` target whose parent
 directory will be created, canonicalization uses this algorithm:
@@ -481,11 +481,11 @@ under each approval mode, given path policy classification.
 `deny` (blacklist) overrides all cells: denied before approval is requested
 in every mode, including `yolo`.
 
-`load_skill_ref_file` does not follow the general matrix above. When the target
-skill is already active, the requested path resolves inside the frozen reference
-snapshot for that skill, and the frozen reference hash validates, the tool is
+`load_skill_resource` does not follow the general matrix above. When the target
+skill is already active, the requested path resolves inside the frozen resource
+snapshot for that skill, and the frozen resource hash validates, the tool is
 audit-only in every approval mode. Inactive skills, invalid paths, missing
-references, corrupt snapshots, and hash mismatches are denied before approval and
+resources, corrupt snapshots, and hash mismatches are denied before approval and
 cannot be overridden by any mode.
 
 Known issue: `yolo` intentionally auto-allows untrusted write-native operations
@@ -592,12 +592,12 @@ Minimum Phase 1 signatures:
 - `activate_skill` uses the skill `name` and `content_hash` so that a grant for
   one skill does not apply to a different skill or to the same skill after a
   source-file change.
-- `load_skill_ref_file` uses the skill `name`, skill content hash, reference
-  path, and reference content hash.
+- `load_skill_resource` uses the skill `name`, skill content hash, resource
+  path, resource kind, and resource content hash.
 
-`load_skill_ref_file` signature facts are recorded for audit and scope
+`load_skill_resource` signature facts are recorded for audit and scope
 consistency. In Phase 1 they do not create a practical reusable interactive
-grant path because valid active-skill reference loads are audit-only in every
+grant path because valid active-skill resource loads are audit-only in every
 approval mode, while invalid loads are denied before approval.
 
 Approval grants are not path-policy or shell-policy declarations. Reusable

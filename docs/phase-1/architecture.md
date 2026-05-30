@@ -5,9 +5,13 @@
 ### SkillRegistry
 
 Discovers prompt skills, parses `SKILL.md` front matter, snapshots full skill
-content, snapshots file-level references under `references/**`, artifacts large
-reference payloads, computes content hashes, and exposes only Phase 1-supported
-prompt skills.
+content, snapshots file-level resources under `references/**`, `assets/**`, and
+`scripts/**`, artifacts large resource payloads, computes content hashes, and
+exposes only Phase 1-supported prompt skills.
+
+Files under `scripts/**` are frozen skill resources only. Phase 1 does not treat
+them as an execution grant; execution still goes through model-visible tools,
+path policy, shell policy, approval, timeout, artifact handling, and audit.
 
 Phase 1 does not build Markdown section trees or implement section-level
 progressive disclosure.
@@ -32,7 +36,7 @@ Builds model-call frames under the Phase 1 query control plane.
 The composer owns `ModelContextFrame` construction, active `SKILL.md` context
 injection, optimized conversation inclusion, and token estimation input. Active
 `SKILL.md` content is not appended to the durable conversation message list and
-is not part of `/compress` input. Loaded skill reference files are ordinary tool
+is not part of `/compress` input. Loaded skill resources are ordinary tool
 observations in durable conversation.
 
 `ContextManager` prepares the compressible conversation history (omission +
@@ -237,7 +241,7 @@ Phase 1 extends the Phase 0 tool surface with:
 - approval request dispatch.
 - writable native tools and `shell_exec`.
 
-`activate_skill` and `load_skill_ref_file` are also brokered tools.
+`activate_skill` and `load_skill_resource` are also brokered tools.
 
 The Phase 0 model-visible `git_status` native tool is removed from the model
 tool list in Phase 1. Model-initiated git operations go through `shell_exec` and
@@ -337,9 +341,9 @@ is the execution truth exposed to model-visible skill tooling.
    frozen session config snapshot with the session.
 9. Discover skills, build the frozen skill snapshot, and persist it in
    skill-registry snapshot storage associated with the session and prompt run:
-   - store manifest, `SKILL.md` content, file-level reference snapshots, and
+   - store manifest, `SKILL.md` content, file-level resource snapshots, and
      content hashes in Phase 1 snapshot storage.
-   - artifact large reference payloads and record artifact ids and content
+   - artifact large resource payloads and record artifact ids and content
      hashes.
    - artifact any oversized snapshot payload according to normal artifact rules.
    Then initialize structured run-scoped `active_skills` state.
@@ -354,7 +358,7 @@ is the execution truth exposed to model-visible skill tooling.
    - approval grant store.
    - approval provider.
    - skill activation handler.
-   - skill reference file load handler.
+   - skill resource load handler.
 12. Initialize `ContextManager`.
 13. Initialize `QueryControlPlane`.
 14. Initialize model adapter and prompt executor.
@@ -457,7 +461,7 @@ model requests tool
 -> ToolBroker validates schema and normalizes tool facts
 -> PermissionEvaluator applies hard denies, shell allowlist gate, path classification,
    approval-mode matrix, and reusable session grants
-   (activate_skill and load_skill_ref_file resolve frozen targets before approval)
+   (activate_skill and load_skill_resource resolve frozen targets before approval)
 -> if approval needed, ToolBroker calls ApprovalProvider
 -> REPL asks inline
 -> y/a continues execution

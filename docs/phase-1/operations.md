@@ -57,7 +57,7 @@ Do not default to full test suite execution unless:
 
 For Phase 1, narrow verification should prefer tests for:
 
-- skill discovery, snapshot, hash, reference file loading, and activation
+- skill discovery, snapshot, hash, resource loading, and activation
   behavior.
 - prompt composition and `ModelContextFrame` construction.
 - context estimation, omission, compression, and status-bar updates.

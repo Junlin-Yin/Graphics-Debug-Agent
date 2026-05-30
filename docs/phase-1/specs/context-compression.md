@@ -127,7 +127,7 @@ of a user turn.
 Active `SKILL.md` content is included in `ModelContextFrame` estimates as
 non-persistent segments with `role="system"` and
 `kind="runtime_active_skill_context"`, but is not part of the compressible
-conversation history. Loaded skill reference file outputs are ordinary
+conversation history. Loaded skill resource outputs are ordinary
 conversation tool observations and may be omitted or compressed.
 
 Ordinary task `ModelContextFrame` estimates include the complete model-call
@@ -345,7 +345,7 @@ Those excluded inputs are stable system-block content, runtime-owned structured
 state, retained raw context, or live messages that compression must not rewrite.
 They still count toward ordinary task `ModelContextFrame` estimates after
 compression. The compression summary may preserve visible artifact, active
-skill, loaded skill reference, approval, or policy references only when those
+skill, loaded skill resource, approval, or policy references only when those
 references already appear in the previous summary or selected evicted history.
 The runtime must not inject those facts into the compression frame as an
 independent source of truth.
@@ -376,7 +376,7 @@ The compression instruction must preserve:
 - key decisions and constraints.
 - human-readable references to relevant artifacts when visible in history.
 - human-readable references to active skills when visible in history.
-- human-readable references to loaded skill reference files when visible in
+- human-readable references to loaded skill resources when visible in
   history.
 - approval or path-policy facts visible in history.
 
@@ -401,7 +401,7 @@ Minimum Phase 1 schema:
   "constraints": ["string"],
   "visible_artifact_refs": ["string"],
   "visible_active_skills": ["string"],
-  "visible_loaded_skill_reference_files": ["string"],
+  "visible_loaded_skill_resources": ["string"],
   "visible_policy_or_approval_facts": ["string"]
 }
 ```
@@ -412,7 +412,7 @@ and `constraints` (all string arrays). These must be present with the correct
 type; list fields may be empty arrays but must not be missing.
 
 Optional continuity fields: `visible_artifact_refs`, `visible_active_skills`,
-`visible_loaded_skill_reference_files`, and `visible_policy_or_approval_facts`
+`visible_loaded_skill_resources`, and `visible_policy_or_approval_facts`
 (string arrays). When missing, they default to empty arrays.
 
 The parser extracts only the fields above from the model output. Extra fields
@@ -421,7 +421,7 @@ output is not a JSON object, is empty, a required core field is missing, or any
 known field has the wrong type (for example, `task_goal` is not a string, or
 `completed_work` is not an array of strings).
 `visible_artifact_refs`, `visible_active_skills`,
-`visible_loaded_skill_reference_files`, and `visible_policy_or_approval_facts`
+`visible_loaded_skill_resources`, and `visible_policy_or_approval_facts`
 are continuity fields only. They are populated only from previous summary or
 evicted history that was already LLM-visible. They do not authorize, restore,
 validate, or mutate runtime state.
@@ -429,7 +429,7 @@ validate, or mutate runtime state.
 Runtime, not the model, preserves:
 
 - active skill records.
-- frozen skill and reference snapshots.
+- frozen skill and resource snapshots.
 - artifact ids.
 - approval records.
 - path policy and shell policy.
@@ -750,8 +750,8 @@ After compression, the next model call is composed from:
 Active `SKILL.md` content is reconstructed from structured active skill records,
 not from the summary. It is injected before rolling summary and retained raw
 conversation so retained raw groups and live messages remain contiguous. Loaded
-skill reference file outputs are reconstructed only if they are still present in
-retained raw conversation; otherwise the model may call `load_skill_ref_file`
+skill resource outputs are reconstructed only if they are still present in
+retained raw conversation; otherwise the model may call `load_skill_resource`
 again.
 
 Manual and automatic compression replace only the previous summary and selected

@@ -14,7 +14,7 @@
 
 ## Goals
 
-- Deliver prompt skill discovery, frozen startup snapshots, run-scoped activation, active skill prompt injection, frozen reference loading, `/skills`, and trace/audit visibility.
+- Deliver prompt skill discovery, frozen startup snapshots, run-scoped activation, active skill prompt injection, frozen skill resource loading, `/skills`, and trace/audit visibility.
 - Deliver controlled model-visible native tools and structured `shell_exec` through `ToolBroker`, with deterministic schema validation, path policy, shell policy, approval, timeout, artifacting, and audit.
 - Deliver session-local interactive approval grants, approval modes `normal`, `semi-auto`, and `yolo`, TTY/plain/non-interactive approval behavior, `/tools`, and idle-only `Ctrl+Y` approval-mode cycling.
 - Deliver runtime-owned `ModelContextFrame`, prompt composition, deterministic context estimates, query-control model-call groups, old tool-result omission, rolling compression, manual `/compress`, context snapshots, and context-limit/compression-failure handling.
@@ -26,7 +26,7 @@
 - No workflow execution, workflow skill activation, workflow manifests in the Phase 1 registry, YAML DSL, nested workflow, or parallel workflow.
 - No MCP server lifecycle, MCP tool discovery, MCP tool invocation, or plugin packaging.
 - No skill, agent, config, model, MCP, or plugin hot reload.
-- No `/models`, `/compact`, `deactivate_skill`, section-level skill disclosure, semantic reference retrieval, or automatic active-skill disclosure degradation.
+- No `/models`, `/compact`, `deactivate_skill`, section-level skill disclosure, semantic skill resource retrieval, or automatic active-skill disclosure degradation.
 - No token-level resume, tool-mid-flight resume, restart/resume recovery from context snapshots, or recovery from natural-language compression summaries.
 - No unrestricted shell execution, raw shell strings, `shell=True`, regex shell policy, or filesystem sandbox guarantee for generic shell argv side effects.
 - No persistent approval grants across sessions and no approval override for policy denial, schema validation failure, config errors, or invalid frozen skill targets.
@@ -43,9 +43,9 @@
 - `src/debug_agent/persistence/runs.py`: `runs.context_snapshot_id` support and Phase 1 run metadata updates.
 - `src/debug_agent/persistence/events.py`: Phase 1 event kinds for approval, policy denial, skill activation, context optimization, and compression.
 - `src/debug_agent/persistence/checkpoints.py`: `context` checkpoint kind support.
-- `src/debug_agent/persistence/artifacts.py`: artifact registration/staging support for large tool/model outputs, oversized skill/reference snapshots, and oversized context snapshots.
+- `src/debug_agent/persistence/artifacts.py`: artifact registration/staging support for large tool/model outputs, oversized skill/resource snapshots, and oversized context snapshots.
 - `src/debug_agent/persistence/approval_grants.py`: session-local interactive approval records and reusable grant lookup.
-- `src/debug_agent/persistence/skills.py`: frozen skill and reference snapshot storage.
+- `src/debug_agent/persistence/skills.py`: frozen skill and resource snapshot storage.
 - `src/debug_agent/persistence/context_snapshots.py`: post-optimization context snapshot storage and payload artifacting.
 - `src/debug_agent/runtime/policy.py`: frozen path policy, shell policy, runtime-control target facts, and `PermissionEvaluator`.
 - `src/debug_agent/runtime/query_control.py`: query state, continuation reasons, model-call group derivation, non-evictable suffix handling.
@@ -57,7 +57,7 @@
 - `src/debug_agent/tools/broker.py`: Phase 1 broker envelope, `ToolUseContext`, permission evaluation, approval dispatch, routing, artifacting, audit.
 - `src/debug_agent/tools/native.py`: Phase 1 native tools: `read_file`, `list_dir`, `search_text`, `write_file`, `edit_file`.
 - `src/debug_agent/tools/shell.py`: structured `shell_exec` with fake-runner test seam, timeout, stdout/stderr artifacting.
-- `src/debug_agent/tools/runtime_control.py`: `activate_skill` and `load_skill_ref_file` handlers.
+- `src/debug_agent/tools/runtime_control.py`: `activate_skill` and `load_skill_resource` handlers.
 - `src/debug_agent/skills/registry.py`: prompt skill discovery, manifest validation, startup snapshotting, hash normalization, available skill headers.
 - `src/debug_agent/cli/repl_controller.py`: `/skills`, `/tools`, `/compress`, inline approval state, idle-only `Ctrl+Y`, Phase 1 status bar updates.
 - `src/debug_agent/cli/main.py`: one-shot and REPL startup `--approval-mode` option parsing and validation.
@@ -68,7 +68,7 @@
 - `src/debug_agent/observability/logging.py`: Phase 1 engine log entries for approval mode switches, decisions, policy denials, optimizations, and artifact registrations.
 - `tests/unit/runtime/`: config, policy, query control, model context, context manager, prompt composer, prompt executor tests.
 - `tests/unit/tools/`: broker, native, shell, runtime-control tool tests.
-- `tests/unit/skills/`: skill registry, snapshot, hash, activation, and reference loading tests.
+- `tests/unit/skills/`: skill registry, snapshot, hash, activation, and resource loading tests.
 - `tests/unit/persistence/`: Phase 1 schema, user_version, approval grants, skill snapshots, context snapshots tests.
 - `tests/unit/cli/`: `/skills`, `/tools`, `/compress`, approval prompt, `Ctrl+Y`, and status bar tests.
 - `tests/unit/adapters/`: `ModelContextFrame` provider materialization tests.
@@ -85,7 +85,7 @@ Module paths may be adjusted only to match established repository naming or near
 - Path policy, shell policy, approval mode, and reusable grants are runtime-enforced facts, not prompt instructions.
 - `yolo` skips interactive approval only; it does not bypass schema validation, path deny, shell policy, timeout, artifact handling, or audit.
 - Runtime-owned persistence and artifact operations may write under `.sessions/`; model-visible tools must not read, list, search, write, edit, or shell into `.sessions/`.
-- Model-visible tools must not access `~/.debug-agent/skills/` or `<workspace_root>/.debug-agent/skills/`; prompt skill content is exposed only through frozen snapshots, `/skills`, active skill context, and `load_skill_ref_file`.
+- Model-visible tools must not access `~/.debug-agent/skills/` or `<workspace_root>/.debug-agent/skills/`; prompt skill content is exposed only through frozen snapshots, `/skills`, active skill context, and `load_skill_resource`.
 - Phase 1 does not read or migrate Phase 0/0.5 runtime databases. Existing legacy `.sessions/runtime.db` files fail closed before runtime truth rows are interpreted.
 - `AgentStreamEvent` remains a UI observation and must not be persisted as `run_events`.
 - `ModelContextFrame` is the ordinary task model-call context boundary. Token estimates, prompt composition, and adapter materialization use the same frame.
@@ -859,3 +859,111 @@ isolated there.
 
 Runnable state: Phase 1 remains runnable after Milestone 7 with unchanged tool
 authorization semantics and improved TTY tool-block display/audit timing.
+
+## Milestone 8: Skill Resource Snapshot Expansion
+
+Objective: update the completed reference-only Phase 1 skill implementation to
+the current resource model, where frozen skill resources include
+`references/**`, `assets/**`, and `scripts/**`.
+
+Deliverables: `skill_resource_snapshots` persistence, resource-kind metadata,
+startup snapshotting for all three resource roots, `load_skill_resource` as the
+only model-visible resource-loading tool, active-skill `available_resources`
+metadata, resource-aware compression/trace/UI facts, and removal of the old
+`load_skill_ref_file` model-visible surface.
+
+This milestone supersedes the reference-only behavior implemented by Milestones
+1, 3A, 3B, 3C, 4B, 5B, 6A, and 7. Do not mark those historical milestones as
+newly implementing resources; implement this milestone as a focused corrective
+slice on top of the existing Phase 1 runtime.
+
+- [ ] Rename the frozen child snapshot persistence model from reference rows to
+  resource rows: create `skill_resource_snapshots` with
+  `resource_snapshot_id`, `resource_path`, `resource_kind`, `media_kind`,
+  `size_bytes`, `content_hash`, `inline_text_payload`,
+  `payload_artifact_id`, `created_at`, and `version`, preserving the owning
+  `skill_snapshots.skill_snapshot_id` foreign-key boundary from
+  `docs/phase-1/specs/skills.md`.
+- [ ] Update skill snapshot bootstrap and persistence code so new Phase 1
+  sessions write and read only `skill_resource_snapshots` for resource loading;
+  do not add a `load_skill_ref_file` compatibility alias or a model-visible
+  fallback to `skill_reference_snapshots`.
+- [ ] Update `SkillRegistry` discovery to snapshot files under exactly
+  `references/**`, `assets/**`, and `scripts/**`, while continuing to ignore all
+  files outside `SKILL.md` and those resource roots.
+- [ ] Derive `resource_kind` from the top-level resource root:
+  `references/**` -> `reference`, `assets/**` -> `asset`, and `scripts/**` ->
+  `script`.
+- [ ] Preserve deterministic resource path ordering, path normalization, UTF-8
+  text classification, binary artifacting, large text artifacting, unreadable
+  resource startup failures, and resource content participation in the overall
+  skill content hash.
+- [ ] Treat `scripts/**` as frozen skill resources only. Loading or listing a
+  script resource must not grant execution permission, bypass `shell_exec`, or
+  weaken path policy, shell policy, approval, timeout, artifact handling, or
+  audit.
+- [ ] Replace the runtime-control tool definition and handler
+  `load_skill_ref_file` with `load_skill_resource`, keeping the input schema
+  `{skill_name, path}` with `additionalProperties=false`.
+- [ ] Ensure `load_skill_resource` succeeds only for active skills and resolves
+  `path` only against the active skill's frozen resource rows. Path traversal,
+  absolute paths, inactive skills, missing resources, corrupt snapshots, and
+  hash mismatches must be denied before approval and must not read live source
+  files.
+- [ ] Include `resource_path`, `resource_kind`, `content_hash`, `size_bytes`,
+  and `media_kind` in successful `load_skill_resource` outputs. Small text
+  resources return inline text; large text and all non-text resources return
+  controlled artifact/resource markers plus metadata.
+- [ ] Update `PermissionEvaluator`, approval scope signatures, broker target
+  metadata, tool audit payloads, trace rendering, engine logs, `/tools`, and TTY
+  tool-block target rendering to use `load_skill_resource` and resource facts,
+  including `resource_kind`.
+- [ ] Update prompt composition so active skill context lists
+  `available_resources` with frozen resource paths, resource kinds, and hashes,
+  without injecting resource file content automatically.
+- [ ] Update context compression continuity fields and tests from
+  `visible_loaded_skill_reference_files` to `visible_loaded_skill_resources`,
+  preserving the rule that loaded resource outputs are ordinary durable
+  conversation observations and not runtime-owned active skill state.
+- [ ] Remove `load_skill_ref_file` from all model-visible tool bindings,
+  provider/fake-model fixtures, orchestrator gates, tests, trace examples,
+  status/tool listings, and documentation-derived expected strings.
+- [ ] Add or update unit tests for persistence schema shape, registry discovery
+  of `references/**`, `assets/**`, and `scripts/**`, ignored out-of-root files,
+  resource hash stability, binary and large-resource artifacting, unreadable
+  resource startup failure, `scripts/**` non-execution semantics,
+  `load_skill_resource` success/denial cases, approval scope signatures,
+  active context `available_resources`, compression continuity fields, trace/log
+  rendering, `/tools`, and TTY target formatting.
+- [ ] Add or update integration tests proving brokered `load_skill_resource`
+  works through the fake model/tool loop, the provider tool surface exposes
+  `load_skill_resource` and not `load_skill_ref_file`, and active skill
+  resource metadata survives the real Phase 1 prompt-composition path.
+- [ ] Verify with canonical commands `uv run pytest tests/unit -v` and
+  `uv run pytest tests/integration -v`.
+
+Modified boundaries: skill registry snapshotting, skill snapshot persistence,
+runtime-control skill tools, broker target/audit metadata, permission signature
+facts, prompt composition, context compression continuity fields, observability,
+tool listings, TTY tool presentation, and Phase 1 tests.
+
+Invariants: resources remain frozen session snapshot data; resource loading
+does not read live skill source files; `scripts/**` resources are not execution
+grants; all model-visible access still passes through `ToolBroker`; no
+subagent, workflow, MCP, plugin, hot reload, `deactivate_skill`, section-level
+skill disclosure, or semantic skill resource retrieval behavior is introduced.
+
+Freeze/review checkpoint: a fake model can activate a skill and load frozen
+resources from `references/**`, `assets/**`, and `scripts/**` through
+`load_skill_resource`, while `load_skill_ref_file` is absent from every
+model-visible tool list and `/tools` surface.
+
+Rollback: remove `load_skill_resource` and the resource-row persistence changes
+as one slice, restoring the pre-Milestone-8 reference-only implementation only
+on the development branch. Do not keep both model-visible resource-loading tool
+names enabled.
+
+Runnable state: Phase 1 remains runnable after Milestone 8 with the same
+authorization and prompt-composition boundaries, but skill file-level snapshots
+and loads use the documented resource model instead of the old reference-only
+model.

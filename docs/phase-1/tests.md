@@ -19,18 +19,20 @@
 - absent `execution_mode` is treated as `prompt`.
 - `execution_mode: workflow`, `execution_mode: subagent`, `execution_mode:
   mcp`, and any other non-`prompt` value fail startup with `config_error`.
-- registry reads and snapshots `SKILL.md` plus files under `references/**`.
-- registry ignores files outside `SKILL.md` and `references/**`.
-- non-Markdown files outside `references/**` are not copied into session
+- registry reads and snapshots `SKILL.md` plus resource files under
+  `references/**`, `assets/**`, and `scripts/**`.
+- registry ignores files outside `SKILL.md`, `references/**`, `assets/**`, and
+  `scripts/**`.
+- non-Markdown files outside those resource roots are not copied into session
   artifacts and do not affect the skill content hash.
 - skill discovery, snapshot, persistence, and available-skill header generation
   complete before one-shot execution or REPL input accepts the first user prompt.
 - skill registry snapshots are persisted separately from
   `sessions.config_snapshot_json` and associated with the session and prompt run.
 - `skill_snapshots` stores one frozen `SKILL.md` body per skill snapshot.
-- `skill_reference_snapshots` stores zero or more reference rows linked to the
+- `skill_resource_snapshots` stores zero or more resource rows linked to the
   owning `skill_snapshots.skill_snapshot_id`.
-- `load_skill_ref_file` resolves reference paths only through the owning skill
+- `load_skill_resource` resolves resource paths only through the owning skill
   snapshot row for the active skill name and content hash.
 - registry computes stable SHA-256 content hashes.
 - activation validates against the frozen session snapshot without re-reading
@@ -40,21 +42,21 @@
   change first activation behavior for the active session.
 - active skills are reconstructed from frozen snapshots on later model calls
   without re-reading source files.
-- Markdown and non-Markdown references are represented as file-level frozen
-  reference snapshots, not section trees.
-- reference file content hashes participate in the skill content hash.
-- modifying or deleting a reference source file after session startup does not
+- Markdown and non-Markdown resources are represented as file-level frozen
+  resource snapshots, not section trees.
+- resource file content hashes participate in the skill content hash.
+- modifying or deleting a resource source file after session startup does not
   change active session behavior.
-- large reference payloads are artifact-backed.
-- no section ids, section trees, semantic retrieval, or progressive disclosure
-  state is produced in Phase 1.
+- large resource payloads are artifact-backed.
+- no section ids, section trees, semantic resource retrieval, or progressive
+  disclosure state is produced in Phase 1.
 
 ### Skill Activation And Prompt Composition
 
 - `activate_skill` is exposed as a runtime tool definition.
-- `load_skill_ref_file` is exposed as a runtime tool definition.
+- `load_skill_resource` is exposed as a runtime tool definition.
 - `activate_skill` invocation goes through `ToolBroker`.
-- `load_skill_ref_file` invocation goes through `ToolBroker`.
+- `load_skill_resource` invocation goes through `ToolBroker`.
 - unknown skill activation returns `ToolResult(status="denied")` without
   prompting for approval.
 - non-prompt skill manifests fail startup with `config_error`, so non-prompt
@@ -69,31 +71,31 @@
   skill body as ordinary tool output.
 - active `SKILL.md` content becomes visible on the next model call.
 - active `SKILL.md` content is not appended to `ReplRuntime.conversation`.
-- active skill context lists available frozen reference file paths and hashes
-  without injecting reference file content automatically.
+- active skill context lists available frozen resource file paths, resource
+  kinds, and hashes without injecting resource file content automatically.
 - skill discovery scans only direct child directories of the configured global
   and project skill roots.
 - skill discovery does not treat the configured root itself as a skill directory
   and does not follow symlinked skill directories.
-- skill discovery processes skill directories and reference paths in normalized
+- skill discovery processes skill directories and resource paths in normalized
   path order.
 - discovered `SKILL.md` files must decode as UTF-8; invalid or unreadable
   `SKILL.md` files fail startup with `config_error`.
-- reference files under `references/**` may be binary; runtime classifies them as
-  text only when UTF-8 decoding succeeds.
-- non-text references are always artifact-backed, regardless of size.
-- unreadable reference files fail startup with `config_error`.
-- `load_skill_ref_file` succeeds only for already active skills.
-- `load_skill_ref_file` resolves `path` only inside the frozen `references/**`
-  snapshot for the requested skill.
-- `load_skill_ref_file` denies path traversal, absolute paths, inactive skills,
-  unknown references, and frozen reference hash mismatches without reading source
+- resource files under `references/**`, `assets/**`, and `scripts/**` may be
+  binary; runtime classifies them as text only when UTF-8 decoding succeeds.
+- non-text resources are always artifact-backed, regardless of size.
+- unreadable resource files fail startup with `config_error`.
+- `load_skill_resource` succeeds only for already active skills.
+- `load_skill_resource` resolves `path` only inside the frozen resource snapshot
+  for the requested skill.
+- `load_skill_resource` denies path traversal, absolute paths, inactive skills,
+  unknown resources, and frozen resource hash mismatches without reading source
   files.
-- text reference files below the inline threshold return text plus metadata.
-- large text references and all non-text reference files return
-  artifact/reference markers plus metadata without injecting raw large or binary
+- text resources below the inline threshold return text plus metadata.
+- large text resources and all non-text resource files return
+  artifact/resource markers plus metadata without injecting raw large or binary
   content.
-- loaded reference file outputs are ordinary durable conversation tool
+- loaded skill resource outputs are ordinary durable conversation tool
   observations and may later be omitted or compressed.
 - `PromptComposer` keeps the stable system block stable across skill
   activation.
@@ -110,7 +112,7 @@
   and live/unconsumed messages in `ModelContextFrame`.
 - active skill context is marked authoritative for the current turn.
 - active skill context includes skill id, content hash or version, activation
-  reason, scope, `SKILL.md` instructions, and available reference metadata.
+  reason, scope, `SKILL.md` instructions, and `available_resources` metadata.
 - model-visible `allowed_tools` and `path_policy` fields in skill context do not
   authorize execution.
 - active skill content is not disclosure-degraded under budget pressure.
@@ -203,7 +205,7 @@
   object.
 - compression output `visible_*` fields are continuity fields populated only from
   previous summary or evicted LLM-visible history.
-- compression output includes `visible_loaded_skill_reference_files` as a
+- compression output includes `visible_loaded_skill_resources` as a
   continuity field populated only from previous summary or evicted LLM-visible
   history.
 - compression output that is not a JSON object, is empty, is missing a required
@@ -235,7 +237,7 @@
 - successful compression writes compression-specific run events after the
   compression model-call event pair.
 - runtime, not the compression summary, preserves active skill records, frozen skill
-  and reference snapshots, artifact ids, approval records, path policy, shell
+  and resource snapshots, artifact ids, approval records, path policy, shell
   policy, and context snapshot ids.
 - compression replaces selected evicted history in `ReplRuntime.conversation`.
 - compression replaces only the previous summary and selected evicted groups,
@@ -337,7 +339,7 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
   `requires_approval`.
 - model-visible tool definitions are exactly `read_file`, `list_dir`,
   `search_text`, `write_file`, `edit_file`, `shell_exec`, `activate_skill`, and
-  `load_skill_ref_file`.
+  `load_skill_resource`.
 - all model-visible tool schemas reject unknown fields.
 - `read_file` accepts `path` and optional positive integer `limit` interpreted
   as line count.
@@ -370,12 +372,12 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
   when omitted, or the built-in default of `300` seconds when the frozen config
   does not declare a timeout.
 - `activate_skill` uses `runtime_control` risk.
-- `load_skill_ref_file` uses read risk and runtime-control category.
-- `load_skill_ref_file` is audit-only in every approval mode when the target
-  skill is active, the frozen reference path resolves, and the frozen reference
+- `load_skill_resource` uses read risk and runtime-control category.
+- `load_skill_resource` is audit-only in every approval mode when the target
+  skill is active, the frozen resource path resolves, and the frozen resource
   hash validates.
-- `load_skill_ref_file` denials for inactive skills, invalid paths, missing
-  references, corrupt snapshots, or hash mismatch happen before approval and
+- `load_skill_resource` denials for inactive skills, invalid paths, missing
+  resources, corrupt snapshots, or hash mismatch happen before approval and
   cannot be overridden.
 - path policy is loaded from main agent `~/.debug-agent/agent.toml`.
 - path policy accepts only `trust` and `deny` scopes.
@@ -417,7 +419,7 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 - model-visible tools cannot read, list, search, write, edit, or shell into
   `~/.debug-agent/skills/` or `<workspace_root>/.debug-agent/skills/`; frozen
   skill content remains available through `/skills`, active skill context, and
-  `load_skill_ref_file`.
+  `load_skill_resource`.
 - model-visible tools cannot use artifact ids or runtime references to bypass
   the builtin `.sessions/` deny rule.
 - runtime-owned stores can write under `.sessions/` through runtime service APIs
@@ -495,10 +497,10 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
   effective timeout seconds, and classified argv path tokens.
 - `activate_skill` approval scope signatures include skill name and content
   hash.
-- `load_skill_ref_file` approval scope signatures include skill name, skill
-  content hash, reference path, and reference content hash.
-- `load_skill_ref_file` signature facts are audit/scope facts only in Phase 1:
-  valid active-skill reference loads are audit-only in every approval mode and
+- `load_skill_resource` approval scope signatures include skill name, skill
+  content hash, resource path, resource kind, and resource content hash.
+- `load_skill_resource` signature facts are audit/scope facts only in Phase 1:
+  valid active-skill resource loads are audit-only in every approval mode and
   invalid loads are denied before approval.
 - `approval_grants` records only interactive user approval prompt decisions.
 - policy auto-allow outcomes, including `semi-auto` and `yolo`
@@ -595,10 +597,10 @@ Phase 1 status bar supersedes the Phase 0.5 status bar format.
 - modifying a skill file after session start does not change the frozen skill
   content used by the session.
 - frozen snapshot hash mismatch fails with a clear audit trail.
-- frozen reference file loading through `load_skill_ref_file` returns text
-  content for small text references and artifact/reference markers for large text
-  or any non-text references.
-- loaded reference file outputs may be omitted or compressed as ordinary
+- frozen resource loading through `load_skill_resource` returns text
+  content for small text resources and artifact/resource markers for large text
+  or any non-text resources.
+- loaded skill resource outputs may be omitted or compressed as ordinary
   conversation observations.
 - `/skills` shows prompt skills.
 - `/tools` shows runtime-visible tools with normalized approval policy and
@@ -745,9 +747,9 @@ Denied by shell/path policy.
 - duplicate skill names within one discovery scope.
 - non-prompt `execution_mode` in `SKILL.md`.
 - frozen skill snapshot corrupt or hash-mismatched.
-- missing referenced file in a frozen skill snapshot.
-- malformed reference paths passed to `load_skill_ref_file`.
-- reference file hash mismatch.
+- missing resource file in a frozen skill snapshot.
+- malformed resource paths passed to `load_skill_resource`.
+- resource file hash mismatch.
 - invalid `~/.debug-agent/agent.toml`.
 - invalid path policy scope other than `trust` or `deny`.
 - invalid shell policy shape.
@@ -810,7 +812,7 @@ Fake model must support:
 
 - deterministic assistant text.
 - deterministic tool calls for `activate_skill`.
-- deterministic tool calls for `load_skill_ref_file`.
+- deterministic tool calls for `load_skill_resource`.
 - deterministic tool calls for native and shell tools.
 - deterministic compression summary output.
 - deterministic malformed compression summary output.
@@ -853,7 +855,7 @@ Fake tool or fixture workspace must cover:
 - denied path-qualified git and supported transparent-wrapper git command after
   `git_status` removal.
 - `activate_skill` success and denial.
-- `load_skill_ref_file` success and denial.
+- `load_skill_resource` success and denial.
 
 ## Manual Tests
 
@@ -909,7 +911,7 @@ Phase 1 is accepted only if:
   a clear legacy-schema error.
 - prompt skills are frozen, activatable, injected through `ModelContextFrame`,
   and survive compression.
-- skill reference files are frozen and loadable through `load_skill_ref_file`
+- skill resources are frozen and loadable through `load_skill_resource`
   without being automatically injected into every model call.
 - `/compress` and automatic compression share rolling summary compression
   machinery, manual `/compress` skips old tool-result omission, and compression

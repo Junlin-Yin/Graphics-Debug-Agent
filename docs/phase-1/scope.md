@@ -14,17 +14,18 @@ packaging, or broad provider/model discovery.
 - Prompt skills:
   - `SkillRegistry`.
   - `SKILL.md` manifest parsing for prompt skills.
-  - `references/**` file-level snapshots for prompt skills.
-  - registration-time full `SKILL.md` and reference file snapshot.
+  - `references/**`, `assets/**`, and `scripts/**` file-level resource
+    snapshots for prompt skills.
+  - registration-time full `SKILL.md` and resource file snapshot.
   - frozen-snapshot hash verification.
   - `activate_skill` as a runtime tool executed through `ToolBroker`.
-  - `load_skill_ref_file` as a runtime tool executed through `ToolBroker`.
+  - `load_skill_resource` as a runtime tool executed through `ToolBroker`.
   - run-scoped `active_skills` persistence and audit.
 - Prompt composition:
   - active `SKILL.md` content is injected by the prompt composer before each
     model call, not stored as conversation history.
   - active `SKILL.md` content is outside `/compress` scope.
-  - loaded skill reference files are ordinary durable conversation tool
+  - loaded skill resources are ordinary durable conversation tool
     observations and may be omitted or compressed.
   - no `deactivate_skill` command in Phase 1.
 - Context management:
@@ -86,7 +87,7 @@ packaging, or broad provider/model discovery.
     - `edit_file`
     - `shell_exec`
     - `activate_skill`
-    - `load_skill_ref_file`
+    - `load_skill_resource`
   - remove model-visible `git_status` native tool; git access for the model goes
     through `shell_exec` and shell policy.
 - REPL and CLI:
@@ -122,7 +123,7 @@ packaging, or broad provider/model discovery.
 - persistent approval grants across sessions.
 - `deactivate_skill`.
 - section-level progressive disclosure for skills.
-- semantic skill reference retrieval.
+- semantic skill resource retrieval.
 - token-level resume, tool-mid-flight resume, or subagent-mid-thought resume.
 - arbitrary unrestricted shell execution.
 - regex-based shell policy matching.
@@ -222,7 +223,7 @@ approval or user path policy.
    run-scoped `active_skills`, and records audit events.
 8. The next model call includes runtime-supplied active skill context through
    prompt composition.
-9. If needed, the model calls `load_skill_ref_file` to load a frozen reference
+9. If needed, the model calls `load_skill_resource` to load a frozen resource
    file from the active skill as an ordinary tool observation.
 10. The model calls a controlled tool.
 11. `ToolBroker` normalizes the tool call, applies the fixed permission
@@ -245,9 +246,9 @@ Phase 1 is complete when:
 - skill content is not compressed into conversation summaries and remains
   recoverable from the frozen skill snapshot.
 - active skill records survive `/compress`.
-- skill reference files are frozen at session startup and can be loaded through
-  `load_skill_ref_file` only for active skills.
-- loaded skill reference file outputs are ordinary conversation observations and
+- skill resources are frozen at session startup and can be loaded through
+  `load_skill_resource` only for active skills.
+- loaded skill resource outputs are ordinary conversation observations and
   may be omitted or compressed.
 - skills are not automatically deactivated or disclosure-degraded.
 - controlled tools cannot bypass `ToolBroker`.
@@ -271,7 +272,7 @@ Phase 1 is complete when:
   configured skill source roots `~/.debug-agent/skills/` and
   `<workspace_root>/.debug-agent/skills/`.
   Prompt skill content is exposed only through frozen skill snapshots,
-  `/skills`, active skill injection, and `load_skill_ref_file`.
+  `/skills`, active skill injection, and `load_skill_resource`.
 - Phase 1 acknowledges that argv path classification cannot fully sandbox shell
   command filesystem side effects.
 - approval decisions are persisted for audit and grants apply only to the

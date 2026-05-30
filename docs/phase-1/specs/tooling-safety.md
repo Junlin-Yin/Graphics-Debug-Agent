@@ -5,7 +5,7 @@
 All model-visible tools are exposed through `ToolBroker`.
 
 Phase 1 adds controlled writable native tools, `shell_exec`, `activate_skill`,
-`load_skill_ref_file`, and local slash command visibility for available tools.
+`load_skill_resource`, and local slash command visibility for available tools.
 It does not add MCP, subagent tools, workflow step tools, or unrestricted shell
 execution.
 
@@ -25,7 +25,7 @@ Phase 1 exposes exactly these tools to the model:
 - `edit_file`
 - `shell_exec`
 - `activate_skill`
-- `load_skill_ref_file`
+- `load_skill_resource`
 
 The Phase 0 model-visible `git_status` native tool is removed.
 
@@ -42,7 +42,7 @@ Minimum native tool intent:
 - `shell_exec`: run structured argv with `shell=False` after shell policy, path
   policy, approval, timeout, and audit checks pass.
 - `activate_skill`: activate a frozen prompt skill for the current run.
-- `load_skill_ref_file`: load one frozen reference file for an active skill as a
+- `load_skill_resource`: load one frozen skill resource for an active skill as a
   controlled tool observation.
 
 `write_file` may create missing parent directories when the target path remains
@@ -186,8 +186,8 @@ Minimum Phase 1 schemas:
 
 ```json
 {
-  "name": "load_skill_ref_file",
-  "description": "Load one frozen reference file for an active skill.",
+  "name": "load_skill_resource",
+  "description": "Load one frozen skill resource for an active skill.",
   "input_schema": {
     "type": "object",
     "properties": {
@@ -381,11 +381,11 @@ Future MCP, subagent, or workflow tool categories must integrate through the
 same broker envelope, but they are not Phase 1 categories.
 
 `activate_skill` uses category `runtime_control` and risk level
-`runtime_control`. `load_skill_ref_file` uses category `runtime_control` and
-risk level `read`; it can only read frozen reference snapshots for already active
-skills. When the target skill is active, the reference path resolves inside the
-frozen reference snapshot, and the frozen reference hash validates,
-`load_skill_ref_file` is audit-only in every approval mode and does not request
+`runtime_control`. `load_skill_resource` uses category `runtime_control` and
+risk level `read`; it can only read frozen resource snapshots for already active
+skills. When the target skill is active, the resource path resolves inside the
+frozen resource snapshot, and the frozen resource hash validates,
+`load_skill_resource` is audit-only in every approval mode and does not request
 interactive approval. Invalid, inactive, missing, corrupt, or hash-mismatched
 targets are denied before approval and cannot be overridden.
 

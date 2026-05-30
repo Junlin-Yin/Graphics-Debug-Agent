@@ -29,7 +29,7 @@ Skill registry snapshots are persisted separately from
 `sessions.config_snapshot_json` and associated with the session and prompt run.
 The session config snapshot records configuration and policy facts; the skill
 registry snapshot records skill manifests, hashes, `SKILL.md` content, and
-file-level reference snapshots.
+file-level resource snapshots.
 
 The frozen session snapshot is the execution truth. Activation validates the
 requested skill against the frozen snapshot and stored content hash; it does not
@@ -39,11 +39,15 @@ session behavior, including first activation behavior.
 Phase 1 supports:
 
 - required `SKILL.md`.
-- file-level references under `references/**`.
+- file-level resources under `references/**`, `assets/**`, and `scripts/**`.
 
-Reference files are frozen at startup. Large references are artifact-backed, and
-all reference content hashes participate in the skill content hash so source-file
+Resource files are frozen at startup. Large resources are artifact-backed, and
+all resource content hashes participate in the skill content hash so source-file
 edits after session startup do not change active-session behavior.
+
+Files under `scripts/**` are frozen skill resources only. They do not grant
+runtime execution permission; execution remains subject to `ToolBroker`, path
+policy, shell policy, approval, timeout, artifact handling, and audit.
 
 Active skills are stored as structured runtime state:
 
@@ -70,12 +74,12 @@ durable conversation history, and is not part of `/compress` input. Phase 1
 use a separate `AgentRunRequest.tools` field as prompt/context truth; provider
 tool bindings are materialized from `ModelContextFrame.tool_schema_bindings`.
 
-Phase 1 does not implement section-level progressive disclosure, semantic
-reference retrieval, or automatic active-skill disclosure degradation.
+Phase 1 does not implement section-level progressive disclosure, semantic skill
+resource retrieval, or automatic active-skill disclosure degradation.
 
-Reference files are not injected automatically. The model may call the brokered
-runtime tool `load_skill_ref_file(skill_name, path)` to load one frozen
-reference file for an already active skill. Loaded reference output is ordinary
+Skill resources are not injected automatically. The model may call the brokered
+runtime tool `load_skill_resource(skill_name, path)` to load one frozen resource
+file for an already active skill. Loaded resource output is ordinary
 durable conversation history and may later be omitted or compressed.
 
 Skill context may include model-visible guidance such as `allowed_tools` or
@@ -100,11 +104,11 @@ also makes recovery depend on natural-language transcript state.
 This makes instructions high priority, but dynamic activation can cause
 unbounded system prompt growth and blurs the stable system prompt boundary.
 
-### Automatically inject all reference files
+### Automatically inject all resource files
 
-This makes references immediately useful, but it can turn a single skill
+This makes resources immediately useful, but it can turn a single skill
 activation into a large permanent context increase. Phase 1 instead keeps
-references frozen and available through `load_skill_ref_file`.
+resources frozen and available through `load_skill_resource`.
 
 ### Automatically deactivate oldest skills under token pressure
 
@@ -120,4 +124,4 @@ makes later failures harder to explain.
 - Token estimates must use `ModelContextFrame`, not raw conversation history.
 - Prompt composition becomes a first-class runtime responsibility.
 - Skill tests focus on hash stability, activation, `SKILL.md` injection,
-  reference file loading, compression survival, and audit.
+  resource loading, compression survival, and audit.
