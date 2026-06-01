@@ -230,18 +230,18 @@ Freeze/review checkpoint: Phase 2 can bootstrap only fresh Phase 2 databases and
 
 **Freeze/review checkpoint:** do not add prompt injection until `todo` can replace and clear the current run plan through ToolBroker with atomic persistence and audit evidence.
 
-- [ ] Implement `TodoPlanStore.get_current(run_id)` returning version `0`, `items=[]`, and explicit empty state when no plan exists.
-- [ ] Implement `TodoPlanStore.replace_plan(session_id, run_id, items, event_writer)` as one SQLite transaction that persists the current plan and writes `todo_updated`.
-- [ ] Preserve input order and assign runtime-owned 1-based indexes.
-- [ ] Increment `plan_version` monotonically per run; first successful mutation reports `previous_plan_version = 0`, `plan_version = 1`.
-- [ ] Ensure failed persistence leaves prior plan unchanged and commits no `todo_updated` event.
-- [ ] Add the `todo` tool definition with `category="runtime_control"`, `risk_level="runtime_control"`, `access=[]`, required `items`, maximum 20 items, and status enum.
-- [ ] Add semantic validation for trimmed `content` and `activeForm`: non-empty, `content <= 240`, `activeForm <= 120`, at most one `in_progress`.
-- [ ] Normalize `activeForm` away for non-`in_progress` items before persistence, output, events, trace, prompt injection, and TUI display.
-- [ ] Add broker policy handling so valid `todo` calls are audit-only in all approval modes and do not create approval grants or interactive approval events.
-- [ ] Return structured `ToolResult.output`, `ToolResult.metadata`, and compact `redacted_output` exactly matching `docs/phase-2/specs/todo-plan.md`.
-- [ ] Write tests for schema rejection, semantic rejection, empty clear, item ordering, versioning, run isolation, atomicity, and approval exception behavior.
-- [ ] Run canonical unit tests.
+- [x] Implement `TodoPlanStore.get_current(run_id)` returning version `0`, `items=[]`, and explicit empty state when no plan exists.
+- [x] Implement `TodoPlanStore.replace_plan(session_id, run_id, items, event_writer)` as one SQLite transaction that persists the current plan and writes `todo_updated`.
+- [x] Preserve input order and assign runtime-owned 1-based indexes.
+- [x] Increment `plan_version` monotonically per run; first successful mutation reports `previous_plan_version = 0`, `plan_version = 1`.
+- [x] Ensure failed persistence leaves prior plan unchanged and commits no `todo_updated` event.
+- [x] Add the `todo` tool definition with `category="runtime_control"`, `risk_level="runtime_control"`, `access=[]`, required `items`, maximum 20 items, and status enum.
+- [x] Add semantic validation for trimmed `content` and `activeForm`: non-empty, `content <= 240`, `activeForm <= 120`, at most one `in_progress`.
+- [x] Normalize `activeForm` away for non-`in_progress` items before persistence, output, events, trace, prompt injection, and TUI display.
+- [x] Add broker policy handling so valid `todo` calls are audit-only in all approval modes and do not create approval grants or interactive approval events.
+- [x] Return structured `ToolResult.output`, `ToolResult.metadata`, and compact `redacted_output` exactly matching `docs/phase-2/specs/todo-plan.md`.
+- [x] Write tests for schema rejection, semantic rejection, empty clear, item ordering, versioning, run isolation, atomicity, and approval exception behavior.
+- [x] Run canonical unit tests.
   - Command: `uv run pytest tests/unit -v`
   - Expected: all unit tests pass.
 

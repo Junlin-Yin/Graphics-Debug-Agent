@@ -15,6 +15,12 @@ class EventWriter:
     sessions_root: Path
 
     def append(self, event: RunEvent) -> RunEvent:
+        self.append_in_transaction(event)
+        self.connection.commit()
+        write_event_log(self.sessions_root, event)
+        return event
+
+    def append_in_transaction(self, event: RunEvent) -> RunEvent:
         self.connection.execute(
             """
             INSERT INTO run_events (
@@ -34,8 +40,6 @@ class EventWriter:
                 event.version,
             ),
         )
-        self.connection.commit()
-        write_event_log(self.sessions_root, event)
         return event
 
     def list_for_session(self, session_id: str) -> list[RunEvent]:

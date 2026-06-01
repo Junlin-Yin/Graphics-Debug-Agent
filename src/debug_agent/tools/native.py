@@ -115,10 +115,15 @@ def tool_definitions() -> list[ToolDefinition]:
 def gated_user_facing_tool_definitions() -> list[ToolDefinition]:
     from debug_agent.tools import runtime_control, shell
 
+    runtime_control_definitions = [
+        definition
+        for definition in runtime_control.tool_definitions()
+        if definition.name != "todo"
+    ]
     return [
         *tool_definitions(),
         *shell.tool_definitions(),
-        *runtime_control.tool_definitions(),
+        *runtime_control_definitions,
     ]
 
 

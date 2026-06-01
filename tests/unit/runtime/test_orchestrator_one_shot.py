@@ -138,7 +138,7 @@ def test_one_shot_skill_headers_do_not_mutate_config_snapshots_or_model_input(
     assert "available_skill_headers" not in persisted_config
 
 
-def test_one_shot_default_path_exposes_phase1_tools_through_model_context_frame(
+def test_one_shot_default_path_keeps_gated_todo_out_of_model_context_frame(
     tmp_path, monkeypatch
 ) -> None:
     workspace = tmp_path / "workspace"

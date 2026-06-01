@@ -14,6 +14,9 @@ from debug_agent.persistence.skills import (
 from debug_agent.runtime.contracts import ToolDefinition
 
 
+TODO_STATUSES = ("pending", "in_progress", "completed")
+
+
 @dataclass(frozen=True)
 class RuntimeControlTarget:
     valid: bool
@@ -65,6 +68,41 @@ def tool_definitions() -> list[ToolDefinition]:
             risk_level="read",
             access=["read"],
         ),
+        ToolDefinition(
+            name="todo",
+            description="Replace the current run Todo Plan.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "minItems": 0,
+                        "maxItems": 20,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {"type": "string"},
+                                "status": {
+                                    "type": "string",
+                                    "enum": list(TODO_STATUSES),
+                                },
+                                "activeForm": {
+                                    "type": "string",
+                                    "description": "Optional present-continuous label.",
+                                },
+                            },
+                            "required": ["content", "status"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "required": ["items"],
+                "additionalProperties": False,
+            },
+            category="runtime_control",
+            risk_level="runtime_control",
+            access=[],
+        ),
     ]
 
 
@@ -72,6 +110,7 @@ def tool_handlers() -> dict[str, Any]:
     return {
         "activate_skill": activate_skill,
         "load_skill_resource": load_skill_resource,
+        "todo": todo,
     }
 
 
@@ -80,6 +119,8 @@ def validate_target(context: Any, tool_name: str, arguments: dict[str, Any]) -> 
         return _validate_activation(context, arguments)
     if tool_name == "load_skill_resource":
         return _validate_resource(context, arguments)
+    if tool_name == "todo":
+        return _validate_todo(arguments)
     return RuntimeControlTarget(False, f"Unknown runtime-control tool: {tool_name}")
 
 
@@ -164,6 +205,93 @@ def load_skill_resource(context: Any, arguments: dict[str, Any]) -> RuntimeContr
     )
 
 
+def todo(context: Any, arguments: dict[str, Any]) -> RuntimeControlHandlerResult:
+    store = getattr(context, "todo_plan_store", None)
+    if store is None:
+        return RuntimeControlHandlerResult(
+            "error",
+            error_message="Todo Plan store is required.",
+            error_class="internal_error",
+        )
+    normalized_items: list[dict[str, Any]] = []
+    in_progress_count = 0
+    for item in arguments["items"]:
+        content = item["content"].strip()
+        if not content:
+            return RuntimeControlHandlerResult(
+                "denied",
+                error_message="Todo item content must not be empty.",
+                error_class="user_error",
+            )
+        if len(content) > 240:
+            return RuntimeControlHandlerResult(
+                "denied",
+                error_message="Todo item content must be at most 240 characters.",
+                error_class="user_error",
+            )
+        normalized = {"content": content, "status": item["status"]}
+        active_form = item.get("activeForm")
+        if active_form is not None:
+            active_form = active_form.strip()
+            if not active_form:
+                return RuntimeControlHandlerResult(
+                    "denied",
+                    error_message="Todo item activeForm must not be empty when provided.",
+                    error_class="user_error",
+                )
+            if len(active_form) > 120:
+                return RuntimeControlHandlerResult(
+                    "denied",
+                    error_message="Todo item activeForm must be at most 120 characters.",
+                    error_class="user_error",
+                )
+            if item["status"] == "in_progress":
+                normalized["activeForm"] = active_form
+        if item["status"] == "in_progress":
+            in_progress_count += 1
+        normalized_items.append(normalized)
+    if in_progress_count > 1:
+        return RuntimeControlHandlerResult(
+            "denied",
+            error_message="Todo Plan may contain at most one in_progress item.",
+            error_class="user_error",
+        )
+    replacement = store.replace_plan(
+        context.session_id,
+        context.run_id,
+        normalized_items,
+        context.event_writer,
+    )
+    payload = replacement.event.payload
+    output_items = [
+        {
+            key: value
+            for key, value in item.items()
+            if key in {"index", "content", "status", "activeForm"}
+        }
+        for item in payload["items"]
+    ]
+    output = {
+        "plan_version": payload["plan_version"],
+        "item_count": payload["item_count"],
+        "counts": payload["counts"],
+        "items": output_items,
+    }
+    return RuntimeControlHandlerResult(
+        "ok",
+        output=output,
+        metadata={
+            "tool_name": "todo",
+            "previous_plan_version": replacement.previous_plan_version,
+            "plan_version": payload["plan_version"],
+            "mutation": "replace",
+            "item_count": payload["item_count"],
+            "counts": payload["counts"],
+            "redacted_output": _render_todo_plan(payload["plan_version"], output_items, payload["counts"]),
+        },
+    )
+
+
 def _validate_activation(context: Any, arguments: dict[str, Any]) -> RuntimeControlTarget:
     store = getattr(context, "skill_snapshot_store", None)
     if store is None:
@@ -183,6 +311,48 @@ def _validate_activation(context: Any, arguments: dict[str, Any]) -> RuntimeCont
         skill=target.skill,
         already_active=_skill_is_active(context, skill),
     )
+
+
+def _validate_todo(arguments: dict[str, Any]) -> RuntimeControlTarget:
+    in_progress_count = 0
+    for item in arguments["items"]:
+        content = item["content"].strip()
+        if not content:
+            return RuntimeControlTarget(
+                False,
+                "Todo item content must not be empty.",
+                error_class="user_error",
+            )
+        if len(content) > 240:
+            return RuntimeControlTarget(
+                False,
+                "Todo item content must be at most 240 characters.",
+                error_class="user_error",
+            )
+        active_form = item.get("activeForm")
+        if active_form is not None:
+            active_form = active_form.strip()
+            if not active_form:
+                return RuntimeControlTarget(
+                    False,
+                    "Todo item activeForm must not be empty when provided.",
+                    error_class="user_error",
+                )
+            if len(active_form) > 120:
+                return RuntimeControlTarget(
+                    False,
+                    "Todo item activeForm must be at most 120 characters.",
+                    error_class="user_error",
+                )
+        if item["status"] == "in_progress":
+            in_progress_count += 1
+    if in_progress_count > 1:
+        return RuntimeControlTarget(
+            False,
+            "Todo Plan may contain at most one in_progress item.",
+            error_class="user_error",
+        )
+    return RuntimeControlTarget(True)
 
 
 def _validate_resource(context: Any, arguments: dict[str, Any]) -> RuntimeControlTarget:
@@ -317,3 +487,20 @@ def _sha256_bytes(payload: bytes) -> str:
 
 def _normalize_text(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _render_todo_plan(
+    plan_version: int, items: list[dict[str, Any]], counts: dict[str, int]
+) -> str:
+    if not items:
+        return f"Todo Plan v{plan_version}: empty"
+    lines = [
+        (
+            f"Todo Plan v{plan_version}: {counts['pending']} pending, "
+            f"{counts['in_progress']} in_progress, {counts['completed']} completed"
+        )
+    ]
+    markers = {"completed": "[o]", "in_progress": "[>]", "pending": "[ ]"}
+    for item in items:
+        lines.append(f"{markers[item['status']]} {item['index']}. {item['content']}")
+    return "\n".join(lines)

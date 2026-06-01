@@ -44,6 +44,7 @@ RUN_EVENT_KINDS = frozenset(
         "context_limit_exceeded",
         "checkpoint_written",
         "artifact_registered",
+        "todo_updated",
     }
 )
 CHECKPOINT_KINDS = frozenset({"turn", "terminal", "error", "context"})

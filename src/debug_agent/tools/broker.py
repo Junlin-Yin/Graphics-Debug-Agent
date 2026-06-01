@@ -14,6 +14,7 @@ from debug_agent.runtime.contracts import RunEvent, ToolDefinition, ToolResult, 
 from debug_agent.runtime.policy import (
     ApprovalGrant,
     NormalizedToolCall,
+    PermissionDecision,
     PermissionEvaluator,
     PolicyFacts,
     build_builtin_policy,
@@ -106,6 +107,7 @@ class ToolUseContext:
     skill_snapshot_store: Any = None
     run_store: Any = None
     shell_runner: Any = None
+    todo_plan_store: Any = None
 
 
 class ToolRouter:
@@ -273,19 +275,22 @@ class ToolBroker:
             runtime_control_already_active=normalized.runtime_control_already_active,
         )
         approval_grants = context.get("approval_grants")
-        reusable = _load_reusable_grant(
-            approval_grants=approval_grants,
-            session_id=session_id,
-            tool_name=tool_name,
-            risk_level=definition.risk_level,
-            scope_signature=scope_signature,
-        )
-        decision = evaluator.evaluate(
-            call,
-            approval_mode=context.get("approval_mode", "normal"),
-            reusable_grants=[reusable] if reusable is not None else [],
-            session_id=session_id,
-        )
+        if tool_name == "todo":
+            decision = PermissionDecision("allow", "todo_audit_only")
+        else:
+            reusable = _load_reusable_grant(
+                approval_grants=approval_grants,
+                session_id=session_id,
+                tool_name=tool_name,
+                risk_level=definition.risk_level,
+                scope_signature=scope_signature,
+            )
+            decision = evaluator.evaluate(
+                call,
+                approval_mode=context.get("approval_mode", "normal"),
+                reusable_grants=[reusable] if reusable is not None else [],
+                session_id=session_id,
+            )
         if decision.decision == "deny":
             result = _denied_result(
                 decision.message or "Tool call denied by policy.",
@@ -407,6 +412,7 @@ class ToolBroker:
             skill_snapshot_store=context.get("skill_snapshot_store"),
             run_store=context.get("run_store"),
             shell_runner=context.get("shell_runner"),
+            todo_plan_store=context.get("todo_plan_store"),
         )
         self._write_event(
             session_id=session_id,
@@ -552,13 +558,29 @@ class ToolBroker:
                 )
             if output.status == "error":
                 return tool_error_result(output.error_message or "Tool failed.", source=tool_name)
-            return self._ok_result(
+            result = self._ok_result(
                 session_id=session_id,
                 run_id=run_id,
                 tool_name=tool_name,
                 output=output.output or {},
                 metadata=output.metadata or {},
             )
+            if (
+                tool_name == "todo"
+                and output.metadata is not None
+                and "redacted_output" in output.metadata
+            ):
+                metadata = dict(result.metadata)
+                redacted_output = metadata.pop("redacted_output")
+                return ToolResult(
+                    status=result.status,
+                    output=result.output,
+                    error=result.error,
+                    artifacts=result.artifacts,
+                    metadata=metadata,
+                    redacted_output=redacted_output,
+                )
+            return result
         return self._ok_result(
             session_id=session_id,
             run_id=run_id,
@@ -769,6 +791,39 @@ def _validate_schema(definition: ToolDefinition, arguments: dict[str, Any]) -> s
                 isinstance(item, str) for item in value
             ):
                 return f"{key} items must be strings."
+            max_items = field_schema.get("maxItems")
+            if max_items is not None and len(value) > max_items:
+                return f"{key} must contain at most {max_items} items."
+            if item_schema.get("type") == "object":
+                item_error = _validate_object_array_items(key, value, item_schema)
+                if item_error is not None:
+                    return item_error
+    return None
+
+
+def _validate_object_array_items(
+    field_name: str, values: list[Any], item_schema: dict[str, Any]
+) -> str | None:
+    allowed = set(item_schema.get("properties", {}))
+    for index, item in enumerate(values, start=1):
+        if not isinstance(item, dict):
+            return f"{field_name}[{index}] must be an object."
+        for key in item:
+            if key not in allowed:
+                return f"Unknown field: {field_name}[{index}].{key}"
+        for key in item_schema.get("required", []):
+            if key not in item:
+                return f"Missing required field: {field_name}[{index}].{key}"
+        for key, field_schema in item_schema.get("properties", {}).items():
+            if key not in item:
+                continue
+            value = item[key]
+            expected_type = field_schema.get("type")
+            if expected_type == "string" and not isinstance(value, str):
+                return f"{field_name}[{index}].{key} must be a string."
+            enum = field_schema.get("enum")
+            if enum is not None and value not in enum:
+                return f"{field_name}[{index}].{key} must be one of: {', '.join(enum)}."
     return None
 
 
@@ -859,6 +914,7 @@ def _normalize_runtime_control_arguments(
         skill_snapshot_store=runtime_context.get("skill_snapshot_store"),
         run_store=runtime_context.get("run_store"),
         shell_runner=runtime_context.get("shell_runner"),
+        todo_plan_store=runtime_context.get("todo_plan_store"),
     )
     target = runtime_control_tools.validate_target(
         pseudo_context,
@@ -866,6 +922,20 @@ def _normalize_runtime_control_arguments(
         arguments,
     )
     normalized_arguments = dict(arguments)
+    if definition.name == "todo":
+        return NormalizedBrokerArguments(
+            arguments=normalized_arguments,
+            paths=(),
+            shell_argv=(),
+            scope_signature=scope_signature_for_tool(
+                definition.name,
+                risk_level=definition.risk_level,
+            ),
+            target="todo plan",
+            runtime_control_valid=target.valid,
+            runtime_control_error_message=target.error_message,
+            runtime_control_error_class=target.error_class,
+        )
     if definition.name == "activate_skill":
         skill_name = arguments["name"]
         skill_hash = target.skill.overall_content_hash if target.skill is not None else None
