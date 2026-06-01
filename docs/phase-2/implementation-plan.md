@@ -508,13 +508,13 @@ Freeze/review checkpoint: Phase 2 satisfies `docs/phase-2/tests.md` acceptance a
 
 ## Self-Review Checklist For Implementers
 
-- [ ] Every new model-visible tool is brokered.
-- [ ] Every new runtime truth change is covered by `PRAGMA user_version = 2`.
-- [ ] Legacy DB handling reads only `PRAGMA user_version` before failing closed.
-- [ ] Todo Plan is never reconstructed from natural-language summaries.
-- [ ] `runtime_todo_plan` is always injected into ordinary task frames, including empty state.
-- [ ] `view_image` is unavailable unless frozen multimodal config is complete and valid at startup.
-- [ ] `view_image` approval scope is path-only and provider egress is governed by enabled frozen multimodal config.
-- [ ] `view_image` never persists image bytes, base64, provider image parts, or runtime-authored concrete query text.
-- [ ] Automated tests use fake/stubbed vision providers only.
-- [ ] `docs/phase-2/operations.md` canonical commands were used for verification.
+- [x] Every new model-visible tool is brokered.
+- [x] Every new runtime truth change is covered by `PRAGMA user_version = 2`.
+- [x] Legacy DB handling reads only `PRAGMA user_version` before failing closed.
+- [x] Todo Plan is never reconstructed from natural-language summaries.
+- [x] `runtime_todo_plan` is always injected into ordinary task frames, including empty state.
+- [x] `view_image` is unavailable unless frozen multimodal config is complete and valid at startup.
+- [x] `view_image` approval scope is path-only and provider egress is governed by enabled frozen multimodal config.
+- [x] `view_image` never persists image bytes, base64, provider image parts, or runtime-authored concrete query text.
+- [x] Automated tests use fake/stubbed vision providers only.
+- [x] `docs/phase-2/operations.md` canonical commands were used for verification.
