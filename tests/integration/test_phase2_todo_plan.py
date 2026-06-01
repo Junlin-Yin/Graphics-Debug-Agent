@@ -69,6 +69,10 @@ def test_one_shot_todo_call_persists_and_next_model_call_sees_plan(
         frame = checkpoint.state["latest_model_response_metadata"]["query_state"][
             "latest_model_context_frame"
         ]
+        tool_names = [binding["name"] for binding in frame["tool_schema_bindings"]]
+        assert "todo" in tool_names
+        assert "read_file" in tool_names
+        assert "view_image" not in tool_names
         todo_segments = [
             segment
             for segment in frame["message_segments"]

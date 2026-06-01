@@ -31,6 +31,13 @@ EXECUTION_DEFAULTS: dict[str, Any] = {
     "default_shell_timeout_seconds": 300,
 }
 
+MULTIMODAL_LIMIT_DEFAULTS: dict[str, int] = {
+    "timeout_seconds": 60,
+    "max_tokens": 4096,
+    "max_query_chars": 8192,
+    "max_analysis_chars": 8192,
+}
+
 
 @dataclass(frozen=True)
 class ConfigError:
@@ -69,6 +76,7 @@ def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
     execution_result = _resolve_execution_settings(raw_config.get("execution", {}))
     if isinstance(execution_result, ConfigError):
         return ConfigLoadResult(snapshot=None, error=execution_result, defaults=defaults)
+    multimodal_result = _resolve_multimodal_settings(raw_config.get("multimodal"))
     provider = config_defaults.get("provider")
     model = config_defaults.get("model")
 
@@ -87,6 +95,7 @@ def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
             **runtime_settings,
             "context": context_result,
             "execution": execution_result,
+            "multimodal": multimodal_result,
             "fake_response": config_defaults.get("fake_response", "fake response"),
         }
         if "fake_error" in config_defaults:
@@ -136,6 +145,7 @@ def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
             "base_url_env": base_url_env,
             "base_url_present": bool(os.environ.get(base_url_env)),
         },
+        "multimodal": multimodal_result,
     }
     return ConfigLoadResult(snapshot=snapshot, error=None, defaults=defaults)
 
@@ -233,3 +243,134 @@ def _resolve_execution_settings(raw_execution: Any) -> dict[str, Any] | ConfigEr
             "execution.default_shell_timeout_seconds must be a positive integer."
         )
     return {"default_shell_timeout_seconds": timeout}
+
+
+def _resolve_multimodal_settings(raw_multimodal: Any) -> dict[str, Any]:
+    if not isinstance(raw_multimodal, dict):
+        return _disabled_multimodal_snapshot(
+            "missing_multimodal_config",
+            provider=None,
+            model=None,
+            api_key_env=None,
+            base_url_env=None,
+        )
+
+    defaults = raw_multimodal.get("defaults")
+    auth = raw_multimodal.get("auth")
+    providers = raw_multimodal.get("providers")
+    openai_provider = (
+        providers.get("openai")
+        if isinstance(providers, dict) and isinstance(providers.get("openai"), dict)
+        else None
+    )
+    if not isinstance(defaults, dict) or not isinstance(auth, dict) or openai_provider is None:
+        return _disabled_multimodal_snapshot(
+            "missing_multimodal_config",
+            provider=_string_or_none(defaults.get("provider"))
+            if isinstance(defaults, dict)
+            else None,
+            model=_string_or_none(defaults.get("model"))
+            if isinstance(defaults, dict)
+            else None,
+            api_key_env=_string_or_none(auth.get("api_key_env"))
+            if isinstance(auth, dict)
+            else None,
+            base_url_env=_string_or_none(openai_provider.get("base_url_env"))
+            if isinstance(openai_provider, dict)
+            else None,
+        )
+
+    provider = _string_or_none(defaults.get("provider"))
+    model = _string_or_none(defaults.get("model"))
+    api_key_env = _string_or_none(auth.get("api_key_env"))
+    base_url_env = _string_or_none(openai_provider.get("base_url_env"))
+    limits, invalid_reason = _resolve_multimodal_limits(defaults)
+    if invalid_reason is not None:
+        return _disabled_multimodal_snapshot(
+            invalid_reason,
+            provider=provider,
+            model=model,
+            api_key_env=api_key_env,
+            base_url_env=base_url_env,
+            limits=limits,
+        )
+    if not provider:
+        reason = "missing_multimodal_config"
+    elif provider != "openai":
+        reason = "unsupported_multimodal_provider"
+    elif not model:
+        reason = "missing_multimodal_config"
+    elif model != "kimi-k2.5":
+        reason = "unsupported_multimodal_model"
+    elif not api_key_env:
+        reason = "missing_api_key_env"
+    elif not base_url_env:
+        reason = "missing_base_url_env"
+    elif not os.environ.get(api_key_env):
+        reason = "missing_api_key_env"
+    elif not os.environ.get(base_url_env):
+        reason = "missing_base_url_env"
+    else:
+        reason = None
+
+    if reason is not None:
+        return _disabled_multimodal_snapshot(
+            reason,
+            provider=provider,
+            model=model,
+            api_key_env=api_key_env,
+            base_url_env=base_url_env,
+            limits=limits,
+        )
+    return {
+        "provider": provider,
+        "model": model,
+        **limits,
+        "api_key_env": api_key_env,
+        "api_key_present": True,
+        "base_url_env": base_url_env,
+        "base_url_present": True,
+        "view_image_enabled": True,
+        "view_image_disabled_reason": None,
+    }
+
+
+def _resolve_multimodal_limits(defaults: dict[str, Any]) -> tuple[dict[str, int], str | None]:
+    limits: dict[str, int] = {}
+    for key, builtin in MULTIMODAL_LIMIT_DEFAULTS.items():
+        value = defaults.get(key, builtin)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            return {**MULTIMODAL_LIMIT_DEFAULTS, **limits}, f"invalid_{key}"
+        limits[key] = value
+    return limits, None
+
+
+def _disabled_multimodal_snapshot(
+    reason: str,
+    *,
+    provider: str | None,
+    model: str | None,
+    api_key_env: str | None,
+    base_url_env: str | None,
+    limits: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    resolved_limits = dict(MULTIMODAL_LIMIT_DEFAULTS)
+    if limits is not None:
+        resolved_limits.update(limits)
+    return {
+        "provider": provider,
+        "model": model,
+        **resolved_limits,
+        "api_key_env": api_key_env,
+        "api_key_present": bool(api_key_env and os.environ.get(api_key_env)),
+        "base_url_env": base_url_env,
+        "base_url_present": bool(base_url_env and os.environ.get(base_url_env)),
+        "view_image_enabled": False,
+        "view_image_disabled_reason": reason,
+    }
+
+
+def _string_or_none(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value
+    return None

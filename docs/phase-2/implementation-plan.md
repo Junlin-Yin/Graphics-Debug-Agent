@@ -319,24 +319,24 @@ Freeze/review checkpoint: every ordinary task model call receives authoritative 
 
 **Freeze/review checkpoint:** do not implement `ViewImageTool` routing until config freezing, disabled behavior, no-secret snapshot facts, and activation gating are reviewed.
 
-- [ ] Parse `[multimodal.defaults]`, `[multimodal.auth]`, and `[multimodal.providers.openai]` from `~/.debug-agent/config.toml`.
-- [ ] Require explicit `provider`, `model`, `api_key_env`, and `base_url_env` before enabling real `view_image`.
-- [ ] Support defaults only for `timeout_seconds = 60`, `max_tokens = 4096`, `max_query_chars = 8192`, and `max_analysis_chars = 8192`.
-- [ ] Validate `provider == "openai"` and `model == "kimi-k2.5"` for real multimodal execution.
-- [ ] Validate positive integer timeout/token/query/analysis settings.
-- [ ] Freeze no-secret facts in `sessions.config_snapshot_json`: provider, model, timeout, max tokens, query and analysis limits, env var names, env-present booleans, `view_image_enabled`, and disabled reason.
-- [ ] Disable `view_image` instead of failing session startup when multimodal config is missing, invalid, unsupported, or required env vars are absent.
-- [ ] Keep config and environment changes from hot-reloading into active sessions.
-- [ ] Add broker-side disabled `view_image` availability so direct or stale valid calls return `ToolResult.status = "denied"` with `error_class = "config_error"` and `tool_call_denied`.
-- [ ] Preserve existing unknown-tool behavior for all other tool names.
-- [ ] Omit disabled `view_image` from `ModelContextFrame.tool_schema_bindings` and the model-visible tool list while keeping `todo` and Phase 1 tools visible.
-- [ ] Add an internal Phase 2 implementation gate so enabled-ready `view_image` config facts are frozen but ordinary model-visible enabled exposure remains off until Milestone 6 completes no-leak audit redaction.
-- [ ] Remove the broad Phase 2 development gate for fresh workspaces only after Todo Plan continuity, complete Phase 2 config snapshot shape, disabled `view_image` behavior, and activation-gated enabled-ready config facts are all verified.
-- [ ] Write tests proving invalid `timeout_seconds`, `max_tokens`, `max_query_chars`, and `max_analysis_chars` disable `view_image` without failing session startup or hiding `todo` and Phase 1 tools.
-- [ ] Run canonical unit tests.
+- [x] Parse `[multimodal.defaults]`, `[multimodal.auth]`, and `[multimodal.providers.openai]` from `~/.debug-agent/config.toml`.
+- [x] Require explicit `provider`, `model`, `api_key_env`, and `base_url_env` before enabling real `view_image`.
+- [x] Support defaults only for `timeout_seconds = 60`, `max_tokens = 4096`, `max_query_chars = 8192`, and `max_analysis_chars = 8192`.
+- [x] Validate `provider == "openai"` and `model == "kimi-k2.5"` for real multimodal execution.
+- [x] Validate positive integer timeout/token/query/analysis settings.
+- [x] Freeze no-secret facts in `sessions.config_snapshot_json`: provider, model, timeout, max tokens, query and analysis limits, env var names, env-present booleans, `view_image_enabled`, and disabled reason.
+- [x] Disable `view_image` instead of failing session startup when multimodal config is missing, invalid, unsupported, or required env vars are absent.
+- [x] Keep config and environment changes from hot-reloading into active sessions.
+- [x] Add broker-side disabled `view_image` availability so direct or stale valid calls return `ToolResult.status = "denied"` with `error_class = "config_error"` and `tool_call_denied`.
+- [x] Preserve existing unknown-tool behavior for all other tool names.
+- [x] Omit disabled `view_image` from `ModelContextFrame.tool_schema_bindings` and the model-visible tool list while keeping `todo` and Phase 1 tools visible.
+- [x] Add an internal Phase 2 implementation gate so enabled-ready `view_image` config facts are frozen but ordinary model-visible enabled exposure remains off until Milestone 6 completes no-leak audit redaction.
+- [x] Remove the broad Phase 2 development gate for fresh workspaces only after Todo Plan continuity, complete Phase 2 config snapshot shape, disabled `view_image` behavior, and activation-gated enabled-ready config facts are all verified.
+- [x] Write tests proving invalid `timeout_seconds`, `max_tokens`, `max_query_chars`, and `max_analysis_chars` disable `view_image` without failing session startup or hiding `todo` and Phase 1 tools.
+- [x] Run canonical unit tests.
   - Command: `uv run pytest tests/unit -v`
   - Expected: all unit tests pass.
-- [ ] Run canonical integration tests.
+- [x] Run canonical integration tests.
   - Command: `uv run pytest tests/integration -v`
   - Expected: all integration tests pass.
 

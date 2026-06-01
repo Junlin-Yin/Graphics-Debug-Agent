@@ -185,6 +185,27 @@ class ToolBroker:
         timeout_seconds = float(context.get("timeout_seconds", self.timeout_seconds))
 
         definition = self._definitions.get(tool_name)
+        view_image_denial = _view_image_availability_denial(
+            tool_name=tool_name,
+            frozen_config=context.get("frozen_config", {}),
+        )
+        if view_image_denial is not None:
+            result = _denied_result(view_image_denial, error_class="config_error")
+            self._write_event(
+                session_id=session_id,
+                run_id=run_id,
+                kind="tool_call_denied",
+                audit_recorder=tool_audit_recorder,
+                payload=_audit_payload(
+                    tool_name=tool_name,
+                    arguments=normalized_arguments,
+                    result=result,
+                    duration_seconds=monotonic() - start,
+                    target="",
+                    approval_wait_duration_ms=0,
+                ),
+            )
+            return result
         if definition is None or not tool_name.strip():
             result = _denied_result(
                 "Invalid tool name." if not tool_name.strip() else f"Unknown tool: {tool_name}",
@@ -836,6 +857,22 @@ def _policy_facts_from_context(context: dict[str, Any], workspace_root: Path) ->
     if isinstance(policy_snapshot, dict):
         return policy_facts_from_snapshot(policy_snapshot, workspace_root)
     return build_builtin_policy(workspace_root)
+
+
+def _view_image_availability_denial(
+    *, tool_name: str, frozen_config: dict[str, Any]
+) -> str | None:
+    if tool_name != "view_image" or not isinstance(frozen_config, dict):
+        return None
+    multimodal = frozen_config.get("multimodal")
+    if not isinstance(multimodal, dict):
+        return "view_image is disabled: missing_multimodal_config"
+    if multimodal.get("view_image_enabled") is True:
+        return "view_image is activation-gated until Phase 2 Milestone 6."
+    reason = multimodal.get("view_image_disabled_reason")
+    if not isinstance(reason, str) or not reason:
+        reason = "missing_multimodal_config"
+    return f"view_image is disabled: {reason}"
 
 
 def _normalize_tool_arguments(
