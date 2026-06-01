@@ -215,3 +215,23 @@ policy denial.
   sandbox or specialized wrappers exist.
 - Tool tests must cover shell policy, path policy, approval mode, and denial
   audit together.
+
+## Phase 2 Amendment: `todo` Runtime-Control Exception
+
+Phase 2 adds the brokered model-visible `todo` tool for runtime-owned Todo Plan
+replacement. `todo` uses the `runtime_control` category, but it is a narrow
+approval-policy exception to the generic Phase 1 runtime-control matrix.
+
+Valid `todo` calls are audit-only in every approval mode, including `normal`.
+They do not request interactive approval, do not create reusable approval
+grants, and do not emit `approval_requested` or `approval_decision_recorded`
+events. They still pass through `ToolBroker` schema validation, semantic
+validation, runtime-control target validation, timeout/result normalization, and
+audit emission.
+
+This exception is limited to `todo` because it performs no filesystem access,
+shell execution, network call, provider/model call, runtime permission change, or
+execution authorization. It changes only run-scoped Todo Plan continuity truth.
+Other `runtime_control` tools continue to follow the Phase 1 approval matrix
+unless a later accepted ADR or phase document defines an equally narrow
+exception.

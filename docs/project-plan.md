@@ -428,23 +428,33 @@ Todo Plan 设计方向：
 - 主 agent 和每个 subagent 各自拥有独立 Todo Plan，不继承、不共享、不互通。
 - Todo Plan 是 runtime truth，不能从 conversation history 或 compression summary
   推断或恢复。
-- 暴露 model-visible Plan tools：
-  - `plan_set`
-  - `plan_update`
-  - `plan_list`
-- Plan tools 通过 ToolBroker 执行并写 tool audit。
-- Todo Plan 状态变更写专用 runtime events：
-  - `plan_set`
-  - `plan_updated`
+- 暴露单个 model-visible `todo` tool，用于整体重写当前 run 的 Todo Plan。
+- `todo` 通过 ToolBroker 执行并写 tool audit。
+- `todo` 是 runtime-owned audit-only 工具，类似有效的 `load_skill_resource`
+  调用，在所有 approval mode 下跳过交互审批，但仍执行 schema/semantic validation、
+  ToolBroker audit 和 runtime event 记录。
+- Todo Plan 状态变更写专用 runtime event：
+  - `todo_updated`
 - 基础 Plan item 状态：
   - `pending`
   - `in_progress`
   - `completed`
-  - `cancelled`
+- Todo Plan 最多 20 条，同一时间最多 1 条 `in_progress`。
+- `items=[]` 表示清空当前 Todo Plan。
 - 每次普通 model call 前注入当前 Todo Plan。
+- Todo Plan 作为非持久化 `runtime_todo_plan` system segment 注入：
+  - 位于 active `SKILL.md` context 之后。
+  - 位于 rolling summary、retained raw conversation、live/unconsumed messages、
+    tool-loop messages 和 current user input 之前。
+  - segment 自带短指令，要求模型在任务状态变化或计划不再匹配当前工作时调用
+    `todo` 重写计划。
 - Todo Plan 参与 `ModelContextFrame` token estimate 和 context window usage。
 - `/compress` 后 Todo Plan 继续可见，且不依赖 compression summary 恢复。
 - REPL/TUI 可以展示简短 Todo Plan 状态，但 UI 展示不是 Todo Plan 的权威状态来源。
+  默认展示标识：
+  - `[o]` = `completed`
+  - `[>]` = `in_progress`
+  - `[ ]` = `pending`
 
 Phase 2 spec gate：
 
@@ -492,8 +502,39 @@ session，在新的 turn boundary 继续工作。
   stream block。
 - resume 后创建新的 prompt run，旧 terminal run 的终态不改写。
 - Todo Plan 绑定 `run_id`。resume 创建新 prompt run 时，从已 terminalized 的
-  long-lived prompt run latest continuity state 复制主 agent Todo Plan 到新 run，并
-  记录 provenance。
+  long-lived prompt run 的 `TodoPlanStore` 当前计划复制主 agent Todo Plan snapshot 到
+  新 run，并记录 provenance。
+- Todo Plan copy-on-resume 必须发生在新 prompt run 的第一次 ordinary model call
+  之前，使恢复后的 `runtime_todo_plan` segment 能稳定注入上下文。
+- 复制内容包括 item order、content、status 和 activeForm；新 run 重新分配自己的
+  1-based display indexes。
+- 新 run 使用自己的 Todo Plan version 序列。初步方向是复制后从 `plan_version = 1`
+  开始，而不是复用 source run 的 plan version。
+- resume 必须写结构化 continuity/provenance event，至少记录 source run id、source
+  plan version、new run id、new plan version 和 item counts。
+- resume 不得从 conversation history、compression summary、trace 或 TUI 状态恢复
+  Todo Plan。
+
+Phase 3 spec 阶段待评估的范围扩张：
+
+- 在既定 Session Control Light 之外，补充错误恢复机制设计。这里的错误恢复指
+  runtime 对失败 turn、provider/tool timeout、`model_error`、cancellation 和
+  terminalized long-lived prompt session 的结构化记录、可解释呈现、session
+  继续/终止/恢复控制，以及 resume 后向 agent 暴露最近失败事实的方式。
+- 错误恢复机制不等同于自动 retry。Phase 3 不应默认引入 runtime-level tool/model
+  retry、generic step retry、workflow retry policy 或业务状态机。是否再次调用某个
+  tool/provider 仍应由 prompt skill 或主 agent 显式决定，runtime 只提供清晰的恢复
+  边界和审计事实。
+- 评估将 timeout 配置来源归拢成紧凑的 runtime 配置列表，避免普通 native tools、
+  `shell_exec`、主模型调用、compression model call、`view_image` 等各自分散管理。
+  初步方向是通过 `config.toml` 暴露统一 timeout profile，例如区分
+  `native_tool_seconds`、`shell_seconds`、`model_seconds`、
+  `compression_model_seconds` 和 `vision_model_seconds`；具体命名、默认值、兼容性和
+  schema version 影响由 Phase 3 specs 决定。
+- 评估哪些 model-visible tools 允许在 tool input schema 中提供 `timeout_seconds`。
+  如果开放，runtime 必须用配置上限进行 cap，并把 effective timeout 纳入
+  ToolBroker audit、approval scope signature 和 trace。主 agent model call 的 timeout
+  不应由模型自我修改；它仍应由 runtime/session config 控制。
 
 不做：
 
@@ -508,7 +549,7 @@ session，在新的 turn boundary 继续工作。
 - subagent cancellation。
 - PTY shell。
 - long-running shell runtime。
-- timeout profile system。
+- 自动 retry 或 generic step-level retry。
 
 ### Phase 4: RenderDoc Debug Readiness Validation
 
@@ -970,8 +1011,9 @@ Phase 2 重点测试：
 
 - `view_image` path input、artifact input、policy denial、metadata、vision call audit、
   no base64 in ordinary history。
-- Todo Plan `plan_set`、`plan_update`、`plan_list`、event persistence、compression
-  survival、ModelContextFrame injection。
+- Todo Plan `todo` schema、20 条上限、最多 1 条 `in_progress`、audit-only policy、
+  `todo_updated` event persistence、compression survival、ModelContextFrame
+  injection。
 
 Phase 3 重点测试：
 
@@ -979,7 +1021,12 @@ Phase 3 重点测试：
 - idle `Ctrl+C` terminalization。
 - resume 只重开允许的 terminalized long-lived prompt session。
 - resume active ownership reacquire。
-- Todo Plan / active skills / context summary / recent conversation continuity restore。
+- resume 创建新 prompt run 且不改写旧 terminal run 终态。
+- resume 从 source run `TodoPlanStore` 复制 Todo Plan snapshot 到新 run，并在第一次
+  ordinary model call 前重新注入 `runtime_todo_plan`。
+- resume 的 Todo Plan provenance event 记录 source run id、source plan version、
+  new run id、new plan version 和 item counts。
+- active skills / context summary / recent conversation continuity restore。
 
 Phase 4 重点测试：
 

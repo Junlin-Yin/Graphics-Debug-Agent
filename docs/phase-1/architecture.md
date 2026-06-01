@@ -350,15 +350,15 @@ is the execution truth exposed to model-visible skill tooling.
 10. Build startup prompt metadata, including available skill headers, from the
     persisted frozen skill registry snapshot.
 11. Initialize `ToolBroker` with:
-   - tool definitions.
-   - frozen policy facts from builtin policy, main-agent path policy,
+    - tool definitions.
+    - frozen policy facts from builtin policy, main-agent path policy,
      main-agent shell policy, and validated runtime-control targets.
-   - permission evaluator.
-   - tool router.
-   - approval grant store.
-   - approval provider.
-   - skill activation handler.
-   - skill resource load handler.
+    - permission evaluator.
+    - tool router.
+    - approval grant store.
+    - approval provider.
+    - skill activation handler.
+    - skill resource load handler.
 12. Initialize `ContextManager`.
 13. Initialize `QueryControlPlane`.
 14. Initialize model adapter and prompt executor.

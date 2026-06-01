@@ -16,6 +16,7 @@
 - [ADR 0010: ModelContextFrame As The LLM-Visible Context Boundary](0010-modelcontextframe-llm-visible-context-boundary.md)
 - [ADR 0011: Layered Context Compression For Runtime Continuity](0011-layered-context-compression-continuity.md)
 - [ADR 0012: Runtime-Enforced Shell, Path, And Approval Policy](0012-runtime-enforced-shell-path-approval-policy.md)
+- [ADR 0013: Runtime-Owned Todo Plan Continuity](0013-runtime-owned-todo-plan-continuity.md)
 
 ## Core Rationale
 

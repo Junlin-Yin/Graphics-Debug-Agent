@@ -1,0 +1,170 @@
+# Phase 2 Compatibility And Persistence Specification
+
+## Boundary
+
+Phase 2 changes runtime truth by adding Todo Plan persistence, new model-visible
+tool contracts, the `todo_updated` event kind, and `view_image` audit metadata
+inside existing ToolBroker event kinds.
+
+Because of this, Phase 2 must not reinterpret Phase 0, Phase 0.5, or Phase 1
+SQLite databases.
+
+Phase 2 also changes the frozen session config snapshot shape by adding
+multimodal provider facts and `view_image` availability facts. These facts
+include `view_image_enabled` and, when disabled, a no-secret disabled reason.
+
+## Schema Version
+
+Phase 2 identifies its SQLite schema with:
+
+```text
+PHASE_2_SCHEMA_USER_VERSION = 2
+```
+
+Runtime must write this value through:
+
+```sql
+PRAGMA user_version = 2;
+```
+
+Runtime must read `PRAGMA user_version` before any code path interprets
+runtime truth rows.
+
+Required code paths:
+
+- REPL startup.
+- one-shot startup.
+- active workspace ownership checks.
+- `debug-agent status <session_id>`.
+- `debug-agent trace <session_id>`.
+
+## Fresh Database
+
+If `.sessions/runtime.db` does not exist, Phase 2 creates it with the full Phase
+2 schema and writes `PRAGMA user_version = 2` before inserting or reading
+runtime rows.
+
+## Legacy Or Unknown Database
+
+If `.sessions/runtime.db` exists and `PRAGMA user_version` is missing, `0`, `1`,
+unknown, or otherwise not `2`, runtime fails closed with `config_error`.
+
+Runtime must not:
+
+- run migrations.
+- delete `.sessions/`.
+- rewrite old rows.
+- reinterpret old rows as Phase 2 truth.
+- run active ownership cleanup against legacy rows.
+
+User-facing message:
+
+```text
+This workspace contains a runtime database from an unsupported debug-agent phase.
+Phase 2 cannot read or migrate old .sessions/runtime.db files. Move or remove
+.sessions/ or use a fresh workspace, then start debug-agent again.
+```
+
+The message may include the discovered `user_version`.
+
+## New Runtime Truth
+
+Phase 2 adds current Todo Plan state as runtime truth.
+
+Minimum persistence behavior:
+
+- Todo Plan state is queryable by `run_id`.
+- Todo Plan mutation writes are atomic.
+- Plan mutations increment a run-local `plan_version`.
+- The initial run-local `plan_version` is `0`; the first successful mutation
+  writes `plan_version = 1`.
+- The current-plan replacement and corresponding `todo_updated` event commit in
+  the same SQLite transaction.
+- Plan state remains available after context omission and compression.
+- Plan state is not reconstructed from ordinary conversation history.
+- Plan state is not reconstructed from compression summaries.
+
+## Event Kinds
+
+Phase 2 adds these event kinds:
+
+- `todo_updated`
+
+`view_image` does not add tool-specific event kinds. It records its audit facts
+through the existing ToolBroker events:
+
+- `tool_call_started`
+- `tool_call_completed`
+- `tool_call_failed`
+- `tool_call_denied`
+
+`view_image` ToolBroker audit payloads must include the normalized call facts
+available at that stage: display paths, policy and approval decisions, image
+metadata when available, provider/model metadata when available, effective query
+source, projected request body size when computed, duration, status, error class,
+and analysis summary when available. `view_image` overrides the generic
+ToolBroker normalized-arguments audit convention: runtime-authored persisted
+audit metadata, trace output, engine log entries, context snapshot metadata, and
+ToolResult metadata must not include the concrete effective query text, raw
+`query` argument, query preview, or query length. They may record only
+`effective_query_source` as `assistant` or `default`.
+
+Assistant-authored raw tool-call arguments and the immediate tool-loop transcript
+may contain `query`; this is the model-visible invocation that delivers the
+analysis focus to `view_image`. Runtime must not create additional persisted
+query copies in normalized audit or diagnostic fields. Audit and trace metadata
+must never include image bytes, base64, or provider image content parts.
+
+## Tool Result Contract Changes
+
+Phase 2 adds tool result shapes for:
+
+- `view_image`, when enabled by frozen multimodal tool availability
+- `todo`
+
+These results still use the project-level `ToolResult` envelope:
+
+```python
+class ToolResult:
+    status: str
+    output: str | dict | None
+    error: dict | None
+    artifacts: list[str]
+    metadata: dict
+    redacted_output: str | None
+```
+
+New tools must not return raw bytes. Large textual provider output, when kept,
+uses existing artifact rules.
+
+## Artifact Contract
+
+Phase 2 does not copy local path inputs to `view_image` into `ArtifactStore`.
+It also does not persist source image bytes or base64 as artifacts merely
+because `view_image` was called.
+
+`view_image` does not accept artifact ids in Phase 2. Artifact ids remain
+controlled runtime references for existing artifact behavior, but they are not a
+Phase 2 image source contract.
+
+Large textual provider output, when kept, uses existing artifact rules.
+
+## Checkpoint And Context Snapshot Impact
+
+Todo Plan is separate runtime truth. It may be referenced by checkpoint metadata
+for inspection, but the current plan source is `TodoPlanStore`.
+
+Context snapshots remain post-optimization conversation continuity records.
+They do not own Todo Plan truth and do not include raw image bytes.
+
+`ModelContextFrame` snapshots or tests may include a rendered
+`runtime_todo_plan` segment because that segment is LLM-visible for ordinary
+task calls. This does not make the segment a persistence source.
+
+## Status And Trace Compatibility
+
+`status` and `trace` must perform Phase 2 schema-version checks before reading
+session, run, event, checkpoint, artifact, or Todo Plan rows.
+
+For legacy databases, `status` and `trace` fail with `config_error` and the
+same unsupported-database guidance used by startup.
