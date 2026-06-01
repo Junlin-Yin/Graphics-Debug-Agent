@@ -267,6 +267,8 @@ def _summarize_model_completed(payload: dict[str, Any]) -> str:
 
 
 def _summarize_tool_completed(payload: dict[str, Any]) -> str:
+    if payload.get("tool_name") == "view_image":
+        return _summarize_view_image_tool_event(payload)
     result = payload.get("result", {})
     result_text = ""
     if isinstance(result, dict):
@@ -350,6 +352,8 @@ def _summarize_approval_mode_changed(payload: dict[str, Any]) -> str:
 
 
 def _summarize_tool_denied(payload: dict[str, Any]) -> str:
+    if payload.get("tool_name") == "view_image":
+        return _summarize_view_image_tool_event(payload)
     result = payload.get("result", {})
     error = result.get("error", {}) if isinstance(result, dict) else {}
     arguments = payload.get("arguments", {})
@@ -364,6 +368,8 @@ def _summarize_tool_denied(payload: dict[str, Any]) -> str:
 
 
 def _summarize_tool_failed(payload: dict[str, Any]) -> str:
+    if payload.get("tool_name") == "view_image":
+        return _summarize_view_image_tool_event(payload)
     result = payload.get("result", {})
     error = result.get("error", {}) if isinstance(result, dict) else {}
     metadata = result.get("metadata", {}) if isinstance(result, dict) else {}
@@ -446,6 +452,67 @@ def _summarize_todo_updated(payload: dict[str, Any]) -> str:
         f"counts={counts}"
         "}"
     )
+
+
+def _summarize_view_image_tool_event(payload: dict[str, Any]) -> str:
+    result = payload.get("result", {})
+    result_dict = result if isinstance(result, dict) else {}
+    error = result_dict.get("error", {})
+    output = result_dict.get("output", {})
+    metadata = result_dict.get("metadata", {})
+    output_dict = output if isinstance(output, dict) else {}
+    metadata_dict = metadata if isinstance(metadata, dict) else {}
+    images = payload.get("images")
+    if not isinstance(images, list):
+        images = metadata_dict.get("images")
+    image_summary = _summarize_view_image_images(images if isinstance(images, list) else [])
+    analysis = output_dict.get("analysis", "")
+    error_class = error.get("error_class", "") if isinstance(error, dict) else ""
+    if not error_class:
+        top_level_error_class = payload.get("error_class")
+        error_class = (
+            top_level_error_class if isinstance(top_level_error_class, str) else ""
+        )
+    query_source = payload.get("effective_query_source")
+    if not isinstance(query_source, str):
+        query_source = metadata_dict.get("effective_query_source")
+    if not isinstance(query_source, str):
+        arguments = payload.get("arguments")
+        if isinstance(arguments, dict):
+            query_source = arguments.get("effective_query_source")
+    if not isinstance(query_source, str):
+        query_source = ""
+    return (
+        "{"
+        f"tool=view_image, "
+        f"status={payload.get('status', result_dict.get('status', ''))}, "
+        f"error_class={error_class}, "
+        f"provider={payload.get('vision_provider', metadata_dict.get('vision_provider', ''))}, "
+        f"model={payload.get('vision_model', metadata_dict.get('vision_model', ''))}, "
+        f"duration_ms={payload.get('duration_ms', metadata_dict.get('duration_ms', ''))}, "
+        f"effective_query_source={query_source}, "
+        f"projected_request_bytes={payload.get('projected_request_bytes', metadata_dict.get('projected_request_bytes', ''))}, "
+        f"images=[{image_summary}], "
+        f"analysis={_shorten(str(analysis))}"
+        "}"
+    )
+
+
+def _summarize_view_image_images(images: list[Any]) -> str:
+    parts: list[str] = []
+    for image in images:
+        if not isinstance(image, dict):
+            continue
+        parts.append(
+            "{"
+            f"path={image.get('path', '')}, "
+            f"mime={image.get('mime_type', '')}, "
+            f"size={image.get('byte_size', '')}, "
+            f"sha256={image.get('sha256', '')}, "
+            f"dimensions={image.get('width', '')}x{image.get('height', '')}"
+            "}"
+        )
+    return ", ".join(parts)
 
 
 def _load_todo_plans(connection: sqlite3.Connection, runs: list[Any]) -> list[dict[str, Any]]:

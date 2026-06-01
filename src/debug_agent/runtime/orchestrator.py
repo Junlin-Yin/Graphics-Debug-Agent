@@ -39,6 +39,7 @@ from debug_agent.runtime.workspace import resolve_workspace_root
 from debug_agent.skills.registry import SkillRegistry, SkillRegistryError
 from debug_agent.tools.broker import NonInteractiveApprovalProvider, ToolBroker
 from debug_agent.tools.native import gated_user_facing_tool_definitions
+from debug_agent.tools.view_image import tool_definition as view_image_tool_definition
 
 
 @dataclass(frozen=True)
@@ -356,7 +357,7 @@ class ReplRuntime:
         with self._lock:
             session = self.sessions.get(self.session_id)
             return format_tool_listing(
-                gated_user_facing_tool_definitions(),
+                visible_tool_definitions(session.config_snapshot),
                 approval_mode=session.approval_mode,
                 config_snapshot=session.config_snapshot,
             )
@@ -600,7 +601,7 @@ class RuntimeOrchestrator:
                 checkpoint_store=checkpoints,
                 artifact_store=artifacts,
                 adapter=adapter,
-                tool_definitions=gated_user_facing_tool_definitions(),
+                tool_definitions=visible_tool_definitions(config_snapshot),
                 system_prompt=config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
                 skill_snapshot_store=SkillSnapshotStore(db.connection),
                 todo_plan_store=TodoPlanStore(db.connection),
@@ -983,7 +984,7 @@ class RuntimeOrchestrator:
             checkpoint_store=checkpoints,
             artifact_store=artifacts,
             adapter=adapter,
-            tool_definitions=gated_user_facing_tool_definitions(),
+            tool_definitions=visible_tool_definitions(config_snapshot),
             system_prompt=config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
             skill_snapshot_store=SkillSnapshotStore(db.connection),
             todo_plan_store=TodoPlanStore(db.connection),
@@ -1094,6 +1095,8 @@ def format_tool_listing(
                 shell_deny = shell["deny"]
     lines = ["Tools:"]
     for definition in tool_definitions:
+        if definition.name == "view_image" and not _view_image_enabled(config_snapshot):
+            continue
         approval = _tool_approval_behavior(
             name=definition.name,
             category=definition.category,
@@ -1107,6 +1110,9 @@ def format_tool_listing(
                 definition.description,
             ]
         )
+    disabled_reason = _view_image_disabled_reason(config_snapshot)
+    if disabled_reason is not None:
+        lines.extend(["", f"view_image disabled: {disabled_reason}"])
     lines.extend(
         [
             "",
@@ -1120,6 +1126,28 @@ def format_tool_listing(
         ]
     )
     return lines
+
+
+def visible_tool_definitions(config_snapshot: dict[str, Any]) -> list[Any]:
+    definitions = list(gated_user_facing_tool_definitions())
+    if _view_image_enabled(config_snapshot):
+        definitions.append(view_image_tool_definition())
+    return definitions
+
+
+def _view_image_enabled(config_snapshot: dict[str, Any]) -> bool:
+    multimodal = config_snapshot.get("multimodal")
+    return isinstance(multimodal, dict) and multimodal.get("view_image_enabled") is True
+
+
+def _view_image_disabled_reason(config_snapshot: dict[str, Any]) -> str | None:
+    multimodal = config_snapshot.get("multimodal")
+    if not isinstance(multimodal, dict):
+        return None
+    if multimodal.get("view_image_enabled") is True:
+        return None
+    reason = multimodal.get("view_image_disabled_reason")
+    return reason if isinstance(reason, str) and reason else "missing_multimodal_config"
 
 
 def _policy_raw_values(value: Any) -> list[str]:

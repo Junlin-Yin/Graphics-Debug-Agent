@@ -427,21 +427,21 @@ Freeze/review checkpoint: activation-gated `view_image` can inspect authorized l
 
 **Freeze/review checkpoint:** do not run Phase 2 acceptance until enabled `view_image` exposure, disabled behavior, trace/status facts, and no-leak assertions are reviewed together.
 
-- [ ] Ensure `view_image` overrides generic normalized-arguments audit persistence so runtime-authored audit metadata excludes concrete query text, raw query argument, query preview, and query length.
-- [ ] Ensure runtime-authored persisted audit metadata, trace output, engine log entries, context snapshot metadata, and `ToolResult.metadata` record only `effective_query_source`.
-- [ ] Ensure image bytes, base64, and provider image content parts never appear in ordinary conversation, run events, context snapshots, trace, engine log, ordinary tool output, or `ToolResult.metadata`.
-- [ ] Keep the Milestone 5 pre-read audit-order tests passing while adding redaction and trace rendering.
-- [ ] Remove the internal activation gate for sessions whose frozen multimodal config has `view_image_enabled = true`; expose enabled `view_image` in `ModelContextFrame.tool_schema_bindings`, ordinary model-visible tool lists, and broker routing only after the redaction checks above are implemented.
-- [ ] Render `view_image` source display paths, image metadata, provider/model, duration, status, error class, effective query source, projected request size when available, and analysis summary.
-- [ ] Do not introduce `view_image_*` event kinds; derive trace from existing `tool_call_*` events.
-- [ ] Make `/tools` list `todo` and list `view_image` only when enabled.
-- [ ] Show a concise no-secret disabled reason through `/tools` or status when `view_image` is disabled. Prefer status if keeping `/tools` strictly model-visible.
-- [ ] Ensure approval prompts for `view_image(paths=[...])` display readable path targets.
+- [x] Ensure `view_image` overrides generic normalized-arguments audit persistence so runtime-authored audit metadata excludes concrete query text, raw query argument, query preview, and query length.
+- [x] Ensure runtime-authored persisted audit metadata, trace output, engine log entries, context snapshot metadata, and `ToolResult.metadata` record only `effective_query_source`.
+- [x] Ensure image bytes, base64, and provider image content parts never appear in ordinary conversation, run events, context snapshots, trace, engine log, ordinary tool output, or `ToolResult.metadata`.
+- [x] Keep the Milestone 5 pre-read audit-order tests passing while adding redaction and trace rendering.
+- [x] Remove the internal activation gate for sessions whose frozen multimodal config has `view_image_enabled = true`; expose enabled `view_image` in `ModelContextFrame.tool_schema_bindings`, ordinary model-visible tool lists, and broker routing only after the redaction checks above are implemented.
+- [x] Render `view_image` source display paths, image metadata, provider/model, duration, status, error class, effective query source, projected request size when available, and analysis summary.
+- [x] Do not introduce `view_image_*` event kinds; derive trace from existing `tool_call_*` events.
+- [x] Make `/tools` list `todo` and list `view_image` only when enabled.
+- [x] Show a concise no-secret disabled reason through `/tools` or status when `view_image` is disabled. Prefer status if keeping `/tools` strictly model-visible.
+- [x] Ensure approval prompts for `view_image(paths=[...])` display readable path targets.
 - [ ] If TUI Todo Plan summary is implemented, render `[o]`, `[>]`, and `[ ]` markers from persisted plan state only.
-- [ ] Run canonical unit tests.
+- [x] Run canonical unit tests.
   - Command: `uv run pytest tests/unit -v`
   - Expected: all unit tests pass.
-- [ ] Run canonical integration tests.
+- [x] Run canonical integration tests.
   - Command: `uv run pytest tests/integration -v`
   - Expected: all integration tests pass.
 

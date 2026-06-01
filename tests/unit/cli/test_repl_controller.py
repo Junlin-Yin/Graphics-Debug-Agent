@@ -1322,6 +1322,62 @@ def test_runtime_tool_listing_includes_policy_and_mode_context() -> None:
     ]
 
 
+def test_runtime_tool_listing_filters_view_image_by_frozen_availability() -> None:
+    from debug_agent.runtime.contracts import ToolDefinition
+    from debug_agent.runtime.orchestrator import format_tool_listing
+
+    definitions = [
+        ToolDefinition(
+            name="todo",
+            description="Replace the current Todo Plan.",
+            input_schema={"type": "object"},
+            category="runtime_control",
+            risk_level="runtime_control",
+            access=[],
+        ),
+        ToolDefinition(
+            name="view_image",
+            description="Inspect one to four local PNG or JPEG images.",
+            input_schema={"type": "object"},
+            category="native",
+            risk_level="read",
+            access=["read"],
+        ),
+    ]
+
+    disabled = "\n".join(
+        format_tool_listing(
+            definitions,
+            approval_mode="yolo",
+            config_snapshot={
+                "multimodal": {
+                    "view_image_enabled": False,
+                    "view_image_disabled_reason": "missing_api_key_env",
+                }
+            },
+        )
+    )
+    enabled = "\n".join(
+        format_tool_listing(
+            definitions,
+            approval_mode="yolo",
+            config_snapshot={
+                "multimodal": {
+                    "view_image_enabled": True,
+                    "view_image_disabled_reason": None,
+                }
+            },
+        )
+    )
+
+    assert "- todo " in disabled
+    assert "- view_image " not in disabled
+    assert "view_image disabled: missing_api_key_env" in disabled
+    assert "- todo " in enabled
+    assert "- view_image " in enabled
+    assert "view_image disabled" not in enabled
+
+
 def test_compress_slash_command_uses_runtime_manual_compress() -> None:
     from debug_agent.cli.repl_controller import ReplController
 

@@ -265,7 +265,6 @@ class ToolBroker:
         view_image_denial = _view_image_availability_denial(
             tool_name=tool_name,
             frozen_config=context.get("frozen_config", {}),
-            internal_enabled=bool(context.get("internal_enable_view_image")),
         )
         if view_image_denial is not None:
             result = _denied_result(view_image_denial, error_class="config_error")
@@ -489,7 +488,10 @@ class ToolBroker:
             audit_recorder=tool_audit_recorder,
             payload={
                 "tool_name": tool_name,
-                "arguments": normalized_arguments,
+                "arguments": _audit_arguments(
+                    tool_name=tool_name,
+                    arguments=normalized_arguments,
+                ),
                 "status": "started",
             },
         )
@@ -977,17 +979,15 @@ def _policy_facts_from_context(context: dict[str, Any], workspace_root: Path) ->
 
 
 def _view_image_availability_denial(
-    *, tool_name: str, frozen_config: dict[str, Any], internal_enabled: bool = False
+    *, tool_name: str, frozen_config: dict[str, Any]
 ) -> str | None:
     if tool_name != "view_image" or not isinstance(frozen_config, dict):
         return None
     multimodal = frozen_config.get("multimodal")
     if not isinstance(multimodal, dict):
         return "view_image is disabled: missing_multimodal_config"
-    if multimodal.get("view_image_enabled") is True and internal_enabled:
-        return None
     if multimodal.get("view_image_enabled") is True:
-        return "view_image is activation-gated until Phase 2 Milestone 6."
+        return None
     reason = multimodal.get("view_image_disabled_reason")
     if not isinstance(reason, str) or not reason:
         reason = "missing_multimodal_config"
@@ -1413,9 +1413,10 @@ def _audit_payload(
     approval_wait_duration_ms: int,
     include_execution_duration: bool = False,
 ) -> dict[str, Any]:
+    audit_arguments = _audit_arguments(tool_name=tool_name, arguments=arguments)
     payload = {
         "tool_name": tool_name,
-        "arguments": arguments,
+        "arguments": audit_arguments,
         "target": target,
         "status": result.status,
         "duration": duration_seconds,
@@ -1431,4 +1432,36 @@ def _audit_payload(
         payload["recoverable"] = result.error["recoverable"]
     if result.status == "ok":
         payload["result"] = result.to_dict()
+    if tool_name == "view_image":
+        metadata = result.metadata if isinstance(result.metadata, dict) else {}
+        source = metadata.get("effective_query_source")
+        if isinstance(source, str):
+            payload["effective_query_source"] = source
+        images = metadata.get("images")
+        if isinstance(images, list):
+            payload["images"] = images
+        if "vision_provider" in metadata:
+            payload["vision_provider"] = metadata["vision_provider"]
+        if "vision_model" in metadata:
+            payload["vision_model"] = metadata["vision_model"]
+        if "duration_ms" in metadata:
+            payload["duration_ms"] = metadata["duration_ms"]
+        if "projected_request_bytes" in metadata:
+            payload["projected_request_bytes"] = metadata["projected_request_bytes"]
     return payload
+
+
+def _audit_arguments(*, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    if tool_name != "view_image":
+        return arguments
+    redacted: dict[str, Any] = {}
+    paths = arguments.get("paths")
+    if isinstance(paths, list):
+        redacted["paths"] = [str(path) for path in paths]
+    symlink_escapes = arguments.get("_view_image_symlink_escapes")
+    if isinstance(symlink_escapes, list):
+        redacted["_view_image_symlink_escapes"] = [str(path) for path in symlink_escapes]
+    redacted["effective_query_source"] = (
+        "assistant" if isinstance(arguments.get("query"), str) else "default"
+    )
+    return redacted

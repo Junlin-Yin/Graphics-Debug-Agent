@@ -188,7 +188,7 @@ def test_unknown_tool_behavior_is_unchanged(tmp_path) -> None:
     runtime["db"].close()
 
 
-def test_enabled_ready_view_image_is_activation_gated_until_milestone_6(
+def test_enabled_view_image_routes_without_internal_activation_gate(
     tmp_path,
 ) -> None:
     runtime = _runtime(
@@ -209,20 +209,54 @@ def test_enabled_ready_view_image_is_activation_gated_until_milestone_6(
         },
     )
 
-    result = _invoke(runtime, "view_image", {"paths": ["image.png"]})
+    image = runtime["workspace"] / "capture.png"
+    _write_image(image)
 
-    assert result.status == "denied"
-    assert result.error["error_class"] == "config_error"
-    assert result.error["message"] == (
-        "view_image is activation-gated until Phase 2 Milestone 6."
-    )
-    assert [event.kind for event in runtime["events"].list_for_run("run_1")] == [
-        "tool_call_denied"
-    ]
+    result = _invoke(runtime, "view_image", {"paths": ["capture.png"]})
+
+    assert result.status != "denied"
+    assert runtime["events"].list_for_run("run_1")[0].kind == "tool_call_started"
     runtime["db"].close()
 
 
-def test_enabled_view_image_definition_is_available_only_through_internal_gate(
+def test_view_image_audit_redacts_assistant_query_from_runtime_authored_events(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = _runtime(tmp_path, multimodal=_enabled_multimodal())
+    image = runtime["workspace"] / "capture.png"
+    _write_image(image)
+    monkeypatch.setenv("MOONSHOT_API_KEY", "secret")
+    monkeypatch.setenv("MOONSHOT_BASE_URL", "https://example.test/v1")
+
+    result = runtime["broker"].invoke(
+        session_id=runtime["session"].session_id,
+        run_id=runtime["run"].run_id,
+        tool_name="view_image",
+        arguments={"paths": ["capture.png"], "query": "secret query focus"},
+        context={
+            "workspace_root": str(runtime["workspace"]),
+            "approval_mode": runtime["approval_mode"],
+            "policy_facts": runtime["policy_facts"],
+            "approval_grants": ApprovalGrantStore(runtime["db"].connection),
+            "approval_provider": FakeApprovalProvider("denied"),
+            "frozen_config": runtime["config_snapshot"],
+            "vision_client": _FakeVisionClient(),
+        },
+    )
+
+    assert result.status == "ok"
+    events = [event.payload for event in runtime["events"].list_for_run("run_1")]
+    serialized_events = repr(events)
+    assert "secret query focus" not in serialized_events
+    assert "'query'" not in serialized_events
+    assert "query_preview" not in serialized_events
+    assert "query_length" not in serialized_events
+    assert "effective_query_source" in serialized_events
+    runtime["db"].close()
+
+
+def test_enabled_view_image_definition_routes_with_fake_provider(
     tmp_path,
     monkeypatch,
 ) -> None:

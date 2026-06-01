@@ -190,6 +190,58 @@ def test_one_shot_default_path_exposes_todo_but_keeps_view_image_gated(
     ]
 
 
+def test_one_shot_enabled_multimodal_exposes_view_image_tool_binding(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    captured: dict[str, list[dict]] = {}
+
+    class CapturingAdapter:
+        def __init__(self, *, model: object, tool_broker: object) -> None:
+            self.model = model
+            self.tool_broker = tool_broker
+
+        def run(self, request, context):
+            captured["tool_schema_bindings"] = (
+                request.model_context_frame.tool_schema_bindings
+            )
+            return AgentRunResult(
+                status="completed",
+                assistant_output="captured",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+    monkeypatch.setattr(
+        orchestrator_module, "LangChainAgentLoopAdapter", CapturingAdapter
+    )
+    config = _config("unused")
+    config["multimodal"] = {
+        "provider": "openai",
+        "model": "kimi-k2.5",
+        "timeout_seconds": 60,
+        "max_tokens": 4096,
+        "max_query_chars": 8192,
+        "max_analysis_chars": 8192,
+        "api_key_env": "MOONSHOT_API_KEY",
+        "api_key_present": True,
+        "base_url_env": "MOONSHOT_BASE_URL",
+        "base_url_present": True,
+        "view_image_enabled": True,
+        "view_image_disabled_reason": None,
+    }
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot("hello", config)
+
+    assert result.exit_code == 0
+    assert "view_image" in [
+        tool["name"] for tool in captured["tool_schema_bindings"]
+    ]
+
+
 def test_one_shot_model_failure_marks_run_and_session_failed(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
