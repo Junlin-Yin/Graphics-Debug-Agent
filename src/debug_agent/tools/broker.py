@@ -24,11 +24,13 @@ from debug_agent.runtime.policy import (
     policy_facts_from_snapshot,
     scope_signature_for_tool,
 )
-from debug_agent.tools.native import NativeHandlerResult, tool_definitions, tool_error_result, tool_handlers
 from debug_agent.tools import runtime_control as runtime_control_tools
 from debug_agent.tools import shell as shell_tools
-from debug_agent.tools.shell import ShellHandlerResult
+from debug_agent.tools import view_image as view_image_tools
+from debug_agent.tools.native import NativeHandlerResult, tool_definitions, tool_error_result, tool_handlers
 from debug_agent.tools.runtime_control import RuntimeControlHandlerResult
+from debug_agent.tools.shell import ShellHandlerResult
+from debug_agent.tools.view_image import ViewImageResult
 
 
 LARGE_OUTPUT_THRESHOLD_BYTES = 16 * 1024
@@ -108,6 +110,9 @@ class ToolUseContext:
     run_store: Any = None
     shell_runner: Any = None
     todo_plan_store: Any = None
+    vision_client: Any = None
+    view_image_reader: Any = None
+    effective_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS
 
 
 class ToolRouter:
@@ -122,6 +127,16 @@ class ToolRouter:
         self, context: ToolUseContext, arguments: dict[str, Any]
     ) -> str | dict[str, Any] | NativeHandlerResult:
         if context.tool_definition.category == "native":
+            if context.tool_definition.name == "view_image":
+                tool = view_image_tools.ViewImageTool(
+                    vision_client=context.vision_client,
+                    image_reader=context.view_image_reader,
+                )
+                return tool.execute(
+                    context,
+                    arguments,
+                    timeout_seconds=context.effective_timeout_seconds,
+                )
             return self._native_handlers[context.tool_definition.name](context, arguments)
         if context.tool_definition.category == "shell":
             return self._shell_handlers[context.tool_definition.name](context, arguments)
@@ -146,6 +161,7 @@ class ToolBroker:
         self.timeout_seconds = timeout_seconds
         definitions = [
             *tool_definitions(),
+            view_image_tools.tool_definition(),
             *shell_tools.tool_definitions(),
             *runtime_control_tools.tool_definitions(),
         ]
@@ -185,27 +201,6 @@ class ToolBroker:
         timeout_seconds = float(context.get("timeout_seconds", self.timeout_seconds))
 
         definition = self._definitions.get(tool_name)
-        view_image_denial = _view_image_availability_denial(
-            tool_name=tool_name,
-            frozen_config=context.get("frozen_config", {}),
-        )
-        if view_image_denial is not None:
-            result = _denied_result(view_image_denial, error_class="config_error")
-            self._write_event(
-                session_id=session_id,
-                run_id=run_id,
-                kind="tool_call_denied",
-                audit_recorder=tool_audit_recorder,
-                payload=_audit_payload(
-                    tool_name=tool_name,
-                    arguments=normalized_arguments,
-                    result=result,
-                    duration_seconds=monotonic() - start,
-                    target="",
-                    approval_wait_duration_ms=0,
-                ),
-            )
-            return result
         if definition is None or not tool_name.strip():
             result = _denied_result(
                 "Invalid tool name." if not tool_name.strip() else f"Unknown tool: {tool_name}",
@@ -230,6 +225,50 @@ class ToolBroker:
         schema_error = _validate_schema(definition, normalized_arguments)
         if schema_error is not None:
             result = _denied_result(schema_error, error_class="user_error")
+            self._write_event(
+                session_id=session_id,
+                run_id=run_id,
+                kind="tool_call_denied",
+                audit_recorder=tool_audit_recorder,
+                payload=_audit_payload(
+                    tool_name=tool_name,
+                    arguments=normalized_arguments,
+                    result=result,
+                    duration_seconds=monotonic() - start,
+                    target="",
+                    approval_wait_duration_ms=0,
+                ),
+            )
+            return result
+        semantic_error = _validate_view_image_semantics(
+            definition=definition,
+            arguments=normalized_arguments,
+            frozen_config=context.get("frozen_config", {}),
+        )
+        if semantic_error is not None:
+            result = _denied_result(semantic_error, error_class="user_error")
+            self._write_event(
+                session_id=session_id,
+                run_id=run_id,
+                kind="tool_call_denied",
+                audit_recorder=tool_audit_recorder,
+                payload=_audit_payload(
+                    tool_name=tool_name,
+                    arguments=normalized_arguments,
+                    result=result,
+                    duration_seconds=monotonic() - start,
+                    target="",
+                    approval_wait_duration_ms=0,
+                ),
+            )
+            return result
+        view_image_denial = _view_image_availability_denial(
+            tool_name=tool_name,
+            frozen_config=context.get("frozen_config", {}),
+            internal_enabled=bool(context.get("internal_enable_view_image")),
+        )
+        if view_image_denial is not None:
+            result = _denied_result(view_image_denial, error_class="config_error")
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
@@ -283,6 +322,11 @@ class ToolBroker:
         route_timeout_seconds = timeout_seconds
         if definition.name == "shell_exec":
             route_timeout_seconds = float(normalized_arguments["effective_timeout_seconds"])
+        if definition.name == "view_image":
+            route_timeout_seconds = _effective_view_image_timeout(
+                frozen_config=context.get("frozen_config", {}),
+                fallback=timeout_seconds,
+            )
         scope_signature = normalized.scope_signature
         call = NormalizedToolCall(
             tool_name=tool_name,
@@ -434,6 +478,9 @@ class ToolBroker:
             run_store=context.get("run_store"),
             shell_runner=context.get("shell_runner"),
             todo_plan_store=context.get("todo_plan_store"),
+            vision_client=context.get("vision_client"),
+            view_image_reader=context.get("view_image_reader"),
+            effective_timeout_seconds=route_timeout_seconds,
         )
         self._write_event(
             session_id=session_id,
@@ -552,6 +599,46 @@ class ToolBroker:
                 output=output.output or {},
                 metadata=output.metadata or {},
             )
+        if isinstance(output, ViewImageResult):
+            result = view_image_tools.tool_result_from_view_image(output, source=tool_name)
+            if (
+                result.status == "ok"
+                and output.raw_provider_text is not None
+                and len(output.raw_provider_text.encode("utf-8"))
+                > LARGE_OUTPUT_THRESHOLD_BYTES
+            ):
+                artifact = self.artifact_store.write_text(
+                    session_id=session_id,
+                    run_id=run_id,
+                    artifact_id=f"art_{uuid4().hex}",
+                    filename=f"{tool_name}_raw_provider_output.txt",
+                    content=output.raw_provider_text,
+                    metadata={
+                        "tool_name": tool_name,
+                        "bytes": len(output.raw_provider_text.encode("utf-8")),
+                        "source": "raw_provider_output",
+                    },
+                )
+                self._write_event(
+                    session_id=session_id,
+                    run_id=run_id,
+                    kind="artifact_registered",
+                    payload={
+                        "artifact_id": artifact.artifact_id,
+                        "artifact_type": artifact.artifact_type,
+                        "relative_path": artifact.relative_path,
+                        "metadata": artifact.metadata,
+                    },
+                )
+                return ToolResult(
+                    status=result.status,
+                    output=result.output,
+                    error=result.error,
+                    artifacts=[artifact.artifact_id],
+                    metadata=result.metadata,
+                    redacted_output=result.redacted_output,
+                )
+            return result
         if isinstance(output, ShellHandlerResult):
             if output.status == "timeout":
                 return _timeout_result(
@@ -848,6 +935,36 @@ def _validate_object_array_items(
     return None
 
 
+def _validate_view_image_semantics(
+    *,
+    definition: ToolDefinition,
+    arguments: dict[str, Any],
+    frozen_config: dict[str, Any],
+) -> str | None:
+    if definition.name != "view_image":
+        return None
+    paths = arguments.get("paths")
+    if isinstance(paths, list) and any(not path.strip() for path in paths):
+        return "paths items must be non-empty strings."
+    query = arguments.get("query")
+    if query is None:
+        return None
+    trimmed = query.strip()
+    if not trimmed:
+        return "query must be non-empty when provided."
+    multimodal = frozen_config.get("multimodal") if isinstance(frozen_config, dict) else None
+    max_query_chars = (
+        multimodal.get("max_query_chars")
+        if isinstance(multimodal, dict)
+        else 8192
+    )
+    if not isinstance(max_query_chars, int) or isinstance(max_query_chars, bool):
+        max_query_chars = 8192
+    if len(trimmed) > max_query_chars:
+        return "query exceeds max_query_chars."
+    return None
+
+
 def _policy_facts_from_context(context: dict[str, Any], workspace_root: Path) -> PolicyFacts:
     policy_facts = context.get("policy_facts")
     if isinstance(policy_facts, PolicyFacts):
@@ -860,13 +977,15 @@ def _policy_facts_from_context(context: dict[str, Any], workspace_root: Path) ->
 
 
 def _view_image_availability_denial(
-    *, tool_name: str, frozen_config: dict[str, Any]
+    *, tool_name: str, frozen_config: dict[str, Any], internal_enabled: bool = False
 ) -> str | None:
     if tool_name != "view_image" or not isinstance(frozen_config, dict):
         return None
     multimodal = frozen_config.get("multimodal")
     if not isinstance(multimodal, dict):
         return "view_image is disabled: missing_multimodal_config"
+    if multimodal.get("view_image_enabled") is True and internal_enabled:
+        return None
     if multimodal.get("view_image_enabled") is True:
         return "view_image is activation-gated until Phase 2 Milestone 6."
     reason = multimodal.get("view_image_disabled_reason")
@@ -903,6 +1022,12 @@ def _normalize_tool_arguments(
             run_id=run_id,
             artifact_store=artifact_store,
         )
+    if definition.name == "view_image":
+        return _normalize_view_image_arguments(
+            definition=definition,
+            arguments=arguments,
+            workspace_root=workspace_root,
+        )
     canonical_path = canonicalize_path(arguments["path"], workspace_root)
     normalized_arguments = dict(arguments)
     normalized_arguments["path"] = str(canonical_path)
@@ -918,6 +1043,50 @@ def _normalize_tool_arguments(
         scope_signature=scope_signature,
         target=_target_for_path_tool(definition.name, normalized_arguments, canonical_path),
     )
+
+
+def _normalize_view_image_arguments(
+    *,
+    definition: ToolDefinition,
+    arguments: dict[str, Any],
+    workspace_root: Path,
+) -> NormalizedBrokerArguments:
+    canonical_paths = [canonicalize_path(path, workspace_root) for path in arguments["paths"]]
+    normalized_arguments = dict(arguments)
+    normalized_arguments["paths"] = [str(path) for path in canonical_paths]
+    symlink_escapes: list[str] = []
+    for raw_path, canonical_path in zip(arguments["paths"], canonical_paths, strict=True):
+        lexical_path = Path(raw_path)
+        if not lexical_path.is_absolute():
+            lexical_path = workspace_root / lexical_path
+        try:
+            lexical_path.relative_to(workspace_root)
+            canonical_path.relative_to(workspace_root)
+        except ValueError:
+            if _path_lexically_under_workspace(lexical_path, workspace_root):
+                symlink_escapes.append(str(raw_path))
+    if symlink_escapes:
+        normalized_arguments["_view_image_symlink_escapes"] = symlink_escapes
+    scope_signature = scope_signature_for_tool(
+        definition.name,
+        risk_level=definition.risk_level,
+        paths=canonical_paths,
+    )
+    return NormalizedBrokerArguments(
+        arguments=normalized_arguments,
+        paths=tuple(canonical_paths),
+        shell_argv=(),
+        scope_signature=scope_signature,
+        target=", ".join(str(path) for path in canonical_paths),
+    )
+
+
+def _path_lexically_under_workspace(path: Path, workspace_root: Path) -> bool:
+    try:
+        path.relative_to(workspace_root)
+        return True
+    except ValueError:
+        return False
 
 
 def _normalize_runtime_control_arguments(
@@ -1109,6 +1278,16 @@ def _effective_shell_timeout(
     )
     default = configured if isinstance(configured, int) and configured > 0 else 300
     return min(requested, default) if requested is not None else default
+
+
+def _effective_view_image_timeout(
+    *, frozen_config: dict[str, Any], fallback: float
+) -> float:
+    multimodal = frozen_config.get("multimodal") if isinstance(frozen_config, dict) else None
+    timeout = multimodal.get("timeout_seconds") if isinstance(multimodal, dict) else None
+    if isinstance(timeout, int) and not isinstance(timeout, bool) and timeout > 0:
+        return float(timeout)
+    return fallback
 
 
 def _load_reusable_grant(

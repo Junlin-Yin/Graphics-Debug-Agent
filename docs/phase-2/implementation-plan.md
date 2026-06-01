@@ -365,35 +365,35 @@ Freeze/review checkpoint: sessions freeze multimodal availability deterministica
 
 **Freeze/review checkpoint:** do not activate enabled `view_image` for ordinary model-visible bindings until provider normalization and no-image/base64/query persistence protections are implemented and verified in Milestone 6.
 
-- [ ] Add enabled `view_image` tool definition behind the internal activation gate with `category="native"`, `risk_level="read"`, `access=["read"]`, required `paths`, optional `query`, `minItems=1`, `maxItems=4`, and `additionalProperties=false`.
-- [ ] Enforce schema failures as `ToolResult.status = "denied"`, `error_class = "user_error"`, and `tool_call_denied`.
-- [ ] Normalize path facts before permission evaluation; emit pre-read broker audit facts available at that stage; read image bytes only after schema validation, path policy, approval, and pre-read audit have completed for every path.
-- [ ] Reject remote URLs, `file://`, `data:`, directories, missing files, symlink escapes, structured artifact-source fields, and explicit artifact URI-style inputs.
-- [ ] Treat bare string values that look like artifact ids as local path candidates, not artifact references.
-- [ ] Verify PNG/JPEG type from bytes and parse width/height through Pillow; do not trust extensions alone.
-- [ ] Accept valid PNG/JPEG files with uncommon extensions when path policy allows them.
-- [ ] Compute MIME type, byte size, SHA-256, width, height, and display path for every input image in input order.
-- [ ] Enforce width and height `<= 4096`, pixel budget `<= 4096 * 2160`, and projected compact UTF-8 Chat Completions request body size `<= 100,000,000` bytes before provider call.
-- [ ] Add deterministic request-projection tests using a compact JSON golden/snapshot that includes `model`, `messages`, `response_format`, `max_tokens`, every image data URL content part, the text instruction content part, and SDK-equivalent merged Kimi thinking disable fields.
-- [ ] Trim `query`; reject empty/whitespace-only query and query longer than frozen `max_query_chars`; use runtime default query when omitted.
-- [ ] Build one non-streaming OpenAI-compatible Chat Completions request with image data URL content parts followed by one text instruction part.
-- [ ] Include `response_format={"type": "json_object"}`, `max_tokens`, and Kimi thinking disabled via `extra_body={"thinking": {"type": "disabled"}}` or SDK-equivalent merged request field.
-- [ ] Disable SDK/client implicit retry for this provider path and perform at most one provider request per `view_image` call.
-- [ ] Pass the same effective timeout from ToolBroker into `VisionModelClient`.
-- [ ] Re-check required API key and base URL environment variables at `view_image` execution time when the frozen startup snapshot enabled `view_image`; if either value is missing, return `ToolResult.status = "error"` with `error_class = "config_error"` before constructing the provider client or request.
-- [ ] Extract provider text from `completion.choices[0].message.content`, parse as JSON object, require non-empty `analysis`, and enforce `max_analysis_chars`.
-- [ ] Ignore provider-returned source metadata and use only runtime-computed local image metadata.
-- [ ] Return `ToolResult.output.analysis` and display metadata, and put runtime metadata images, provider/model, duration, and `effective_query_source` in `ToolResult.metadata`.
-- [ ] Artifact large raw textual provider output only under existing large-output rules; never artifact source image bytes merely because `view_image` was called.
-- [ ] Write tests proving successful and failed `view_image` calls do not create `ArtifactStore` records or files for source image bytes; only large textual provider output may use the existing artifact path.
-- [ ] Write tests for execution-time missing API key env var and execution-time missing base URL env var after a valid enabled startup snapshot.
-- [ ] Write tests proving image file bytes are not read before policy/approval allow decisions and pre-read ToolBroker audit emission.
-- [ ] Write tests proving denied policy/approval paths emit denial audit and never open or read image bytes.
-- [ ] Use a fake or spied image reader/opener in ordering tests so the assertion covers byte-read timing, not only final `ToolResult` shape.
-- [ ] Run canonical unit tests.
+- [x] Add enabled `view_image` tool definition behind the internal activation gate with `category="native"`, `risk_level="read"`, `access=["read"]`, required `paths`, optional `query`, `minItems=1`, `maxItems=4`, and `additionalProperties=false`.
+- [x] Enforce schema failures as `ToolResult.status = "denied"`, `error_class = "user_error"`, and `tool_call_denied`.
+- [x] Normalize path facts before permission evaluation; emit pre-read broker audit facts available at that stage; read image bytes only after schema validation, path policy, approval, and pre-read audit have completed for every path.
+- [x] Reject remote URLs, `file://`, `data:`, directories, missing files, symlink escapes, structured artifact-source fields, and explicit artifact URI-style inputs.
+- [x] Treat bare string values that look like artifact ids as local path candidates, not artifact references.
+- [x] Verify PNG/JPEG type from bytes and parse width/height through Pillow; do not trust extensions alone.
+- [x] Accept valid PNG/JPEG files with uncommon extensions when path policy allows them.
+- [x] Compute MIME type, byte size, SHA-256, width, height, and display path for every input image in input order.
+- [x] Enforce width and height `<= 4096`, pixel budget `<= 4096 * 2160`, and projected compact UTF-8 Chat Completions request body size `<= 100,000,000` bytes before provider call.
+- [x] Add deterministic request-projection tests using a compact JSON golden/snapshot that includes `model`, `messages`, `response_format`, `max_tokens`, every image data URL content part, the text instruction content part, and SDK-equivalent merged Kimi thinking disable fields.
+- [x] Trim `query`; reject empty/whitespace-only query and query longer than frozen `max_query_chars`; use runtime default query when omitted.
+- [x] Build one non-streaming OpenAI-compatible Chat Completions request with image data URL content parts followed by one text instruction part.
+- [x] Include `response_format={"type": "json_object"}`, `max_tokens`, and Kimi thinking disabled via `extra_body={"thinking": {"type": "disabled"}}` or SDK-equivalent merged request field.
+- [x] Disable SDK/client implicit retry for this provider path and perform at most one provider request per `view_image` call.
+- [x] Pass the same effective timeout from ToolBroker into `VisionModelClient`.
+- [x] Re-check required API key and base URL environment variables at `view_image` execution time when the frozen startup snapshot enabled `view_image`; if either value is missing, return `ToolResult.status = "error"` with `error_class = "config_error"` before constructing the provider client or request.
+- [x] Extract provider text from `completion.choices[0].message.content`, parse as JSON object, require non-empty `analysis`, and enforce `max_analysis_chars`.
+- [x] Ignore provider-returned source metadata and use only runtime-computed local image metadata.
+- [x] Return `ToolResult.output.analysis` and display metadata, and put runtime metadata images, provider/model, duration, and `effective_query_source` in `ToolResult.metadata`.
+- [x] Artifact large raw textual provider output only under existing large-output rules; never artifact source image bytes merely because `view_image` was called.
+- [x] Write tests proving successful and failed `view_image` calls do not create `ArtifactStore` records or files for source image bytes; only large textual provider output may use the existing artifact path.
+- [x] Write tests for execution-time missing API key env var and execution-time missing base URL env var after a valid enabled startup snapshot.
+- [x] Write tests proving image file bytes are not read before policy/approval allow decisions and pre-read ToolBroker audit emission.
+- [x] Write tests proving denied policy/approval paths emit denial audit and never open or read image bytes.
+- [x] Use a fake or spied image reader/opener in ordering tests so the assertion covers byte-read timing, not only final `ToolResult` shape.
+- [x] Run canonical unit tests.
   - Command: `uv run pytest tests/unit -v`
   - Expected: all unit tests pass.
-- [ ] Run canonical integration tests.
+- [x] Run canonical integration tests.
   - Command: `uv run pytest tests/integration -v`
   - Expected: all integration tests pass.
 

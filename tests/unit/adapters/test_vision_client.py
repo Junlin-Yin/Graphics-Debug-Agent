@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from debug_agent.adapters.vision_client import (
+    VisionClientConfig,
+    VisionImageInput,
+    VisionModelClient,
+    project_chat_completions_request,
+)
+
+
+def test_request_projection_contains_kimi_json_shape() -> None:
+    images = [
+        VisionImageInput(mime_type="image/png", data=b"png-bytes"),
+        VisionImageInput(mime_type="image/jpeg", data=b"jpeg-bytes"),
+    ]
+
+    body = project_chat_completions_request(
+        model="kimi-k2.5",
+        images=images,
+        instruction="Return JSON.",
+        max_tokens=123,
+    )
+
+    assert body == {
+        "model": "kimi-k2.5",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,cG5nLWJ5dGVz"
+                        },
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/jpeg;base64,anBlZy1ieXRlcw=="
+                        },
+                    },
+                    {"type": "text", "text": "Return JSON."},
+                ],
+            }
+        ],
+        "response_format": {"type": "json_object"},
+        "max_tokens": 123,
+        "thinking": {"type": "disabled"},
+    }
+    encoded = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    assert len(encoded) == len(
+        b'{"model":"kimi-k2.5","messages":[{"role":"user","content":'
+        b'[{"type":"image_url","image_url":{"url":"data:image/png;base64,cG5nLWJ5dGVz"}},'
+        b'{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,anBlZy1ieXRlcw=="}},'
+        b'{"type":"text","text":"Return JSON."}]}],"response_format":{"type":"json_object"},'
+        b'"max_tokens":123,"thinking":{"type":"disabled"}}'
+    )
+
+
+class _FakeCompletions:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+
+        class _Message:
+            content = '{"analysis":"looks valid"}'
+
+        class _Choice:
+            message = _Message()
+
+        class _Completion:
+            choices = [_Choice()]
+
+        return _Completion()
+
+
+class _FakeChat:
+    def __init__(self) -> None:
+        self.completions = _FakeCompletions()
+
+
+class _FakeOpenAI:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.chat = _FakeChat()
+
+
+def test_client_uses_single_non_streaming_request_with_timeout_and_no_retry() -> None:
+    created: list[_FakeOpenAI] = []
+
+    def factory(**kwargs):
+        client = _FakeOpenAI(**kwargs)
+        created.append(client)
+        return client
+
+    client = VisionModelClient(factory=factory)
+    config = VisionClientConfig(
+        provider="openai",
+        model="kimi-k2.5",
+        api_key="secret",
+        base_url="https://example.test/v1",
+        max_tokens=321,
+    )
+
+    response = client.analyze(
+        config=config,
+        images=[VisionImageInput(mime_type="image/png", data=b"abc")],
+        instruction="Return JSON.",
+        timeout_seconds=7.5,
+    )
+
+    assert response.text == '{"analysis":"looks valid"}'
+    assert len(created) == 1
+    assert created[0].kwargs == {
+        "api_key": "secret",
+        "base_url": "https://example.test/v1",
+        "timeout": 7.5,
+        "max_retries": 0,
+    }
+    calls = created[0].chat.completions.calls
+    assert len(calls) == 1
+    assert calls[0]["stream"] is False
+    assert calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert calls[0]["response_format"] == {"type": "json_object"}
+    assert calls[0]["max_tokens"] == 321
+
+
+def test_client_rejects_completion_without_message_content() -> None:
+    class _BadCompletions:
+        def create(self, **_kwargs):
+            class _Completion:
+                choices = []
+
+            return _Completion()
+
+    class _BadOpenAI:
+        def __init__(self, **_kwargs) -> None:
+            self.chat = type("Chat", (), {"completions": _BadCompletions()})()
+
+    client = VisionModelClient(factory=_BadOpenAI)
+
+    with pytest.raises(ValueError, match="completion.choices"):
+        client.analyze(
+            config=VisionClientConfig(
+                provider="openai",
+                model="kimi-k2.5",
+                api_key="secret",
+                base_url="https://example.test/v1",
+                max_tokens=1,
+            ),
+            images=[VisionImageInput(mime_type="image/png", data=b"abc")],
+            instruction="Return JSON.",
+            timeout_seconds=1,
+        )

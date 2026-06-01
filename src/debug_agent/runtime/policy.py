@@ -485,6 +485,11 @@ def scope_signature_for_tool(
         return f"{tool_name}|{risk_level}|" + "|".join(
             f"{access}:{path}" for path in sorted(canonical_paths)
         )
+    if tool_name == "view_image":
+        canonical_paths = [str(Path(path).resolve()) for path in paths or []]
+        return f"view_image|{risk_level}|" + "|".join(
+            f"read:{path}" for path in canonical_paths
+        )
     if tool_name == "shell_exec":
         path_part = "|".join(str(Path(path).resolve()) for path in sorted(classified_paths or []))
         return (
