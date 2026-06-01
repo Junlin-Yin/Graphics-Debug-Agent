@@ -3,13 +3,14 @@ import sqlite3
 import pytest
 
 from debug_agent.persistence.sqlite import (
-    PHASE_1_SCHEMA_USER_VERSION,
+    PHASE_2_SCHEMA_USER_VERSION,
     RuntimeBootstrapError,
     RuntimeDatabase,
+    UNSUPPORTED_PHASE_2_DATABASE_MESSAGE,
 )
 
 
-def test_runtime_database_bootstrap_creates_phase_1_tables_and_user_version(
+def test_runtime_database_bootstrap_creates_phase_2_tables_and_user_version(
     tmp_path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -30,7 +31,7 @@ def test_runtime_database_bootstrap_creates_phase_1_tables_and_user_version(
             )
         }
 
-    assert user_version == PHASE_1_SCHEMA_USER_VERSION
+    assert user_version == PHASE_2_SCHEMA_USER_VERSION
     assert {
         "sessions",
         "runs",
@@ -41,6 +42,7 @@ def test_runtime_database_bootstrap_creates_phase_1_tables_and_user_version(
         "skill_snapshots",
         "skill_resource_snapshots",
         "context_snapshots",
+        "todo_plans",
     }.issubset(table_names)
 
 
@@ -63,6 +65,7 @@ def test_runtime_database_schema_matches_contract_columns(tmp_path) -> None:
                 "skill_snapshots",
                 "skill_resource_snapshots",
                 "context_snapshots",
+                "todo_plans",
             )
         }
 
@@ -187,6 +190,15 @@ def test_runtime_database_schema_matches_contract_columns(tmp_path) -> None:
         "created_at",
         "version",
     ]
+    assert columns["todo_plans"] == [
+        "run_id",
+        "session_id",
+        "plan_version",
+        "items_json",
+        "created_at",
+        "updated_at",
+        "version",
+    ]
 
 
 def test_context_snapshot_trigger_constraint_rejects_unknown_values(tmp_path) -> None:
@@ -305,7 +317,7 @@ def test_existing_legacy_or_unknown_user_version_fails_closed(tmp_path) -> None:
     with pytest.raises(RuntimeBootstrapError) as exc:
         RuntimeDatabase.bootstrap(workspace)
 
-    assert "Phase 0/0.5 runtime databases are unsupported by Phase 1" in str(exc.value)
+    assert UNSUPPORTED_PHASE_2_DATABASE_MESSAGE in str(exc.value)
     assert exc.value.error_class == "config_error"
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
+from debug_agent.persistence.sqlite import UNSUPPORTED_PHASE_2_DATABASE_MESSAGE
 
 
 def _config(response: str = "fake answer") -> dict:
@@ -99,7 +100,7 @@ def test_status_trace_and_startup_fail_closed_for_legacy_schema(tmp_path) -> Non
 
     for result in (status, trace, one_shot):
         assert result.exit_code != 0
-        assert "Phase 0/0.5 runtime databases are unsupported by Phase 1" in result.message
+        assert UNSUPPORTED_PHASE_2_DATABASE_MESSAGE in result.message
     assert one_shot.error["error_class"] == "config_error"
 
 

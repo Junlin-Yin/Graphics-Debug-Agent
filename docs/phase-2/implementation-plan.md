@@ -186,22 +186,22 @@ After Milestone 4, narrower internal gates may still hide incomplete enabled `vi
 
 **Freeze/review checkpoint:** do not start Todo Plan tool work until fresh Phase 2 bootstrap and all legacy fail-closed paths are verified.
 
-- [ ] Add `openai` and `Pillow` to `pyproject.toml` dependencies.
-- [ ] Run `uv lock`.
+- [x] Add `openai` and `Pillow` to `pyproject.toml` dependencies.
+- [x] Run `uv lock`.
   - Command: `uv lock`
   - Expected: lockfile updates without dependency resolution errors.
-- [ ] Replace Phase 1 schema identity with `PHASE_2_SCHEMA_USER_VERSION = 2`.
-- [ ] Update the unsupported database message to the Phase 2 text from `docs/phase-2/specs/compatibility.md`.
-- [ ] Extend SQLite schema with Todo Plan current-state persistence. Use either normalized rows or JSON payload; ensure it can atomically store `session_id`, `run_id`, `plan_version`, ordered items, `created_at`, and `updated_at`.
-- [ ] Ensure `RuntimeDatabase.bootstrap()` reads `PRAGMA user_version` before interpreting any existing runtime truth rows.
-- [ ] Ensure startup, active workspace ownership checks, `status`, and `trace` cannot read session/run/event/checkpoint/artifact/Todo rows from legacy or unknown schemas.
-- [ ] Write tests for fresh DB `user_version = 2`.
-- [ ] Write tests for existing `user_version = 0`, `1`, and unknown future versions failing closed with `config_error` and unsupported DB guidance.
-- [ ] Write tests proving legacy DB files are not migrated, deleted, or rewritten.
-- [ ] Run canonical unit tests.
+- [x] Replace Phase 1 schema identity with `PHASE_2_SCHEMA_USER_VERSION = 2`.
+- [x] Update the unsupported database message to the Phase 2 text from `docs/phase-2/specs/compatibility.md`.
+- [x] Extend SQLite schema with Todo Plan current-state persistence. Use either normalized rows or JSON payload; ensure it can atomically store `session_id`, `run_id`, `plan_version`, ordered items, `created_at`, and `updated_at`.
+- [x] Ensure `RuntimeDatabase.bootstrap()` reads `PRAGMA user_version` before interpreting any existing runtime truth rows.
+- [x] Ensure startup, active workspace ownership checks, `status`, and `trace` cannot read session/run/event/checkpoint/artifact/Todo rows from legacy or unknown schemas.
+- [x] Write tests for fresh DB `user_version = 2`.
+- [x] Write tests for existing `user_version = 0`, `1`, and unknown future versions failing closed with `config_error` and unsupported DB guidance.
+- [x] Write tests proving legacy DB files are not migrated, deleted, or rewritten.
+- [x] Run canonical unit tests.
   - Command: `uv run pytest tests/unit -v`
   - Expected: all unit tests pass.
-- [ ] Run canonical integration tests.
+- [x] Run canonical integration tests.
   - Command: `uv run pytest tests/integration -v`
   - Expected: all integration tests pass.
 

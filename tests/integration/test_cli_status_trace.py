@@ -11,7 +11,10 @@ from pathlib import Path
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
-from debug_agent.persistence.sqlite import RuntimeDatabase
+from debug_agent.persistence.sqlite import (
+    RuntimeDatabase,
+    UNSUPPORTED_PHASE_2_DATABASE_MESSAGE,
+)
 from debug_agent.runtime.contracts import RunEvent, utc_now_iso
 
 
@@ -323,16 +326,12 @@ def test_startup_status_and_trace_fail_closed_on_legacy_schema(tmp_path) -> None
         check=False,
     )
 
-    expected = (
-        "Phase 0/0.5 runtime databases are unsupported by Phase 1. Move or "
-        "remove .sessions/ or use a fresh workspace."
-    )
     assert startup.returncode == 4
-    assert expected in startup.stderr
+    assert UNSUPPORTED_PHASE_2_DATABASE_MESSAGE in startup.stderr
     assert status.returncode == 4
-    assert expected in status.stderr
+    assert UNSUPPORTED_PHASE_2_DATABASE_MESSAGE in status.stderr
     assert trace.returncode == 4
-    assert expected in trace.stderr
+    assert UNSUPPORTED_PHASE_2_DATABASE_MESSAGE in trace.stderr
     with sqlite3.connect(sessions_dir / "runtime.db") as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
         assert (

@@ -6,10 +6,12 @@ from pathlib import Path
 from typing import Self
 
 
-PHASE_1_SCHEMA_USER_VERSION = 1
-LEGACY_SCHEMA_MESSAGE = (
-    "Phase 0/0.5 runtime databases are unsupported by Phase 1. Move or remove "
-    ".sessions/ or use a fresh workspace."
+PHASE_2_SCHEMA_USER_VERSION = 2
+UNSUPPORTED_PHASE_2_DATABASE_MESSAGE = (
+    "This workspace contains a runtime database from an unsupported debug-agent "
+    "phase. Phase 2 cannot read or migrate old .sessions/runtime.db files. "
+    "Move or remove .sessions/ or use a fresh workspace, then start debug-agent "
+    "again."
 )
 
 
@@ -158,6 +160,18 @@ CREATE TABLE IF NOT EXISTS context_snapshots (
   version INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS todo_plans (
+  run_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  plan_version INTEGER NOT NULL,
+  items_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  FOREIGN KEY(session_id) REFERENCES sessions(session_id),
+  FOREIGN KEY(run_id) REFERENCES runs(run_id)
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_one_running_per_workspace
 ON sessions(workspace_root)
 WHERE status = 'running';
@@ -194,11 +208,14 @@ class RuntimeDatabase:
             connection = sqlite3.connect(db_path, check_same_thread=False)
             connection.execute("PRAGMA foreign_keys = ON")
             user_version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if existed and user_version != PHASE_1_SCHEMA_USER_VERSION:
+            if existed and user_version != PHASE_2_SCHEMA_USER_VERSION:
                 connection.close()
-                raise RuntimeBootstrapError(LEGACY_SCHEMA_MESSAGE)
+                raise RuntimeBootstrapError(
+                    f"{UNSUPPORTED_PHASE_2_DATABASE_MESSAGE} "
+                    f"Found user_version={user_version}."
+                )
             connection.executescript(SCHEMA)
-            connection.execute(f"PRAGMA user_version = {PHASE_1_SCHEMA_USER_VERSION}")
+            connection.execute(f"PRAGMA user_version = {PHASE_2_SCHEMA_USER_VERSION}")
             connection.commit()
         except RuntimeBootstrapError:
             raise
