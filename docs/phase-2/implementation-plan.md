@@ -467,24 +467,42 @@ Freeze/review checkpoint: users can inspect Phase 2 continuity and image-analysi
 
 **Freeze/review checkpoint:** Phase 2 may enter code review/approval only after all automated acceptance commands pass or any unrun check is explicitly recorded with the remaining risk.
 
-- [ ] Run all narrow Phase 2 unit tests.
+- [x] Run all narrow Phase 2 unit tests.
   - Command: `uv run pytest tests/unit -v`
   - Expected: all unit tests pass.
-- [ ] Run all integration tests.
+  - Observed: `464 passed, 1 skipped`.
+- [x] Run all integration tests.
   - Command: `uv run pytest tests/integration -v`
   - Expected: all integration tests pass.
-- [ ] Run full canonical suite for Phase 2 acceptance.
+  - Observed: `52 passed`.
+- [x] Run full canonical suite for Phase 2 acceptance.
   - Command: `uv run pytest -v`
   - Expected: all tests pass.
-- [ ] Manually verify TTY behavior required by `docs/phase-2/operations.md`:
+  - Observed: `516 passed, 1 skipped`.
+- [x] Manually verify TTY behavior required by `docs/phase-2/operations.md`:
   - `/tools` visibility for `todo` and enabled/disabled `view_image`.
   - disabled `view_image` no-secret reason via `/tools` or status.
   - inline approval prompt for `view_image`.
   - denial returns to prompt input without terminalizing the session.
   - optional Todo Plan TUI summary, if implemented.
-- [ ] Record manual verification notes with terminal application, command sequence, expected result, observed result, and known limitations.
-- [ ] Confirm `uv lock` has been run after dependency changes and `uv.lock` is included with dependency edits.
-- [ ] Confirm no Phase 2 implementation introduced forbidden future-phase features.
+- [x] Record manual verification notes with terminal application, command sequence, expected result, observed result, and known limitations.
+  - Terminal application: unified exec PTY (`tty=true`) on macOS/zsh.
+  - Disabled command sequence: start REPL with fake main model and no multimodal config using `HOME=/private/tmp/myagent-phase2-m7-tty/disabled_home uv run debug-agent`; enter `/tools`; enter `/exit`.
+  - Disabled expected result: `/tools` lists `todo`, omits enabled `view_image`, and shows a no-secret disabled reason via `/tools` or status.
+  - Disabled observed result: `/tools` listed `todo [ask-all]`, omitted enabled `view_image`, and rendered `view_image disabled: missing_multimodal_config`.
+  - Enabled command sequence: start REPL with fake main model and complete frozen multimodal env using `HOME=/private/tmp/myagent-phase2-m7-tty/enabled_home MANUAL_MOONSHOT_API_KEY=dummy MANUAL_MOONSHOT_BASE_URL=http://127.0.0.1.invalid uv run debug-agent`; enter `/tools`; enter `/exit`.
+  - Enabled expected result: `/tools` lists both `todo` and enabled `view_image`.
+  - Enabled observed result: `/tools` listed `todo [ask-all]` and `view_image [ask-distrust]`.
+  - Approval command sequence: start REPL with fake main model configured to call `view_image` for `/private/tmp/myagent-phase2-m7-tty/outside/tiny.png`, complete frozen multimodal env, and workspace `/private/tmp/myagent-phase2-m7-tty/approval_workspace`; enter `inspect image`; deny prompt with `n`; enter `/exit`.
+  - Approval expected result: inline approval prompt displays readable `view_image` path target; denial returns to prompt input without terminalizing the session.
+  - Approval observed result: inline prompt showed `Tool: view_image` and `Target: /private/tmp/myagent-phase2-m7-tty/outside/tiny.png`; after `n`, turn status became failed and the prompt input returned, allowing `/exit`.
+  - Optional Todo Plan TUI summary: not applicable; the optional Milestone 6 TUI Todo Plan summary checklist item remains unimplemented.
+  - Known limitations: manual provider smoke was not run, by contract; automated provider tests use fake/stubbed `VisionModelClient`.
+- [x] Confirm `uv lock` has been run after dependency changes and `uv.lock` is included with dependency edits.
+  - Command: `uv lock`
+  - Observed: `Resolved 53 packages in 2ms`; no `uv.lock` or `pyproject.toml` diff remained.
+- [x] Confirm no Phase 2 implementation introduced forbidden future-phase features.
+  - Observed: scope scan found only documented non-goals, tests for rejection/absence, and existing helper/config identifiers; no new subagent/task runtime, workflow, MCP, plugin, RenderDoc readiness e2e, session interruption/resume, Phase 3+ behavior, or `view_image_*` event kinds were introduced by Milestone 7.
 
 Freeze/review checkpoint: Phase 2 satisfies `docs/phase-2/tests.md` acceptance and can move to implementation review/approval.
 
