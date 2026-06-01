@@ -274,23 +274,23 @@ Freeze/review checkpoint: `todo` can replace and clear a run's current plan thro
 
 **Freeze/review checkpoint:** do not begin multimodal config work until every ordinary task model call receives Todo Plan from `TodoPlanStore`, compression cannot mutate or reconstruct it, and basic Todo status/trace is observable from persisted plan truth.
 
-- [ ] Add `runtime_todo_plan` as a non-persistent `ModelContextFrame` segment kind.
-- [ ] Inject the current run's Todo Plan after active skill context and before rolling summary, retained raw history, live/unconsumed messages, tool-loop messages, and current user input.
-- [ ] Always inject the segment, including `plan_version = 0`, `items = []`, and `Current Todo Plan is empty.` when no mutation has happened.
-- [ ] Inject the persisted version and empty summary after a successful `todo(items=[])` clear.
-- [ ] Render plan item `content` and `activeForm` as delimited structured data, not free-form instructions.
-- [ ] Include a runtime-owned instruction telling the model to call `todo` when status changes or the plan no longer matches the work.
-- [ ] Include the injected segment in deterministic token estimation and context-window accounting.
-- [ ] Exclude Todo Plan from compression frames and ensure `/compress`, automatic omission, and automatic compression leave `TodoPlanStore` unchanged.
-- [ ] Render `todo` calls, `todo_updated` events, current plan summaries, and compact counts in trace/status from `TodoPlanStore` and existing event records.
-- [ ] Ensure status/trace schema-version checks still run before reading session, run, event, checkpoint, artifact, or Todo Plan rows.
-- [ ] Write tests proving injected Todo Plan is not appended to durable conversation history.
-- [ ] Write tests proving compression summary text is not used to rebuild Todo Plan.
-- [ ] Write tests proving status/trace uses persisted Todo Plan truth and does not reconstruct Todo Plan from trace, UI state, or compression summaries.
-- [ ] Run canonical unit tests.
+- [x] Add `runtime_todo_plan` as a non-persistent `ModelContextFrame` segment kind.
+- [x] Inject the current run's Todo Plan after active skill context and before rolling summary, retained raw history, live/unconsumed messages, tool-loop messages, and current user input.
+- [x] Always inject the segment, including `plan_version = 0`, `items = []`, and `Current Todo Plan is empty.` when no mutation has happened.
+- [x] Inject the persisted version and empty summary after a successful `todo(items=[])` clear.
+- [x] Render plan item `content` and `activeForm` as delimited structured data, not free-form instructions.
+- [x] Include a runtime-owned instruction telling the model to call `todo` when status changes or the plan no longer matches the work.
+- [x] Include the injected segment in deterministic token estimation and context-window accounting.
+- [x] Exclude Todo Plan from compression frames and ensure `/compress`, automatic omission, and automatic compression leave `TodoPlanStore` unchanged.
+- [x] Render `todo` calls, `todo_updated` events, current plan summaries, and compact counts in trace/status from `TodoPlanStore` and existing event records.
+- [x] Ensure status/trace schema-version checks still run before reading session, run, event, checkpoint, artifact, or Todo Plan rows.
+- [x] Write tests proving injected Todo Plan is not appended to durable conversation history.
+- [x] Write tests proving compression summary text is not used to rebuild Todo Plan.
+- [x] Write tests proving status/trace uses persisted Todo Plan truth and does not reconstruct Todo Plan from trace, UI state, or compression summaries.
+- [x] Run canonical unit tests.
   - Command: `uv run pytest tests/unit -v`
   - Expected: all unit tests pass.
-- [ ] Run canonical integration tests.
+- [x] Run canonical integration tests.
   - Command: `uv run pytest tests/integration -v`
   - Expected: all integration tests pass.
 

@@ -11,6 +11,7 @@ from debug_agent.persistence.approval_grants import ApprovalGrantStore
 from debug_agent.persistence.checkpoints import CheckpointStore
 from debug_agent.persistence.context_snapshots import ContextSnapshotStore
 from debug_agent.persistence.events import EventWriter
+from debug_agent.persistence.todo_plans import TodoPlanStore
 from debug_agent.persistence.runs import RunStore
 from debug_agent.runtime.contracts import (
     AgentLoopAdapter,
@@ -82,6 +83,7 @@ class PromptAgentExecutor:
     tool_definitions: list[ToolDefinition]
     system_prompt: str
     skill_snapshot_store: SkillSnapshotStore
+    todo_plan_store: TodoPlanStore
     run_store: RunStore | None = None
     query_control: QueryControlPlane | None = None
     compression_model: Callable[[Any], str] | None = None
@@ -351,6 +353,7 @@ class PromptAgentExecutor:
 
         tool_metadata = {
             "skill_snapshot_store": self.skill_snapshot_store,
+            "todo_plan_store": self.todo_plan_store,
             "run_store": self.run_store,
             "approval_grants": ApprovalGrantStore(self.event_writer.connection),
             "approval_provider": approval_provider,
@@ -614,7 +617,10 @@ class PromptAgentExecutor:
         retained_messages: list[ConversationMessage],
         current_messages: list[ConversationMessage],
     ):
-        return PromptComposer(skill_snapshot_store=self.skill_snapshot_store).compose(
+        return PromptComposer(
+            skill_snapshot_store=self.skill_snapshot_store,
+            todo_plan_store=self.todo_plan_store,
+        ).compose(
             PromptCompositionRequest(
                 session_id=session.session_id,
                 run_id=run.run_id,

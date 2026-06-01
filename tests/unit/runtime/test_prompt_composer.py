@@ -5,6 +5,7 @@ from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
+from debug_agent.persistence.todo_plans import TodoPlanStore
 from debug_agent.runtime.model_context import ConversationMessage, TokenEstimator
 from debug_agent.runtime.prompt_composer import PromptComposer, PromptCompositionRequest
 from debug_agent.skills.registry import SkillRegistry
@@ -61,7 +62,10 @@ def _runtime_with_skill(tmp_path):
 
 def test_prompt_composer_orders_frame_segments_and_available_skill_headers(tmp_path) -> None:
     db, session, run, _runs, store = _runtime_with_skill(tmp_path)
-    composer = PromptComposer(skill_snapshot_store=store)
+    composer = PromptComposer(
+        skill_snapshot_store=store,
+        todo_plan_store=TodoPlanStore(db.connection),
+    )
 
     result = composer.compose(
         PromptCompositionRequest(
@@ -103,6 +107,7 @@ def test_prompt_composer_orders_frame_segments_and_available_skill_headers(tmp_p
         "main_agent_system_prompt",
         "stable_skill_formatter_header",
         "available_skill_headers",
+        "runtime_todo_plan",
         "context_summary",
         "retained_raw",
         "current_user_input",
@@ -131,7 +136,10 @@ def test_active_skill_context_segment_shape_and_metadata(tmp_path) -> None:
         name="alpha",
         content_hash=skill.overall_content_hash,
     )
-    composer = PromptComposer(skill_snapshot_store=store)
+    composer = PromptComposer(
+        skill_snapshot_store=store,
+        todo_plan_store=TodoPlanStore(db.connection),
+    )
 
     result = composer.compose(
         PromptCompositionRequest(
@@ -214,7 +222,10 @@ def test_active_skill_context_is_not_durable_and_resource_outputs_stay_ordinary(
             metadata={"tool_name": "load_skill_resource"},
         )
     ]
-    composer = PromptComposer(skill_snapshot_store=store)
+    composer = PromptComposer(
+        skill_snapshot_store=store,
+        todo_plan_store=TodoPlanStore(db.connection),
+    )
 
     result = composer.compose(
         PromptCompositionRequest(
@@ -281,7 +292,10 @@ def test_prompt_composer_estimate_uses_composed_frame_not_raw_conversation(tmp_p
             content="raw only",
         )
     ]
-    composer = PromptComposer(skill_snapshot_store=store)
+    composer = PromptComposer(
+        skill_snapshot_store=store,
+        todo_plan_store=TodoPlanStore(db.connection),
+    )
 
     result = composer.compose(
         PromptCompositionRequest(

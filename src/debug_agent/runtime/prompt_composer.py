@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from debug_agent.persistence.todo_plans import TodoPlan, TodoPlanStore
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.runtime.model_context import (
     ConversationMessage,
@@ -36,9 +37,11 @@ class PromptComposer:
         self,
         *,
         skill_snapshot_store: SkillSnapshotStore,
+        todo_plan_store: TodoPlanStore,
         token_estimator: TokenEstimator | None = None,
     ) -> None:
         self._skill_snapshot_store = skill_snapshot_store
+        self._todo_plan_store = todo_plan_store
         self._token_estimator = token_estimator or TokenEstimator()
 
     def compose(self, request: PromptCompositionRequest) -> PromptCompositionResult:
@@ -103,6 +106,23 @@ class PromptComposer:
                 )
             )
             seq += 10
+
+        segments.append(
+            self._segment(
+                seq,
+                role="system",
+                kind="runtime_todo_plan",
+                content=_todo_plan_content(
+                    self._todo_plan_store.get_current(request.run_id)
+                ),
+                metadata={
+                    "source": "runtime",
+                    "persistent": False,
+                    "compressible": False,
+                },
+            )
+        )
+        seq += 10
 
         if request.context_summary is not None:
             segments.append(
@@ -242,3 +262,52 @@ class PromptComposer:
 
 def _indent(text: str, prefix: str) -> str:
     return "\n".join(f"{prefix}{line}" for line in text.splitlines())
+
+
+def _todo_plan_content(plan: TodoPlan) -> str:
+    return _stable_json(
+        {
+            "plan_version": plan.version,
+            "items": [_prompt_item(item) for item in plan.items],
+            "summary": _todo_summary(plan),
+            "instruction": (
+                "Use the todo tool to rewrite this plan whenever task status changes "
+                "or the plan no longer matches the work."
+            ),
+        }
+    )
+
+
+def _prompt_item(item: dict[str, Any]) -> dict[str, Any]:
+    prompt_item = {
+        "index": item["index"],
+        "status": item["status"],
+        "content": item["content"],
+    }
+    if "activeForm" in item:
+        prompt_item["activeForm"] = item["activeForm"]
+    return prompt_item
+
+
+def _todo_summary(plan: TodoPlan) -> str:
+    if not plan.items:
+        return "Current Todo Plan is empty."
+    counts = {
+        "pending": sum(1 for item in plan.items if item["status"] == "pending"),
+        "in_progress": sum(
+            1 for item in plan.items if item["status"] == "in_progress"
+        ),
+        "completed": sum(1 for item in plan.items if item["status"] == "completed"),
+    }
+    return (
+        "Todo Plan has "
+        f"{counts['pending']} pending, "
+        f"{counts['in_progress']} in_progress, and "
+        f"{counts['completed']} completed items."
+    )
+
+
+def _stable_json(value: Any) -> str:
+    import json
+
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)

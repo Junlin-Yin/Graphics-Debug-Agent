@@ -8,6 +8,7 @@ from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
+from debug_agent.persistence.todo_plans import TodoPlanStore
 from debug_agent.adapters.langchain_adapter import LangChainAgentLoopAdapter
 from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.policy import build_builtin_policy
@@ -173,6 +174,7 @@ def test_active_skill_injection_shares_adapter_model_context_frame(tmp_path) -> 
         tool_definitions=gated_user_facing_tool_definitions(),
         system_prompt="system",
         skill_snapshot_store=runtime["skill_store"],
+        todo_plan_store=TodoPlanStore(runtime["db"].connection),
         run_store=runtime["runs"],
     )
 
@@ -274,6 +276,7 @@ def test_tool_loop_context_refresh_preserves_prior_skill_activation_result(tmp_p
         tool_definitions=gated_user_facing_tool_definitions(),
         system_prompt="system",
         skill_snapshot_store=runtime["skill_store"],
+        todo_plan_store=TodoPlanStore(runtime["db"].connection),
         run_store=runtime["runs"],
     )
 
@@ -346,6 +349,7 @@ def test_omitted_tool_output_remains_recoverable_from_artifact(tmp_path) -> None
         tool_definitions=[],
         system_prompt="system",
         skill_snapshot_store=runtime["skill_store"],
+        todo_plan_store=TodoPlanStore(runtime["db"].connection),
         run_store=runtime["runs"],
     )
 

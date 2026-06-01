@@ -20,6 +20,7 @@ from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeBootstrapError, RuntimeDatabase
+from debug_agent.persistence.todo_plans import TodoPlanStore
 from debug_agent.runtime.config import PHASE_0_SYSTEM_PROMPT
 from debug_agent.runtime.contracts import (
     APPROVAL_MODES,
@@ -602,6 +603,7 @@ class RuntimeOrchestrator:
                 tool_definitions=gated_user_facing_tool_definitions(),
                 system_prompt=config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
                 skill_snapshot_store=SkillSnapshotStore(db.connection),
+                todo_plan_store=TodoPlanStore(db.connection),
                 run_store=runs,
                 compression_model=make_compression_model_callable(model_result.model),
             )
@@ -702,6 +704,13 @@ class RuntimeOrchestrator:
                 "updated_at": session.updated_at,
                 "error_summary": session.error_summary,
             }
+            if latest_run is not None:
+                plan = TodoPlanStore(db.connection).get_current(latest_run.run_id)
+                if plan.version > 0:
+                    fields["todo_plan"] = {
+                        "plan_version": plan.version,
+                        "counts": _todo_counts(plan.items),
+                    }
             return StatusResult(exit_code=0, fields=fields, message="")
         finally:
             db.close()
@@ -977,6 +986,7 @@ class RuntimeOrchestrator:
             tool_definitions=gated_user_facing_tool_definitions(),
             system_prompt=config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
             skill_snapshot_store=SkillSnapshotStore(db.connection),
+            todo_plan_store=TodoPlanStore(db.connection),
             run_store=runs,
             compression_model=make_compression_model_callable(model_result.model),
         )
@@ -1311,6 +1321,16 @@ def _artifact_ids(result: AgentRunResult) -> list[str]:
     for tool_result in result.tool_results:
         artifact_ids.extend(tool_result.get("artifacts", []))
     return artifact_ids
+
+
+def _todo_counts(items: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "pending": sum(1 for item in items if item.get("status") == "pending"),
+        "in_progress": sum(
+            1 for item in items if item.get("status") == "in_progress"
+        ),
+        "completed": sum(1 for item in items if item.get("status") == "completed"),
+    }
 
 
 def _next_conversation_seq(conversation: list[dict[str, Any]]) -> int:

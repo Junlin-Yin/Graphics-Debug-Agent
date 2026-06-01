@@ -12,6 +12,7 @@ from debug_agent.persistence.checkpoints import CheckpointStore
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
+from debug_agent.persistence.todo_plans import TodoPlanStore
 
 
 @dataclass(frozen=True)
@@ -56,14 +57,16 @@ class TraceWriter:
     def _load(self, session_id: str) -> dict[str, Any]:
         artifact_store = ArtifactStore(self.connection, self.sessions_root)
         artifacts = artifact_store.list_for_session(session_id)
+        runs = RunStore(self.connection).list_for_session(session_id)
         return {
             "session": SessionStore(self.connection).get(session_id),
-            "runs": RunStore(self.connection).list_for_session(session_id),
+            "runs": runs,
             "events": EventWriter(
                 self.connection, self.sessions_root
             ).list_for_session(session_id),
             "checkpoints": CheckpointStore(self.connection).list_for_session(session_id),
             "context_snapshots": _load_context_snapshots(self.connection, session_id),
+            "todo_plans": _load_todo_plans(self.connection, runs),
             "approval_grants": _load_approval_grants(self.connection, session_id),
             "artifacts": artifacts,
             "artifact_exists": {
@@ -106,6 +109,28 @@ def _render_trace(data: dict[str, Any], metadata: dict[str, Any]) -> str:
             f"active_skills=[{active_skills}] "
             f"error_summary={run.error_summary or ''}"
         )
+    lines.extend(["", "## Todo Plans"])
+    if data["todo_plans"]:
+        for plan in data["todo_plans"]:
+            counts = plan["counts"]
+            lines.append(
+                f"- {plan['run_id']}: v{plan['plan_version']} "
+                f"{counts['pending']} pending, "
+                f"{counts['in_progress']} in_progress, "
+                f"{counts['completed']} completed"
+            )
+            for item in plan["items"]:
+                active_form = (
+                    f" activeForm={item['activeForm']}"
+                    if "activeForm" in item
+                    else ""
+                )
+                lines.append(
+                    f"  - {item['index']}. {item['status']}: "
+                    f"{item['content']}{active_form}"
+                )
+    else:
+        lines.append("- none")
     lines.extend(["", "## Timeline"])
     for event in data["events"]:
         lines.append(
@@ -217,6 +242,8 @@ def _summarize_payload(payload: dict[str, Any], kind: str | None = None) -> str:
         return _summarize_compression_failed(payload)
     if kind == "context_limit_exceeded":
         return _summarize_context_limit_exceeded(payload)
+    if kind == "todo_updated":
+        return _summarize_todo_updated(payload)
     text = str(payload)
     if len(text) <= 240:
         return text
@@ -398,6 +425,62 @@ def _summarize_context_limit_exceeded(payload: dict[str, Any]) -> str:
         f"message={_shorten(str(payload.get('message', '')))}"
         "}"
     )
+
+
+def _summarize_todo_updated(payload: dict[str, Any]) -> str:
+    raw_counts = payload.get("counts", {})
+    counts = {
+        "pending": raw_counts.get("pending", 0) if isinstance(raw_counts, dict) else 0,
+        "in_progress": raw_counts.get("in_progress", 0)
+        if isinstance(raw_counts, dict)
+        else 0,
+        "completed": raw_counts.get("completed", 0)
+        if isinstance(raw_counts, dict)
+        else 0,
+    }
+    return (
+        "{"
+        f"previous_plan_version={payload.get('previous_plan_version', '')}, "
+        f"plan_version={payload.get('plan_version', '')}, "
+        f"item_count={payload.get('item_count', 0)}, "
+        f"counts={counts}"
+        "}"
+    )
+
+
+def _load_todo_plans(connection: sqlite3.Connection, runs: list[Any]) -> list[dict[str, Any]]:
+    store = TodoPlanStore(connection)
+    plans: list[dict[str, Any]] = []
+    for run in runs:
+        plan = store.get_current(run.run_id)
+        if plan.version == 0:
+            continue
+        plans.append(
+            {
+                "run_id": run.run_id,
+                "plan_version": plan.version,
+                "counts": _todo_counts(plan.items),
+                "items": [
+                    {
+                        key: value
+                        for key, value in item.items()
+                        if key in {"index", "status", "content", "activeForm"}
+                    }
+                    for item in plan.items
+                ],
+            }
+        )
+    return plans
+
+
+def _todo_counts(items: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "pending": sum(1 for item in items if item.get("status") == "pending"),
+        "in_progress": sum(
+            1 for item in items if item.get("status") == "in_progress"
+        ),
+        "completed": sum(1 for item in items if item.get("status") == "completed"),
+    }
 
 
 def _load_context_snapshots(

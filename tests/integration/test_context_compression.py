@@ -11,6 +11,7 @@ from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
+from debug_agent.persistence.todo_plans import TodoPlanStore
 from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.orchestrator import ReplRuntime
 from debug_agent.runtime.prompt_executor import PromptAgentExecutor
@@ -93,6 +94,7 @@ def test_automatic_compression_runs_before_initial_model_call(tmp_path) -> None:
         tool_definitions=[],
         system_prompt="system",
         skill_snapshot_store=runtime["skill_store"],
+        todo_plan_store=TodoPlanStore(runtime["db"].connection),
         run_store=runtime["runs"],
         compression_model=lambda _frame: _summary_output("compressed initial history"),
     )
@@ -165,6 +167,7 @@ def test_automatic_compression_runs_before_tool_loop_followup(tmp_path) -> None:
         tool_definitions=tool_definitions(),
         system_prompt="system",
         skill_snapshot_store=runtime["skill_store"],
+        todo_plan_store=TodoPlanStore(runtime["db"].connection),
         run_store=runtime["runs"],
         compression_model=lambda _frame: _summary_output("compressed follow-up history"),
     )
@@ -198,6 +201,7 @@ def test_automatic_compression_failure_preserves_conversation(tmp_path) -> None:
         tool_definitions=[],
         system_prompt="system",
         skill_snapshot_store=runtime["skill_store"],
+        todo_plan_store=TodoPlanStore(runtime["db"].connection),
         run_store=runtime["runs"],
         compression_model=lambda _frame: "",
     )
@@ -237,6 +241,7 @@ def test_manual_compress_success_updates_repl_runtime_conversation(tmp_path) -> 
         tool_definitions=[],
         system_prompt="system",
         skill_snapshot_store=runtime["skill_store"],
+        todo_plan_store=TodoPlanStore(runtime["db"].connection),
         run_store=runtime["runs"],
         compression_model=lambda _frame: _summary_output("manual compression"),
     )
@@ -267,6 +272,7 @@ def test_manual_compress_noop_does_not_write_snapshot(tmp_path) -> None:
         tool_definitions=[],
         system_prompt="system",
         skill_snapshot_store=runtime["skill_store"],
+        todo_plan_store=TodoPlanStore(runtime["db"].connection),
         run_store=runtime["runs"],
         compression_model=lambda _frame: _summary_output("should not run"),
     )
@@ -303,6 +309,7 @@ def test_manual_compress_noop_with_no_evictable_group_does_not_mutate_conversati
         tool_definitions=[],
         system_prompt="system",
         skill_snapshot_store=runtime["skill_store"],
+        todo_plan_store=TodoPlanStore(runtime["db"].connection),
         run_store=runtime["runs"],
         compression_model=compression_model,
     )
@@ -349,6 +356,7 @@ def test_manual_compress_failure_preserves_repl_runtime_conversation(tmp_path) -
         tool_definitions=[],
         system_prompt="system",
         skill_snapshot_store=runtime["skill_store"],
+        todo_plan_store=TodoPlanStore(runtime["db"].connection),
         run_store=runtime["runs"],
         compression_model=lambda _frame: "",
     )

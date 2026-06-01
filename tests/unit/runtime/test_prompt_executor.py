@@ -11,6 +11,7 @@ from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
+from debug_agent.persistence.todo_plans import TodoPlanStore
 from debug_agent.runtime.config import PHASE_0_SYSTEM_PROMPT
 from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.context_manager import ContextManager
@@ -52,6 +53,7 @@ def _runtime(tmp_path, model):
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
     )
     return (
@@ -751,6 +753,7 @@ def test_tool_loop_followup_runs_compression_before_second_model_call(tmp_path) 
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
         compression_model=compression_model,
     )
@@ -863,6 +866,7 @@ def test_tool_loop_followup_compression_failure_preserves_boundary(tmp_path) -> 
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
         compression_model=lambda _frame: "",
     )
@@ -986,6 +990,7 @@ def test_tool_loop_followup_omission_then_compression_failure_does_not_write_bac
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
         compression_model=lambda _frame: "",
     )
@@ -1244,6 +1249,7 @@ def test_prompt_executor_passes_session_timeout_to_adapter_request(tmp_path) -> 
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
     )
 
     result = executor.run_turn(
@@ -1303,6 +1309,7 @@ def test_prompt_executor_passes_estimated_model_context_frame_identity_to_adapte
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
     )
 
     result = executor.run_turn(
@@ -1327,6 +1334,94 @@ def test_prompt_executor_passes_estimated_model_context_frame_identity_to_adapte
     }
     assert result.metadata["query_state"]["continuation_reason"] == "final_assistant_response"
     assert result.metadata["query_state"]["latest_model_context_frame"] is frame
+    db.close()
+
+
+def test_prompt_executor_injects_todo_plan_from_store_without_persisting_to_conversation(
+    tmp_path,
+) -> None:
+    class RecordingAdapter:
+        def __init__(self) -> None:
+            self.request = None
+
+        def run(self, request, context):
+            self.request = request
+            return AgentRunResult(
+                status="completed",
+                assistant_output="answer",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+        def cancel(self, run_id: str) -> None:
+            raise AssertionError("cancel should not be called")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    db = RuntimeDatabase.bootstrap(workspace)
+    sessions = SessionStore(db.connection)
+    runs = RunStore(db.connection)
+    events = EventWriter(db.connection, db.path.parent)
+    checkpoints = CheckpointStore(db.connection)
+    session = sessions.create(
+        workspace_root=workspace,
+        approval_mode="yolo",
+        config_snapshot={"provider": "fake", "model": "fake-model"},
+        session_id="sess_1",
+    )
+    run = runs.create_prompt_run(session.session_id, run_id="run_1")
+    sessions.set_active_run(session.session_id, run.run_id)
+    todo_store = TodoPlanStore(db.connection)
+    todo_store.replace_plan(
+        session.session_id,
+        run.run_id,
+        [{"content": "Persisted plan item", "status": "in_progress"}],
+        events,
+    )
+    adapter = RecordingAdapter()
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=ArtifactStore(db.connection, db.path.parent),
+        adapter=adapter,
+        tool_definitions=tool_definitions(),
+        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=todo_store,
+    )
+    conversation = [
+        {
+            "seq": 1,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "content": "A summary says a different plan exists.",
+        }
+    ]
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="hello",
+        workspace_root=str(workspace),
+        conversation=conversation,
+    )
+
+    frame = adapter.request.model_context_frame
+    todo_segments = [
+        segment
+        for segment in frame.ordered_message_segments()
+        if segment.kind == "runtime_todo_plan"
+    ]
+    assert result.status == "completed"
+    assert len(todo_segments) == 1
+    assert "Persisted plan item" in str(todo_segments[0].content)
+    assert "different plan" not in str(todo_segments[0].content)
+    assert not any(
+        message.kind == "runtime_todo_plan"
+        for message in result.metadata.get("conversation_writeback", [])
+    )
     db.close()
 
 
@@ -1384,6 +1479,7 @@ def test_prompt_executor_uses_stream_path_when_callback_is_supplied(tmp_path) ->
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
     )
     stream_events = []
 
@@ -1470,6 +1566,7 @@ def test_prompt_executor_streams_context_estimate_before_adapter_call(tmp_path) 
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
     )
     stream_events = []
 
@@ -1545,6 +1642,7 @@ def test_prompt_executor_does_not_persist_agent_stream_events(tmp_path) -> None:
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
     )
 
     executor.run_turn(
@@ -1651,6 +1749,7 @@ def test_prompt_executor_omits_old_tool_results_and_persists_context_snapshot(
         tool_definitions=[],
         system_prompt="system",
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
     )
     session = type(session)(
@@ -1843,6 +1942,7 @@ def test_prompt_executor_automatically_compresses_before_initial_model_call(
         tool_definitions=[],
         system_prompt="system",
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
         compression_model=compression_model,
     )
@@ -1966,6 +2066,7 @@ def test_prompt_executor_compression_failure_aborts_without_conversation_mutatio
         tool_definitions=[],
         system_prompt="system",
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
         compression_model=lambda _frame: "",
     )
@@ -2078,6 +2179,7 @@ def test_prompt_executor_context_limit_exceeded_aborts_without_model_call(
         tool_definitions=[],
         system_prompt="system " * 100,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
         compression_model=None,
     )
@@ -2163,6 +2265,7 @@ def test_prompt_executor_manual_compress_noop_does_not_call_model_or_snapshot(
         tool_definitions=[],
         system_prompt="system",
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
         compression_model=compression_model,
     )
@@ -2210,6 +2313,7 @@ def test_prompt_executor_manual_compress_success_writes_snapshot_and_message(
         tool_definitions=[],
         system_prompt="system",
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
         compression_model=lambda _frame: json.dumps(
             {
@@ -2314,6 +2418,7 @@ def test_prompt_executor_manual_compress_oldest_group_failure_preserves_boundary
         tool_definitions=[],
         system_prompt="system",
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
         compression_model=compression_model,
     )
@@ -2445,6 +2550,7 @@ def test_omission_plus_compression_writes_only_final_snapshot(tmp_path) -> None:
         tool_definitions=[],
         system_prompt="system",
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
         compression_model=compression_model,
     )
@@ -2578,6 +2684,7 @@ def test_repl_runtime_writes_back_omitted_conversation_and_metadata(tmp_path) ->
         tool_definitions=[],
         system_prompt="system",
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
     )
     runtime = ReplRuntime(
@@ -2869,6 +2976,7 @@ def test_repl_runtime_updates_latest_context_estimate_from_stream_event(tmp_path
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
     )
     runtime = ReplRuntime(
