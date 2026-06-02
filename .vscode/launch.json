@@ -1,0 +1,56 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug REPL TUI (normal)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "debug_agent.cli.main",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "TERM": "xterm-256color"
+      },
+      "args": [
+        "--approval-mode",
+        "normal"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Debug REPL TUI (semi-auto)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "debug_agent.cli.main",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "TERM": "xterm-256color"
+      },
+      "args": [
+        "--approval-mode",
+        "semi-auto"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Debug REPL TUI (yolo)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "debug_agent.cli.main",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "TERM": "xterm-256color"
+      },
+      "args": [
+        "--approval-mode",
+        "yolo"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}
