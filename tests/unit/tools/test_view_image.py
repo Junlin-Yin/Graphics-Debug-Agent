@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import httpx
+import openai
+
 from debug_agent.persistence.approval_grants import ApprovalGrantStore
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.events import EventWriter
@@ -141,6 +144,15 @@ class _FakeVisionClient:
     def analyze(self, **kwargs):
         self.calls.append(kwargs)
         return type("VisionResponse", (), {"text": self.text, "provider_metadata": {}})()
+
+
+class _OpenAITimeoutVisionClient:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def analyze(self, **kwargs):
+        self.calls.append(kwargs)
+        raise openai.APITimeoutError(httpx.Request("POST", "https://example.test/v1"))
 
 
 def _write_image(path, *, fmt: str = "PNG", size: tuple[int, int] = (4, 3)) -> bytes:
@@ -439,6 +451,29 @@ def test_query_validation_and_provider_json_validation(tmp_path, monkeypatch) ->
     assert too_long.error["error_class"] == "user_error"
     assert invalid_json.status == "error"
     assert invalid_json.error["error_class"] == "model_error"
+    runtime["db"].close()
+
+
+def test_view_image_openai_sdk_timeout_returns_timeout_result(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = _runtime(tmp_path, multimodal=_enabled_multimodal())
+    image = runtime["workspace"] / "capture.png"
+    _write_image(image)
+    monkeypatch.setenv("MOONSHOT_API_KEY", "secret")
+    monkeypatch.setenv("MOONSHOT_BASE_URL", "https://example.test/v1")
+    vision_client = _OpenAITimeoutVisionClient()
+
+    result = _invoke_enabled(
+        runtime,
+        {"paths": ["capture.png"]},
+        vision_client=vision_client,
+    )
+
+    assert result.status == "timeout"
+    assert result.error["error_class"] == "timeout"
+    assert vision_client.calls[0]["timeout_seconds"] == 60
     runtime["db"].close()
 
 

@@ -437,7 +437,7 @@ Freeze/review checkpoint: activation-gated `view_image` can inspect authorized l
 - [x] Make `/tools` list `todo` and list `view_image` only when enabled.
 - [x] Show a concise no-secret disabled reason through `/tools` or status when `view_image` is disabled. Prefer status if keeping `/tools` strictly model-visible.
 - [x] Ensure approval prompts for `view_image(paths=[...])` display readable path targets.
-- [ ] If TUI Todo Plan summary is implemented, render `[o]`, `[>]`, and `[ ]` markers from persisted plan state only.
+- [x] If TUI Todo Plan summary is implemented, render `[o]`, `[>]`, and `[ ]` markers from persisted plan state only.
 - [x] Run canonical unit tests.
   - Command: `uv run pytest tests/unit -v`
   - Expected: all unit tests pass.
@@ -496,7 +496,7 @@ Freeze/review checkpoint: users can inspect Phase 2 continuity and image-analysi
   - Approval command sequence: start REPL with fake main model configured to call `view_image` for `/private/tmp/myagent-phase2-m7-tty/outside/tiny.png`, complete frozen multimodal env, and workspace `/private/tmp/myagent-phase2-m7-tty/approval_workspace`; enter `inspect image`; deny prompt with `n`; enter `/exit`.
   - Approval expected result: inline approval prompt displays readable `view_image` path target; denial returns to prompt input without terminalizing the session.
   - Approval observed result: inline prompt showed `Tool: view_image` and `Target: /private/tmp/myagent-phase2-m7-tty/outside/tiny.png`; after `n`, turn status became failed and the prompt input returned, allowing `/exit`.
-  - Optional Todo Plan TUI summary: not applicable; the optional Milestone 6 TUI Todo Plan summary checklist item remains unimplemented.
+  - Optional Todo Plan TUI summary: manually verified per user report; summary renders `[o]`, `[>]`, and `[ ]` markers from persisted plan state.
   - Known limitations: manual provider smoke was not run, by contract; automated provider tests use fake/stubbed `VisionModelClient`.
 - [x] Confirm `uv lock` has been run after dependency changes and `uv.lock` is included with dependency edits.
   - Command: `uv lock`

@@ -9,6 +9,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Callable
 
+from openai import APITimeoutError
 from PIL import Image, UnidentifiedImageError
 
 from debug_agent.adapters.vision_client import (
@@ -153,7 +154,7 @@ class ViewImageTool:
                 instruction=instruction,
                 timeout_seconds=timeout_seconds,
             )
-        except TimeoutError:
+        except (TimeoutError, APITimeoutError):
             return ViewImageResult(
                 status="timeout",
                 error_message=f"Tool timed out after {timeout_seconds:g} seconds.",
