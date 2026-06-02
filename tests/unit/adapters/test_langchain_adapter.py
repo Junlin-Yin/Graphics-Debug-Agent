@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import time
+from dataclasses import replace
 from typing import Any
 
 from langchain_core.messages import AIMessage, AIMessageChunk
@@ -1016,6 +1018,90 @@ def test_langchain_adapter_feeds_tool_results_back_to_model() -> None:
             },
         )
     ]
+
+
+def test_langchain_adapter_sends_full_todo_output_back_to_model() -> None:
+    full_output = {
+        "plan_version": 1,
+        "item_count": 5,
+        "counts": {"pending": 3, "in_progress": 1, "completed": 1},
+        "items": [
+            {"index": 1, "content": "Review docs", "status": "completed"},
+            {
+                "index": 2,
+                "content": "Patch renderer",
+                "status": "in_progress",
+                "activeForm": "Patching renderer",
+            },
+            {"index": 3, "content": "Run unit tests", "status": "pending"},
+            {"index": 4, "content": "Update docs", "status": "pending"},
+            {"index": 5, "content": "Verify TUI", "status": "pending"},
+        ],
+    }
+
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="ok",
+                output=full_output,
+                error=None,
+                artifacts=[],
+                metadata={"tool_name": "todo"},
+                redacted_output="Todo Plan v1: compact preview only",
+            )
+
+    class TodoToolLoopModel:
+        def __init__(self) -> None:
+            self.messages_by_call = []
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            self.messages_by_call.append(messages)
+            if len(self.messages_by_call) == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "todo_0",
+                                "name": "todo",
+                                "args": {"items": []},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "saw full todo", "tool_calls": [], "usage": {}},
+            )()
+
+    request = replace(
+        _request(),
+        tools=[
+            {
+                "name": "todo",
+                "description": "Replace Todo Plan",
+                "input_schema": {"type": "object", "properties": {}, "required": []},
+            }
+        ],
+    )
+    model = TodoToolLoopModel()
+
+    result = LangChainAgentLoopAdapter(
+        model=model,
+        tool_broker=RecordingBroker(),
+    ).run(request, _context())
+
+    assert result.status == "completed"
+    second_call_messages = model.messages_by_call[1]
+    assert json.loads(second_call_messages[-1].content) == full_output
+    assert "compact preview only" not in second_call_messages[-1].content
 
 
 def test_langchain_adapter_stream_propagates_tool_display_metadata_from_broker_events() -> None:

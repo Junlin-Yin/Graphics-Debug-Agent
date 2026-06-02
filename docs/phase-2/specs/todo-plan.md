@@ -230,8 +230,14 @@ Successful output:
 }
 ```
 
+`ToolResult.output` must keep the complete structured Todo Plan result. For
+`todo`, the provider-visible tool-loop message must be derived from
+`ToolResult.output`, not from `ToolResult.redacted_output`, so the model can
+observe the complete current plan after the tool call.
+
 `ToolResult.redacted_output` must be either `null` or a compact text rendering
-that is safe for TUI display:
+that is safe for TUI display. When there is at most one completed item and at
+most four pending items, the compact rendering shows every item:
 
 ```text
 Todo Plan v4: 1 pending, 1 in_progress, 2 completed
@@ -255,6 +261,27 @@ the same status markers:
 - `[o]` for `completed`.
 - `[>]` for `in_progress`.
 - `[ ]` for `pending`.
+
+When the completed item count is greater than one, compact rendering collapses
+all completed items into one line using the actual display indexes:
+
+```text
+[o] (steps 1-3, 6 done)
+```
+
+When the pending item count is greater than four, compact rendering shows the
+first three pending items individually and collapses the fourth and later
+pending items into one line using the actual display indexes:
+
+```text
+[ ] (steps 8-9, 12 pending)
+```
+
+`in_progress` items remain individually rendered. Because Phase 2 allows whole
+plan rewrites without a status transition state machine, compact rendering must
+not assume items of the same status are contiguous. Range text may use `x-y`
+only for contiguous display indexes; non-contiguous indexes must be listed
+explicitly.
 
 ## Events
 

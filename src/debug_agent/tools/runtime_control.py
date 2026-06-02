@@ -501,6 +501,52 @@ def _render_todo_plan(
         )
     ]
     markers = {"completed": "[o]", "in_progress": "[>]", "pending": "[ ]"}
+    completed_steps = [
+        int(item["index"])
+        for item in items
+        if item["status"] == "completed"
+    ]
+    if len(completed_steps) > 1:
+        lines.append(f"[o] (steps {_format_step_ranges(completed_steps)} done)")
+
+    pending_seen = 0
+    aggregated_pending_steps: list[int] = []
     for item in items:
-        lines.append(f"{markers[item['status']]} {item['index']}. {item['content']}")
+        status = item["status"]
+        if status == "completed" and len(completed_steps) > 1:
+            continue
+        if status == "pending":
+            pending_seen += 1
+            if counts["pending"] > 4 and pending_seen >= 4:
+                aggregated_pending_steps.append(int(item["index"]))
+                continue
+        lines.append(f"{markers[status]} {item['index']}. {item['content']}")
+    if aggregated_pending_steps:
+        lines.append(
+            f"[ ] (steps {_format_step_ranges(aggregated_pending_steps)} pending)"
+        )
     return "\n".join(lines)
+
+
+def _format_step_ranges(steps: list[int]) -> str:
+    ranges: list[str] = []
+    start: int | None = None
+    previous: int | None = None
+    for step in steps:
+        if start is None or previous is None:
+            start = previous = step
+            continue
+        if step == previous + 1:
+            previous = step
+            continue
+        ranges.append(_format_step_range(start, previous))
+        start = previous = step
+    if start is not None and previous is not None:
+        ranges.append(_format_step_range(start, previous))
+    return ", ".join(ranges)
+
+
+def _format_step_range(start: int, end: int) -> str:
+    if start == end:
+        return str(start)
+    return f"{start}-{end}"

@@ -1011,7 +1011,11 @@ def _provider_visible_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[
 
 
 def _tool_message_content(result: dict[str, Any]) -> str:
-    output = result.get("redacted_output") or result.get("output")
+    metadata = result.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("tool_name") == "todo":
+        output = result.get("output")
+    else:
+        output = result.get("redacted_output") or result.get("output")
     if isinstance(output, str):
         return output
     if output is not None:

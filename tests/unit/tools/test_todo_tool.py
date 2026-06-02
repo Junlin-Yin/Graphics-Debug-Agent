@@ -255,3 +255,56 @@ def test_todo_clear_returns_explicit_empty_rendering(tmp_path) -> None:
     assert result.metadata["plan_version"] == 2
     assert result.redacted_output == "Todo Plan v2: empty"
     runtime["db"].close()
+
+
+def test_todo_redacted_output_compacts_completed_and_later_pending_items(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+
+    result = _invoke(
+        runtime,
+        {
+            "items": [
+                {"content": "Done one", "status": "completed"},
+                {"content": "Pending first", "status": "pending"},
+                {"content": "Done three", "status": "completed"},
+                {"content": "Pending second", "status": "pending"},
+                {
+                    "content": "Current work",
+                    "status": "in_progress",
+                    "activeForm": "Doing current work",
+                },
+                {"content": "Done six", "status": "completed"},
+                {"content": "Pending third", "status": "pending"},
+                {"content": "Pending fourth", "status": "pending"},
+                {"content": "Pending fifth", "status": "pending"},
+            ]
+        },
+    )
+
+    assert result.output["items"] == [
+        {"index": 1, "content": "Done one", "status": "completed"},
+        {"index": 2, "content": "Pending first", "status": "pending"},
+        {"index": 3, "content": "Done three", "status": "completed"},
+        {"index": 4, "content": "Pending second", "status": "pending"},
+        {
+            "index": 5,
+            "content": "Current work",
+            "status": "in_progress",
+            "activeForm": "Doing current work",
+        },
+        {"index": 6, "content": "Done six", "status": "completed"},
+        {"index": 7, "content": "Pending third", "status": "pending"},
+        {"index": 8, "content": "Pending fourth", "status": "pending"},
+        {"index": 9, "content": "Pending fifth", "status": "pending"},
+    ]
+    assert result.redacted_output == (
+        "Todo Plan v1: 5 pending, 1 in_progress, 3 completed\n"
+        "[o] (steps 1, 3, 6 done)\n"
+        "[ ] 2. Pending first\n"
+        "[ ] 4. Pending second\n"
+        "[>] 5. Current work\n"
+        "[ ] 7. Pending third\n"
+        "[ ] (steps 8-9 pending)"
+    )
+    assert len(result.redacted_output.splitlines()) == 7
+    runtime["db"].close()
