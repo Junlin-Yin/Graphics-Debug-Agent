@@ -1328,6 +1328,14 @@ def test_runtime_tool_listing_filters_view_image_by_frozen_availability() -> Non
 
     definitions = [
         ToolDefinition(
+            name="load_skill_resource",
+            description="Load a frozen skill resource file.",
+            input_schema={"type": "object"},
+            category="runtime_control",
+            risk_level="read",
+            access=["read"],
+        ),
+        ToolDefinition(
             name="todo",
             description="Replace the current Todo Plan.",
             input_schema={"type": "object"},
@@ -1348,7 +1356,7 @@ def test_runtime_tool_listing_filters_view_image_by_frozen_availability() -> Non
     disabled = "\n".join(
         format_tool_listing(
             definitions,
-            approval_mode="yolo",
+            approval_mode="normal",
             config_snapshot={
                 "multimodal": {
                     "view_image_enabled": False,
@@ -1360,7 +1368,7 @@ def test_runtime_tool_listing_filters_view_image_by_frozen_availability() -> Non
     enabled = "\n".join(
         format_tool_listing(
             definitions,
-            approval_mode="yolo",
+            approval_mode="normal",
             config_snapshot={
                 "multimodal": {
                     "view_image_enabled": True,
@@ -1370,9 +1378,13 @@ def test_runtime_tool_listing_filters_view_image_by_frozen_availability() -> Non
         )
     )
 
+    assert "- load_skill_resource [allow]" in disabled
+    assert "- todo [allow]" in disabled
     assert "- todo " in disabled
     assert "- view_image " not in disabled
     assert "view_image disabled: missing_api_key_env" in disabled
+    assert "- load_skill_resource [allow]" in enabled
+    assert "- todo [allow]" in enabled
     assert "- todo " in enabled
     assert "- view_image " in enabled
     assert "view_image disabled" not in enabled

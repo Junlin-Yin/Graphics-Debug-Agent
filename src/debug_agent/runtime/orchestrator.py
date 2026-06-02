@@ -1181,6 +1181,8 @@ def _tool_approval_behavior(
 ) -> str:
     if name == "load_skill_resource":
         return "audit-only when target is valid"
+    if name == "todo":
+        return "audit-only"
     if risk_level == "runtime_control":
         return "ask" if approval_mode == "normal" else "audit-only"
     if approval_mode == "yolo":
