@@ -133,67 +133,20 @@ class ReplRuntime:
                 if agent_stream_callback is not None
                 else None,
             )
-            if result.status == "completed":
-                estimate = result.metadata.get("context_estimate")
-                if isinstance(estimate, dict):
-                    self.latest_context_estimate = estimate
-                writeback = result.metadata.get("conversation_writeback")
-                if isinstance(writeback, list):
-                    self.conversation = [dict(message) for message in writeback]
-                next_seq = _next_conversation_seq(self.conversation)
-                turn_id = f"turn-{self.turn_counter}"
-                model_call_id = f"repl_turn_{self.turn_counter}_assistant"
-                self.conversation.append(
-                    {
-                        "seq": next_seq,
-                        "role": "user",
-                        "kind": "current_user_input",
-                        "turn_id": turn_id,
-                        "model_call_id": None,
-                        "tool_call_id": None,
-                        "content": user_input,
-                        "artifact_refs": [],
-                        "metadata": {},
-                    }
-                )
-                next_seq += 1
-                turn_tool_loop_messages = result.metadata.get("turn_tool_loop_messages")
-                if isinstance(turn_tool_loop_messages, list):
-                    for raw_message in turn_tool_loop_messages:
-                        if not isinstance(raw_message, dict):
-                            continue
-                        message = dict(raw_message)
-                        message["seq"] = next_seq
-                        message.setdefault("turn_id", turn_id)
-                        message.setdefault("artifact_refs", [])
-                        message.setdefault("metadata", {})
-                        self.conversation.append(message)
-                        next_seq += 1
-                consumed_ids = _consumed_model_call_ids(self.conversation)
-                self.conversation.append(
-                    {
-                        "seq": next_seq,
-                        "role": "assistant",
-                        "kind": "assistant_output",
-                        "turn_id": turn_id,
-                        "model_call_id": model_call_id,
-                        "tool_call_id": None,
-                        "content": result.assistant_output or "",
-                        "artifact_refs": [],
-                        "metadata": {
-                            "consumed_model_call_ids": consumed_ids,
-                        },
-                    }
-                )
-            elif result.metadata.get("approval_denied_abort") is True:
-                self._append_denied_turn_observation(user_input, result)
+            self._append_turn_conversation(user_input, result)
             return result
 
-    def _append_denied_turn_observation(
+    def _append_turn_conversation(
         self,
         user_input: str,
         result: AgentRunResult,
     ) -> None:
+        estimate = result.metadata.get("context_estimate")
+        if isinstance(estimate, dict):
+            self.latest_context_estimate = estimate
+        writeback = result.metadata.get("conversation_writeback")
+        if isinstance(writeback, list):
+            self.conversation = [dict(message) for message in writeback]
         next_seq = _next_conversation_seq(self.conversation)
         turn_id = f"turn-{self.turn_counter}"
         self.conversation.append(
@@ -209,85 +162,57 @@ class ReplRuntime:
                 "metadata": {},
             }
         )
-        denied_tool_calls = [
-            call
-            for call in result.metadata.get("denied_tool_calls", [])
-            if isinstance(call, dict)
-        ]
-        provider_tool_calls = [
-            call for call in denied_tool_calls if _non_empty_str(call.get("id"))
-        ]
-        if provider_tool_calls:
+        next_seq += 1
+        turn_tool_loop_messages = result.metadata.get("turn_tool_loop_messages")
+        if isinstance(turn_tool_loop_messages, list):
+            for raw_message in turn_tool_loop_messages:
+                if not isinstance(raw_message, dict):
+                    continue
+                message = dict(raw_message)
+                message["seq"] = next_seq
+                message.setdefault("turn_id", turn_id)
+                message.setdefault("artifact_refs", [])
+                message.setdefault("metadata", {})
+                self.conversation.append(message)
+                next_seq += 1
+        if result.status == "completed":
+            consumed_ids = _consumed_model_call_ids(self.conversation)
             self.conversation.append(
                 {
-                    "seq": next_seq + 1,
+                    "seq": next_seq,
                     "role": "assistant",
-                    "kind": "tool_call",
+                    "kind": "assistant_output",
                     "turn_id": turn_id,
-                    "model_call_id": f"repl_turn_{self.turn_counter}_denied",
+                    "model_call_id": f"repl_turn_{self.turn_counter}_assistant",
                     "tool_call_id": None,
-                    "content": {
-                        "content": "",
-                        "tool_calls": [
-                            {
-                                "id": str(call["id"]),
-                                "name": str(call.get("name") or ""),
-                                "args": call.get("args", {}),
-                            }
-                            for call in provider_tool_calls
-                        ],
-                    },
+                    "content": result.assistant_output or "",
                     "artifact_refs": [],
                     "metadata": {
-                        "terminal_observation": True,
+                        "consumed_model_call_ids": consumed_ids,
                     },
                 }
             )
-        next_seq += 1
-        if provider_tool_calls:
-            next_seq += 1
-        for index, tool_result in enumerate(result.tool_results):
-            metadata = dict(tool_result.get("metadata", {}))
-            metadata["terminal_observation"] = True
-            tool_call_id = _tool_call_id_for_result(denied_tool_calls, index)
-            if tool_call_id:
-                self.conversation.append(
-                    {
-                        "seq": next_seq,
-                        "role": "tool",
-                        "kind": "tool_result",
-                        "turn_id": turn_id,
-                        "model_call_id": None,
-                        "tool_call_id": tool_call_id,
-                        "content": {
-                            "message_type": "tool_result",
-                            "content": _denied_tool_observation_content(tool_result),
-                            "tool_call_id": tool_call_id,
-                        },
-                        "artifact_refs": list(tool_result.get("artifacts", [])),
-                        "metadata": metadata,
-                    }
-                )
-            else:
-                self.conversation.append(
-                    {
-                        "seq": next_seq,
-                        "role": "assistant",
-                        "kind": "approval_denied_observation",
-                        "turn_id": turn_id,
-                        "model_call_id": None,
-                        "tool_call_id": None,
-                        "content": _plain_denied_tool_observation_content(
-                            tool_result,
-                            denied_tool_calls[index]
-                            if index < len(denied_tool_calls)
-                            else None,
-                        ),
-                        "artifact_refs": list(tool_result.get("artifacts", [])),
-                        "metadata": metadata,
-                    }
-                )
-            next_seq += 1
+            return
+        error = result.error if isinstance(result.error, dict) else {}
+        self.conversation.append(
+            {
+                "seq": next_seq,
+                "role": "assistant",
+                "kind": "turn_failure_observation",
+                "turn_id": turn_id,
+                "model_call_id": f"repl_turn_{self.turn_counter}_failure",
+                "tool_call_id": None,
+                "content": {
+                    "status": result.status,
+                    "error_class": str(error.get("error_class") or result.status),
+                    "message": str(error.get("message") or "Prompt execution failed."),
+                },
+                "artifact_refs": [],
+                "metadata": {
+                    "failure_scope": result.metadata.get("failure_scope"),
+                },
+            }
+        )
 
     def set_approval_provider(self, approval_provider: object) -> None:
         with self._lock:
@@ -1381,57 +1306,6 @@ def _consumed_model_call_ids(conversation: list[dict[str, Any]]) -> list[str]:
         if isinstance(model_call_id, str) and model_call_id not in consumed:
             consumed.append(model_call_id)
     return consumed
-
-
-def _tool_call_id_for_result(tool_calls: list[dict[str, Any]], index: int) -> str:
-    if 0 <= index < len(tool_calls):
-        tool_call_id = tool_calls[index].get("id")
-        if _non_empty_str(tool_call_id):
-            return tool_call_id
-    return ""
-
-
-def _non_empty_str(value: object) -> bool:
-    return isinstance(value, str) and bool(value)
-
-
-def _denied_tool_observation_content(tool_result: dict[str, Any]) -> str:
-    error = tool_result.get("error")
-    return json.dumps(
-        {
-            "status": "denied",
-            "error": error
-            if isinstance(error, dict)
-            else {
-                "error_class": "policy_denied",
-                "message": "Approval denied.",
-            },
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-    )
-
-
-def _plain_denied_tool_observation_content(
-    tool_result: dict[str, Any],
-    tool_call: dict[str, Any] | None,
-) -> str:
-    tool_name = ""
-    if isinstance(tool_call, dict):
-        name = tool_call.get("name")
-        if isinstance(name, str):
-            tool_name = name
-    error = tool_result.get("error")
-    message = ""
-    if isinstance(error, dict):
-        raw_message = error.get("message")
-        if isinstance(raw_message, str):
-            message = raw_message
-    if not message:
-        message = "Approval denied."
-    if tool_name:
-        return f"Tool call denied by user: {tool_name}. {message}"
-    return f"Tool call denied by user. {message}"
 
 
 def _active_conflict_message(session_id: str) -> str:

@@ -435,6 +435,22 @@ During active execution, the prompt input buffer is non-editable and submission 
 
 Recoverable adapter failures scoped to one prompt turn, such as the Phase 0 tool-call loop iteration limit, display the turn as `failed` and append an error message, but they must not terminalize the REPL session or prompt run. The controller must leave the session database open, keep workspace ownership active, re-enable input, and allow the next user prompt in the same session.
 
+REPL prompt-turn conversation continuity is status-independent at the turn
+boundary. When `ReplRuntime.run_turn()` receives an `AgentRunResult`, it must
+use one writeback path for every result status:
+
+- apply any `conversation_writeback` first.
+- append the current user input.
+- append any tool-loop messages produced during the turn.
+- append assistant output for `completed` results.
+- append a `turn_failure_observation` for non-`completed` results, recording
+  at least `status`, `error_class`, and `message`.
+
+Special-case conversation writeback for one failure class is not allowed. A
+failed approval denial, model error, timeout, compression failure, context-limit
+abort, or tool-call iteration-limit abort must all use the same REPL turn
+writeback path.
+
 `Ctrl+C` in a TTY REPL may exit the current session as a terminal cancellation at a safe idle boundary using the Phase 0 runtime rule: persist `failed` with `error_class=cancelled`, write an error checkpoint when session/run state exists, release workspace ownership, return a non-zero exit code, and print the post-TUI terminal summary defined above. Phase 0.5 does not add mid-call cancellation propagation and does not guarantee immediate active-run interruption. The future behavior where the first `Ctrl+C` interrupts the active run and returns to user input, and a second `Ctrl+C` exits the session, is Phase 2 session-control scope unless a later phase document explicitly changes that boundary.
 
 ## Status Bar

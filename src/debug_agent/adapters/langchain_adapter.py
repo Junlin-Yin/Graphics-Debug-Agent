@@ -84,7 +84,11 @@ class LangChainAgentLoopAdapter:
                 invoked_results = self._invoke_tool_calls(request, context, tool_calls)
                 tool_results.extend(result.to_dict() for _, result in invoked_results)
                 tool_loop_messages = _tool_loop_messages(response, invoked_results)
-                abort_result = _approval_denied_abort_result(tool_results, tool_calls)
+                abort_result = _approval_denied_abort_result(
+                    tool_results,
+                    tool_calls,
+                    _tool_loop_conversation_messages(response, invoked_results),
+                )
                 if abort_result is not None:
                     return abort_result
                 refreshed = _refresh_frame_messages(context, tool_loop_messages)
@@ -173,7 +177,11 @@ class LangChainAgentLoopAdapter:
                     on_event=on_event,
                 )
                 tool_results.extend(result.to_dict() for _, result in invoked_results)
-                abort_result = _approval_denied_abort_result(tool_results, tool_calls)
+                abort_result = _approval_denied_abort_result(
+                    tool_results,
+                    tool_calls,
+                    _tool_loop_conversation_messages(response, invoked_results),
+                )
                 if abort_result is not None:
                     return abort_result
                 tool_loop_messages = _tool_loop_messages(response, invoked_results)
@@ -920,6 +928,67 @@ def _tool_loop_messages(
     return messages
 
 
+def _tool_loop_conversation_messages(
+    response: object,
+    invoked_results: list[tuple[dict[str, Any], Any]],
+) -> list[dict[str, Any]]:
+    calls = [call for call, _ in invoked_results]
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "assistant",
+            "kind": "tool_call",
+            "model_call_id": _model_call_id_from_calls(calls),
+            "tool_call_id": None,
+            "content": {
+                "content": _response_content(response),
+                "tool_calls": _provider_visible_tool_calls(calls),
+            },
+            "artifact_refs": [],
+            "metadata": {},
+        }
+    ]
+    for index, (call, result) in enumerate(invoked_results):
+        tool_call_id = str(call.get("id") or f"{call['name']}_{index}")
+        messages.append(
+            {
+                "role": "tool",
+                "kind": "tool_result",
+                "model_call_id": _model_call_id_from_tool_call_id(tool_call_id),
+                "tool_call_id": tool_call_id,
+                "content": {
+                    "message_type": "tool_result",
+                    "content": _tool_message_content(result.to_dict()),
+                    "tool_call_id": tool_call_id,
+                },
+                "artifact_refs": list(result.to_dict().get("artifacts", [])),
+                "metadata": dict(result.to_dict().get("metadata", {})),
+            }
+        )
+    return messages
+
+
+def _model_call_id_from_calls(tool_calls: list[dict[str, Any]]) -> str | None:
+    model_call_ids = {
+        model_call_id
+        for call in tool_calls
+        for tool_call_id in [call.get("id")]
+        if isinstance(tool_call_id, str)
+        for model_call_id in [_model_call_id_from_tool_call_id(tool_call_id)]
+        if model_call_id is not None
+    }
+    if len(model_call_ids) == 1:
+        return next(iter(model_call_ids))
+    return None
+
+
+def _model_call_id_from_tool_call_id(tool_call_id: str) -> str | None:
+    marker = "_tool_"
+    if marker not in tool_call_id:
+        return None
+    model_call_id, _tool_index = tool_call_id.rsplit(marker, 1)
+    return model_call_id or None
+
+
 def _assistant_tool_message(
     response: object,
     tool_calls: list[dict[str, Any]],
@@ -1104,6 +1173,7 @@ def _compression_failed_abort_result(exc: Exception) -> AgentRunResult | None:
 def _approval_denied_abort_result(
     tool_results: list[dict[str, Any]],
     tool_calls: list[dict[str, Any]],
+    tool_loop_messages: list[dict[str, Any]] | None = None,
 ) -> AgentRunResult | None:
     if not tool_results:
         return None
@@ -1137,5 +1207,10 @@ def _approval_denied_abort_result(
                 for call in tool_calls
                 if isinstance(call, dict)
             ],
+            **(
+                {"turn_tool_loop_messages": tool_loop_messages}
+                if tool_loop_messages
+                else {}
+            ),
         },
     )

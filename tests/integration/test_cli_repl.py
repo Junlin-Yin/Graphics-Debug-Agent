@@ -591,16 +591,24 @@ def test_repl_approval_denial_aborts_turn_and_is_visible_to_next_turn(
             if message["kind"] == "tool_result"
         ]
         assert len(denied_messages) == 1
-        assert denied_messages[0]["metadata"]["terminal_observation"] is True
         assert denied_messages[0]["tool_call_id"] == "model_call_1_tool_1"
-        assert denied_messages[0]["content"] == {
-            "message_type": "tool_result",
-            "content": (
-                '{"error": {"error_class": "policy_denied", '
-                '"message": "Approval denied.", "recoverable": true, '
-                '"source": "toolbroker"}, "status": "denied"}'
-            ),
-            "tool_call_id": "model_call_1_tool_1",
+        assert denied_messages[0]["content"]["message_type"] == "tool_result"
+        assert denied_messages[0]["content"]["tool_call_id"] == "model_call_1_tool_1"
+        denied_payload = json.loads(denied_messages[0]["content"]["content"])
+        assert denied_payload["status"] == "denied"
+        assert denied_payload["error"]["error_class"] == "policy_denied"
+        assert denied_payload["error"]["message"] == "Approval denied."
+        assert denied_payload["metadata"]["turn_aborted"] is True
+        failure_observations = [
+            message
+            for message in controller.runtime.conversation
+            if message["kind"] == "turn_failure_observation"
+        ]
+        assert len(failure_observations) == 1
+        assert failure_observations[0]["content"] == {
+            "status": "failed",
+            "error_class": "policy_denied",
+            "message": "Approval denied.",
         }
 
         with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:

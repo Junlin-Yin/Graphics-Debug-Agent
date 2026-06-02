@@ -106,6 +106,14 @@
 - `agent_stream_callback` sends events to the controller queue.
 - controller queue draining maps events in order.
 - recoverable one-turn adapter failures display turn `failed`, keep the REPL session database open, and allow a later prompt in the same session.
+- REPL conversation writeback uses one status-independent path for completed
+  and failed prompt turns.
+- failed REPL prompt turns append current user input, any tool-loop messages,
+  and one `turn_failure_observation` containing `status`, `error_class`, and
+  `message`.
+- approval-denied, timeout, model-error, compression-failed,
+  context-limit-exceeded, and tool-call iteration-limit failures do not use
+  separate REPL conversation writeback branches.
 - final assistant model-call deltas concatenate to `AgentRunResult.assistant_output`.
 - non-streaming provider fallback uses `invoke()`.
 - non-streaming provider fallback sets `AgentRunResult.metadata["streaming_fallback"] = True`.

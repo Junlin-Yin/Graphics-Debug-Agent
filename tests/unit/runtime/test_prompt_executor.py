@@ -382,91 +382,6 @@ def test_prompt_executor_reuses_session_approval_grant_for_same_tool_scope(
     db.close()
 
 
-def test_repl_runtime_denial_history_without_tool_id_uses_plain_observation(
-    tmp_path,
-) -> None:
-    (
-        workspace,
-        db,
-        sessions,
-        runs,
-        events,
-        checkpoints,
-        _artifacts,
-        session,
-        run,
-        executor,
-    ) = _runtime(tmp_path, object())
-    runtime = ReplRuntime(
-        db=db,
-        sessions=sessions,
-        runs=runs,
-        events=events,
-        checkpoints=checkpoints,
-        executor=executor,
-        session_id=session.session_id,
-        run_id=run.run_id,
-        workspace_root=workspace,
-    )
-    result = AgentRunResult(
-        status="failed",
-        assistant_output=None,
-        tool_results=[
-            {
-                "status": "denied",
-                "output": None,
-                "error": {
-                    "error_class": "policy_denied",
-                    "message": "Approval denied.",
-                    "source": "toolbroker",
-                    "recoverable": True,
-                },
-                "artifacts": [],
-                "metadata": {"turn_aborted": True},
-                "redacted_output": None,
-            }
-        ],
-        usage={},
-        error={
-            "error_class": "policy_denied",
-            "message": "Approval denied.",
-            "source": "toolbroker",
-            "recoverable": True,
-        },
-        metadata={
-            "failure_scope": "turn",
-            "approval_denied_abort": True,
-            "denied_tool_calls": [
-                {"id": "", "name": "write_file", "args": {"path": "count.py"}}
-            ],
-        },
-    )
-
-    runtime._append_denied_turn_observation("write count.py", result)
-
-    assert not any(
-        message["kind"] == "tool_result" and message["tool_call_id"] == ""
-        for message in runtime.conversation
-    )
-    assert not any(
-        message["kind"] == "tool_call"
-        and any(
-            call.get("id") == ""
-            for call in message.get("content", {}).get("tool_calls", [])
-        )
-        for message in runtime.conversation
-    )
-    plain_observations = [
-        message
-        for message in runtime.conversation
-        if message["kind"] == "approval_denied_observation"
-    ]
-    assert len(plain_observations) == 1
-    assert "write_file" in plain_observations[0]["content"]
-    assert "Approval denied." in plain_observations[0]["content"]
-    db.close()
-
-
 def test_tool_loop_followup_records_new_context_estimate_before_second_call(
     tmp_path,
 ) -> None:
@@ -2837,6 +2752,190 @@ def test_repl_runtime_persists_tool_loop_messages_for_next_turn_context(tmp_path
     )
     assert "persisted tool output" in second_turn_text
     assert "what did the tool return?" in second_turn_text
+    db.close()
+
+
+def test_repl_runtime_persists_failed_turn_tool_loop_and_failure_observation(
+    tmp_path,
+) -> None:
+    class FailedTurnExecutor:
+        def run_turn(self, **_kwargs):
+            return AgentRunResult(
+                status="failed",
+                assistant_output=None,
+                tool_results=[],
+                usage={},
+                error={
+                    "error_class": "internal_error",
+                    "message": "Tool call loop exceeded Phase 0 iteration limit.",
+                    "source": "adapter",
+                    "recoverable": True,
+                },
+                metadata={
+                    "failure_scope": "turn",
+                    "conversation_writeback": [
+                        {
+                            "seq": 1,
+                            "role": "assistant",
+                            "kind": "context_summary",
+                            "turn_id": "summary",
+                            "model_call_id": None,
+                            "tool_call_id": None,
+                            "content": "retained summary",
+                            "artifact_refs": [],
+                            "metadata": {},
+                        }
+                    ],
+                    "turn_tool_loop_messages": [
+                        {
+                            "role": "assistant",
+                            "kind": "tool_call",
+                            "turn_id": "turn-1",
+                            "model_call_id": "model_call_1",
+                            "tool_call_id": None,
+                            "content": {
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "read_file_0",
+                                        "name": "read_file",
+                                        "args": {"path": "notes.txt"},
+                                    }
+                                ],
+                            },
+                            "artifact_refs": [],
+                            "metadata": {},
+                        },
+                        {
+                            "role": "tool",
+                            "kind": "tool_result",
+                            "turn_id": "turn-1",
+                            "model_call_id": "model_call_1",
+                            "tool_call_id": "read_file_0",
+                            "content": {
+                                "message_type": "tool_result",
+                                "content": "notes content",
+                                "tool_call_id": "read_file_0",
+                            },
+                            "artifact_refs": [],
+                            "metadata": {},
+                        },
+                    ],
+                },
+            )
+
+    (
+        workspace,
+        db,
+        sessions,
+        runs,
+        events,
+        checkpoints,
+        _artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    runtime = ReplRuntime(
+        db=db,
+        sessions=sessions,
+        runs=runs,
+        events=events,
+        checkpoints=checkpoints,
+        executor=FailedTurnExecutor(),
+        session_id=session.session_id,
+        run_id=run.run_id,
+        workspace_root=workspace,
+    )
+
+    result = runtime.run_turn("read notes")
+
+    assert result.status == "failed"
+    assert [message["kind"] for message in runtime.conversation] == [
+        "context_summary",
+        "current_user_input",
+        "tool_call",
+        "tool_result",
+        "turn_failure_observation",
+    ]
+    assert runtime.conversation[1]["content"] == "read notes"
+    assert runtime.conversation[2]["seq"] == 3
+    assert runtime.conversation[3]["seq"] == 4
+    failure = runtime.conversation[4]
+    assert failure["role"] == "assistant"
+    assert failure["content"] == {
+        "status": "failed",
+        "error_class": "internal_error",
+        "message": "Tool call loop exceeded Phase 0 iteration limit.",
+    }
+    db.close()
+
+
+def test_repl_runtime_approval_denial_uses_unified_failure_observation(
+    tmp_path,
+) -> None:
+    class ApprovalDeniedExecutor:
+        def run_turn(self, **_kwargs):
+            return AgentRunResult(
+                status="failed",
+                assistant_output=None,
+                tool_results=[],
+                usage={},
+                error={
+                    "error_class": "policy_denied",
+                    "message": "Approval denied.",
+                    "source": "toolbroker",
+                    "recoverable": True,
+                },
+                metadata={
+                    "failure_scope": "turn",
+                    "approval_denied_abort": True,
+                    "denied_tool_calls": [
+                        {"id": "", "name": "write_file", "args": {"path": "count.py"}}
+                    ],
+                },
+            )
+
+    (
+        workspace,
+        db,
+        sessions,
+        runs,
+        events,
+        checkpoints,
+        _artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    runtime = ReplRuntime(
+        db=db,
+        sessions=sessions,
+        runs=runs,
+        events=events,
+        checkpoints=checkpoints,
+        executor=ApprovalDeniedExecutor(),
+        session_id=session.session_id,
+        run_id=run.run_id,
+        workspace_root=workspace,
+    )
+
+    result = runtime.run_turn("write count.py")
+
+    assert result.status == "failed"
+    assert [message["kind"] for message in runtime.conversation] == [
+        "current_user_input",
+        "turn_failure_observation",
+    ]
+    assert runtime.conversation[1]["content"] == {
+        "status": "failed",
+        "error_class": "policy_denied",
+        "message": "Approval denied.",
+    }
+    assert not any(
+        message["kind"] == "approval_denied_observation"
+        for message in runtime.conversation
+    )
     db.close()
 
 

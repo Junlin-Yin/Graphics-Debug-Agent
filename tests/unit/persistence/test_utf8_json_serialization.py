@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 
-from debug_agent.adapters.langchain_adapter import _tool_message_content
+from debug_agent.adapters.langchain_adapter import (
+    _provider_message_from_segment,
+    _tool_message_content,
+)
 from debug_agent.observability.logging import write_runtime_log
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.checkpoints import CheckpointStore
@@ -15,7 +18,7 @@ from debug_agent.persistence.sqlite import RuntimeDatabase
 from debug_agent.persistence.todo_plans import TodoPlanStore
 from debug_agent.runtime.context_manager import ContextManager
 from debug_agent.runtime.contracts import Checkpoint, RunEvent, utc_now_iso
-from debug_agent.runtime.orchestrator import _denied_tool_observation_content
+from debug_agent.runtime.model_context import ConversationMessage
 from debug_agent.skills.registry import SkillSnapshot
 
 
@@ -253,10 +256,22 @@ def test_model_visible_runtime_json_preserves_non_ascii_text() -> None:
             "redacted_output": None,
         }
     )
-    denied_observation = _denied_tool_observation_content(
-        {"error": {"error_class": "policy_denied", "message": UNICODE_TEXT}}
+    failure_observation = _provider_message_from_segment(
+        ConversationMessage(
+            seq=1,
+            role="assistant",
+            kind="turn_failure_observation",
+            turn_id="turn-1",
+            model_call_id="repl_turn_1_failure",
+            tool_call_id=None,
+            content={
+                "status": "failed",
+                "error_class": "policy_denied",
+                "message": UNICODE_TEXT,
+            },
+        )
     )
 
-    for content in [summary, tool_observation, denied_observation]:
+    for content in [summary, tool_observation, failure_observation["content"]]:
         assert UNICODE_TEXT in content
         assert "\\u" not in content
