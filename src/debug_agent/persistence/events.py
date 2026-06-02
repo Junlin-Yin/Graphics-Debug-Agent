@@ -36,7 +36,7 @@ class EventWriter:
                 event.run_id,
                 event.step_id,
                 event.kind,
-                json.dumps(event.payload, sort_keys=True),
+                json.dumps(event.payload, ensure_ascii=False, sort_keys=True),
                 event.version,
             ),
         )

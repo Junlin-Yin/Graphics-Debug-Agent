@@ -58,7 +58,7 @@ class SessionStore:
                     session.approval_mode,
                     session.active_run_id,
                     session.artifact_root,
-                    json.dumps(session.config_snapshot, sort_keys=True),
+                    json.dumps(session.config_snapshot, ensure_ascii=False, sort_keys=True),
                     session.latest_checkpoint_id,
                     session.created_at,
                     session.updated_at,

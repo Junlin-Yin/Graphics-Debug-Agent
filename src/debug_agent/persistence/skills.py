@@ -70,7 +70,7 @@ class SkillSnapshotStore:
                     snapshot.execution_mode,
                     snapshot.source_scope,
                     snapshot.source_path,
-                    json.dumps(snapshot.manifest, sort_keys=True),
+                    json.dumps(snapshot.manifest, ensure_ascii=False, sort_keys=True),
                     snapshot.skill_md_content,
                     snapshot.skill_md_content_hash,
                     snapshot.overall_content_hash,

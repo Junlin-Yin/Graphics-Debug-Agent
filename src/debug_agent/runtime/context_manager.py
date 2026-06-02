@@ -267,7 +267,9 @@ class ContextManager:
         return summary
 
     def canonical_summary_json(self, summary: dict[str, object]) -> str:
-        return json.dumps(summary, sort_keys=True, separators=(",", ":"))
+        return json.dumps(
+            summary, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
 
     def _instruction_segment(self) -> ConversationMessage:
         return ConversationMessage(

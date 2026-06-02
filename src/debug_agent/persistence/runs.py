@@ -50,7 +50,7 @@ class RunStore:
                 run.parent_run_id,
                 run.run_type,
                 run.status,
-                json.dumps(run.active_skills),
+                json.dumps(run.active_skills, ensure_ascii=False),
                 run.latest_checkpoint_id,
                 run.context_snapshot_id,
                 run.created_at,
@@ -165,7 +165,7 @@ class RunStore:
             SET active_skills_json = ?, updated_at = ?
             WHERE run_id = ?
             """,
-            (json.dumps(active, sort_keys=True), now, run_id),
+            (json.dumps(active, ensure_ascii=False, sort_keys=True), now, run_id),
         )
         self.connection.commit()
         return self.get(run_id)

@@ -74,7 +74,9 @@ class ContextSnapshotStore:
             context_snapshot_id=context_snapshot_id,
             payload=payload,
         )
-        retained_messages_json = json.dumps(retained_messages, sort_keys=True)
+        retained_messages_json = json.dumps(
+            retained_messages, ensure_ascii=False, sort_keys=True
+        )
         if payload_artifact_id is not None:
             retained_messages_json = "[]"
         snapshot = ContextSnapshot(
@@ -112,14 +114,16 @@ class ContextSnapshotStore:
                 snapshot.run_id,
                 snapshot.trigger,
                 snapshot.source_checkpoint_id,
-                json.dumps(snapshot.active_skill_records, sort_keys=True),
+                json.dumps(
+                    snapshot.active_skill_records, ensure_ascii=False, sort_keys=True
+                ),
                 snapshot.summary,
                 retained_messages_json,
                 snapshot.omitted_tool_result_count,
                 snapshot.evicted_message_count,
                 snapshot.evicted_model_call_group_count,
-                json.dumps(snapshot.artifact_refs, sort_keys=True),
-                json.dumps(snapshot.token_estimate, sort_keys=True),
+                json.dumps(snapshot.artifact_refs, ensure_ascii=False, sort_keys=True),
+                json.dumps(snapshot.token_estimate, ensure_ascii=False, sort_keys=True),
                 snapshot.payload_artifact_id,
                 snapshot.created_at,
                 snapshot.version,
@@ -171,7 +175,9 @@ class ContextSnapshotStore:
             context_snapshot_id=context_snapshot_id,
             payload=payload,
         )
-        retained_messages_json = json.dumps(retained_messages, sort_keys=True)
+        retained_messages_json = json.dumps(
+            retained_messages, ensure_ascii=False, sort_keys=True
+        )
         if payload_artifact_id is not None:
             retained_messages_json = "[]"
         snapshot = ContextSnapshot(
@@ -209,14 +215,16 @@ class ContextSnapshotStore:
                 snapshot.run_id,
                 snapshot.trigger,
                 snapshot.source_checkpoint_id,
-                json.dumps(snapshot.active_skill_records, sort_keys=True),
+                json.dumps(
+                    snapshot.active_skill_records, ensure_ascii=False, sort_keys=True
+                ),
                 snapshot.summary,
                 retained_messages_json,
                 snapshot.omitted_tool_result_count,
                 snapshot.evicted_message_count,
                 snapshot.evicted_model_call_group_count,
-                json.dumps(snapshot.artifact_refs, sort_keys=True),
-                json.dumps(snapshot.token_estimate, sort_keys=True),
+                json.dumps(snapshot.artifact_refs, ensure_ascii=False, sort_keys=True),
+                json.dumps(snapshot.token_estimate, ensure_ascii=False, sort_keys=True),
                 snapshot.payload_artifact_id,
                 snapshot.created_at,
                 snapshot.version,
@@ -233,7 +241,7 @@ class ContextSnapshotStore:
         context_snapshot_id: str,
         payload: dict,
     ) -> str | None:
-        serialized = json.dumps(payload, sort_keys=True)
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         if len(serialized.encode("utf-8")) <= SNAPSHOT_INLINE_THRESHOLD_BYTES:
             return None
         artifact = self.artifact_store.write_text(

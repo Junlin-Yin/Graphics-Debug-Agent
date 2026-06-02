@@ -1407,6 +1407,7 @@ def _denied_tool_observation_content(tool_result: dict[str, Any]) -> str:
                 "message": "Approval denied.",
             },
         },
+        ensure_ascii=False,
         sort_keys=True,
     )
 

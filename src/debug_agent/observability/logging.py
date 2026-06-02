@@ -36,7 +36,7 @@ class EngineLogWriter:
             "metadata": metadata,
         }
         with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def write_event_log(sessions_root: Path, event: RunEvent) -> None:

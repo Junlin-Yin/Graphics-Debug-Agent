@@ -26,7 +26,7 @@ class CheckpointStore:
                 checkpoint.session_id,
                 checkpoint.run_id,
                 checkpoint.kind,
-                json.dumps(checkpoint.state, sort_keys=True),
+                json.dumps(checkpoint.state, ensure_ascii=False, sort_keys=True),
                 checkpoint.summary,
                 checkpoint.created_at,
                 checkpoint.version,

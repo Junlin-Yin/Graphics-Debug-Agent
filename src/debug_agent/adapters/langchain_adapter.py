@@ -946,8 +946,8 @@ def _tool_message_content(result: dict[str, Any]) -> str:
     if isinstance(output, str):
         return output
     if output is not None:
-        return json.dumps(output, sort_keys=True)
-    return json.dumps(result, sort_keys=True)
+        return json.dumps(output, ensure_ascii=False, sort_keys=True)
+    return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
 
 def _displayable_chunk_text(chunk: object) -> str:

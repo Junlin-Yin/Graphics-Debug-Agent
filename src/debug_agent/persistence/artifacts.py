@@ -138,7 +138,7 @@ class ArtifactStore:
                 artifact.run_id,
                 artifact.relative_path,
                 artifact.artifact_type,
-                json.dumps(artifact.metadata, sort_keys=True),
+                json.dumps(artifact.metadata, ensure_ascii=False, sort_keys=True),
                 artifact.created_at,
                 artifact.version,
             ),

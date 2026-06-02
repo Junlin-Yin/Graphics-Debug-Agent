@@ -36,6 +36,9 @@ Phase 2 acceptance requires:
 - Phase 1 runtime databases fail closed with the Phase 2 compatibility error.
 - Phase 2 `status` and `trace` perform schema-version checks before reading
   runtime truth.
+- Runtime-authored persisted and model-visible JSON preserves non-ASCII text as
+  UTF-8 instead of ASCII `\uXXXX` escapes, except for documented hash,
+  signature, deterministic projection, or provider request-size serialization.
 
 ## Unit Tests
 
@@ -290,6 +293,33 @@ Phase 2 acceptance requires:
 - trace derives `view_image` audit facts from existing `tool_call_*` events, not
   from `view_image_*` events.
 - trace does not show image base64.
+
+### UTF-8 JSON Serialization
+
+- `sessions.config_snapshot_json` stores non-ASCII config text without
+  `\uXXXX` escapes.
+- `run_events.payload_json` stores user, assistant, tool audit, and
+  `todo_updated` payload text without `\uXXXX` escapes.
+- `checkpoints.state_json` stores non-ASCII checkpoint metadata without
+  `\uXXXX` escapes.
+- `artifacts.metadata_json` stores non-ASCII artifact metadata without
+  `\uXXXX` escapes.
+- `skill_snapshots.manifest_json` stores non-ASCII skill manifest text without
+  `\uXXXX` escapes.
+- `context_snapshots` JSON columns and artifact-backed context snapshot payloads
+  store non-ASCII retained messages and metadata without `\uXXXX` escapes.
+- `.sessions/<session_id>/logs/engine.log` entries preserve non-ASCII payload
+  text without `\uXXXX` escapes.
+- rolling compression summary JSON preserves non-ASCII summary fields in
+  conversation, context snapshot summaries, and model-visible retained context.
+- dictionary tool observations sent back to the model preserve non-ASCII output
+  fields.
+- denied-tool observation JSON appended to REPL conversation preserves
+  non-ASCII error text.
+- stable skill/runtime-control hash serialization keeps its existing canonical
+  behavior and is not changed merely for display readability.
+- provider request-size projection serialization keeps its compact
+  wire-equivalent UTF-8 JSON behavior.
 
 ### Compatibility
 

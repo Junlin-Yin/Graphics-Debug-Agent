@@ -287,7 +287,9 @@ class SkillRegistry:
                 for resource in resources
             ],
         }
-        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        serialized = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
         if len(serialized.encode("utf-8")) <= INLINE_PAYLOAD_THRESHOLD_BYTES:
             return None
         artifact = self.artifact_store.write_text(
