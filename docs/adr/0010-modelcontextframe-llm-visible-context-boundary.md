@@ -93,3 +93,18 @@ semantics and weakens runtime control over compression and skill injection.
 - Compression and active skill injection share one context boundary.
 - Adapter implementations remain replaceable because model-visible context is a
   runtime object before framework conversion.
+
+## Phase 3 Refinement
+
+[ADR 0014](0014-terminal-recovery-checkpoints-durable-conversation.md) refines
+the conversation truth referenced in this ADR.
+
+For Phase 3, append-only `conversation_messages` becomes the durable
+conversation truth. In-memory `ReplRuntime.conversation` is a projection used to
+construct `ModelContextFrame`, not the authoritative durable working history.
+`ModelContextFrame` remains the ordinary task model-call visibility boundary.
+
+[ADR 0015](0015-normalized-error-taxonomy-narrow-runtime-retry.md) refines
+model-visible failure observations. Tool and turn failures shown to the model use
+a narrow projection of normalized runtime errors rather than the complete
+internal error payload.

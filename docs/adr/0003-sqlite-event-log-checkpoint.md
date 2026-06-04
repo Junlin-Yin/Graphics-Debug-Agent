@@ -62,3 +62,19 @@ This keeps event writing simple and avoids turning trace generation into a
 synchronous dependency for every runtime event. If richer trace integrity is
 needed later, it should extend the renderer metadata without making `trace.md`
 the authoritative state store.
+
+## Phase 3 Refinement
+
+[ADR 0014](0014-terminal-recovery-checkpoints-durable-conversation.md) refines
+the checkpoint recovery semantics introduced here.
+
+For Phase 3 prompt sessions, resume recovery is restricted to terminal recovery
+checkpoints. Ordinary `turn`, `context`, and `error` checkpoints are not resume
+entrypoints. Phase 3 also adds append-only `conversation_messages` as durable
+conversation truth; terminal recovery checkpoints reference a validated
+conversation cut instead of relying on event replay or full inline conversation
+payloads.
+
+[ADR 0015](0015-normalized-error-taxonomy-narrow-runtime-retry.md) refines
+failure event payloads by requiring normalized failure facts under
+`payload.error` for Phase 3 failure-class events.

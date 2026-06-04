@@ -154,3 +154,19 @@ continuity.
   continuity truth and has no execution-authorization effect.
 - Later phases must explicitly define any Todo Plan behavior across resume,
   foreground subagent runs, or future item-level mutation.
+
+## Phase 3 Refinement
+
+[ADR 0014](0014-terminal-recovery-checkpoints-durable-conversation.md) defines
+Todo Plan behavior across terminalized prompt session resume.
+
+For Phase 3, resume restores the same session/run lineage. Terminal recovery
+checkpoints may snapshot or reference Todo Plan state for that same run. During
+resume, runtime restores the current Todo Plan row from the terminal checkpoint
+snapshot or reference, not from conversation history, compression summaries,
+trace output, or UI state.
+
+[ADR 0015](0015-normalized-error-taxonomy-narrow-runtime-retry.md) refines Todo
+failure classification. Todo schema and semantic validation failures, runtime
+dependency failures, and persistence failures must map into the centralized
+normalized error taxonomy defined for Phase 3.

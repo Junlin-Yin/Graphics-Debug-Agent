@@ -17,6 +17,8 @@
 - [ADR 0011: Layered Context Compression For Runtime Continuity](0011-layered-context-compression-continuity.md)
 - [ADR 0012: Runtime-Enforced Shell, Path, And Approval Policy](0012-runtime-enforced-shell-path-approval-policy.md)
 - [ADR 0013: Runtime-Owned Todo Plan Continuity](0013-runtime-owned-todo-plan-continuity.md)
+- [ADR 0014: Terminal Recovery Checkpoints And Durable Conversation](0014-terminal-recovery-checkpoints-durable-conversation.md)
+- [ADR 0015: Normalized Error Taxonomy And Narrow Runtime Retry](0015-normalized-error-taxonomy-narrow-runtime-retry.md)
 
 ## Core Rationale
 
@@ -26,8 +28,9 @@
 
 - LangChain/LangGraph 等 agent 框架只通过 `AgentLoopAdapter` 接入。框架可以被替换，但不能接管 session、checkpoint、artifact、approval 或 tool policy。
 - `AgentLoopAdapter.run()` 是 authoritative result path；`AgentLoopAdapter.stream()` 只是 UI observation path。TUI 可以展示增量输出，但增量输出不成为 checkpoint 或 event log 的替代品。
-- SQLite event log、checkpoint snapshot 和 filesystem artifact store 分工明确：event log 解释发生过什么，checkpoint 保存恢复所需真值，artifact store 保存大输出和外部产物。
+- SQLite event log、terminal recovery checkpoint、durable conversation 和 filesystem artifact store 分工明确：event log 解释发生过什么，terminal recovery checkpoint 是 prompt session resume 入口，durable conversation 保存 accepted model-visible message truth，artifact store 保存大输出和外部产物。
 - ToolBroker 是所有模型可见工具的强制执行边界。native tool、shell/git、runtime control、Plan tools、`view_image`、foreground subagent `task` 和后续 MCP tool 都不能绕过审批、路径策略、shell 策略、timeout 和 audit。
+- Runtime error handling 使用集中定义的 normalized error taxonomy。窄 runtime retry 只处理明确 opt-in 的 transient runtime-owned failure 和 `output_token_limit_reached` continuation，不引入 generic step retry、tool replay、token-level resume 或已接受 model-call result replay。
 
 ## Prompt-Skill Mainline
 
@@ -64,7 +67,7 @@ Runtime 提供平台能力：
 - ToolBroker、path policy、shell policy、approval、timeout、artifact 和 audit。
 - event log、checkpoint、trace 派生和 context continuity。
 - `view_image` 这类 brokered tool，把图片语义观察作为普通 tool result 交还给 agent。
-- Todo Plan 和 foreground named subagent lifecycle。
+- Todo Plan、durable conversation、terminal checkpoint resume 和 foreground named subagent lifecycle。
 
 Skill 负责业务行为：
 
