@@ -23,9 +23,6 @@ def test_debug_agent_one_shot_completes_with_fake_model(tmp_path) -> None:
 provider = "fake"
 model = "fake-model"
 fake_response = "integration answer"
-
-[development]
-allow_incomplete_phase3_prompt_execution = true
 """.strip(),
         encoding="utf-8",
     )
@@ -48,6 +45,26 @@ allow_incomplete_phase3_prompt_execution = true
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM run_events").fetchone()[0] >= 1
+        assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "completed"
+        assert conn.execute("SELECT status FROM runs").fetchone()[0] == "completed"
+        terminal_reason, terminal_error = conn.execute(
+            "SELECT terminal_reason, terminal_error_json FROM runs"
+        ).fetchone()
+        assert (terminal_reason, terminal_error) == ("terminal_completion", None)
+        durable_rows = conn.execute(
+            """
+            SELECT message_index, role, kind, content_json
+            FROM conversation_messages
+            ORDER BY message_index
+            """
+        ).fetchall()
+        assert [
+            (index, role, kind, content)
+            for index, role, kind, content in durable_rows
+        ] == [
+            (1, "user", "user_input", '{"content":"hello"}'),
+            (2, "assistant", "assistant_output", '{"content":"integration answer"}'),
+        ]
         checkpoint_kinds = [
             row[0] for row in conn.execute("SELECT kind FROM checkpoints ORDER BY rowid")
         ]
@@ -83,9 +100,6 @@ fake_response = "skill activated"
 fake_tool_calls = [
   {name = "activate_skill", args = {name = "alpha"}, id = "call_alpha"}
 ]
-
-[development]
-allow_incomplete_phase3_prompt_execution = true
 """.strip(),
         encoding="utf-8",
     )
@@ -138,9 +152,6 @@ fake_response = "must not be printed"
 fake_tool_calls = [
   {{name = "read_file", args = {{path = "{outside.as_posix()}", limit = 10}}, id = "call_read"}}
 ]
-
-[development]
-allow_incomplete_phase3_prompt_execution = true
 """.strip(),
         encoding="utf-8",
     )
@@ -193,9 +204,6 @@ def test_debug_agent_one_shot_model_cancellation_records_terminal_failure(
 provider = "fake"
 model = "fake-model"
 fake_cancelled = true
-
-[development]
-allow_incomplete_phase3_prompt_execution = true
 """.strip(),
         encoding="utf-8",
     )
@@ -231,9 +239,6 @@ def test_debug_agent_one_shot_model_timeout_records_terminal_failure(tmp_path) -
 provider = "fake"
 model = "fake-model"
 fake_timeout = true
-
-[development]
-allow_incomplete_phase3_prompt_execution = true
 """.strip(),
         encoding="utf-8",
     )

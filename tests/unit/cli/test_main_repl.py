@@ -46,7 +46,6 @@ def _write_fake_config(
     response: str = "repl answer",
     *,
     error: str | None = None,
-    allow_incomplete_prompt_execution: bool = True,
 ) -> None:
     config_dir = home / ".debug-agent"
     config_dir.mkdir(parents=True)
@@ -60,13 +59,6 @@ fake_response = "{response}"{fake_error}
 """.strip(),
         encoding="utf-8",
     )
-    if allow_incomplete_prompt_execution:
-        config_path = config_dir / "config.toml"
-        config_path.write_text(
-            config_path.read_text(encoding="utf-8")
-            + "\n\n[development]\nallow_incomplete_phase3_prompt_execution = true\n",
-            encoding="utf-8",
-        )
 
 
 def test_main_repl_accepts_two_turns_status_and_exit(
@@ -114,25 +106,23 @@ def test_main_repl_accepts_two_turns_status_and_exit(
     assert checkpoint_kinds == ["terminal_recovery"]
 
 
-def test_main_repl_phase3_development_gate_fails_before_creating_database(
+def test_main_repl_fresh_phase3_startup_no_longer_requires_development_gate(
     tmp_path, monkeypatch, capsys
 ) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     home.mkdir()
     workspace.mkdir()
-    _write_fake_config(home, "must not run", allow_incomplete_prompt_execution=False)
+    _write_fake_config(home, "fresh repl")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(workspace)
     monkeypatch.setattr("sys.stdin", io.StringIO("hello\n"))
 
     exit_code = main([])
 
-    assert exit_code == 4
-    assert "Phase 3 prompt execution is gated until durable conversation" in (
-        capsys.readouterr().err
-    )
-    assert not (workspace / ".sessions" / "runtime.db").exists()
+    assert exit_code == 0
+    assert capsys.readouterr().out == "fresh repl\n"
+    assert (workspace / ".sessions" / "runtime.db").exists()
 
 
 def test_main_repl_accepts_explicit_initial_approval_mode(

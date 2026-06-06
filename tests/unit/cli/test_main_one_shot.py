@@ -17,16 +17,6 @@ fake_response = "{response}"
     )
 
 
-def _write_gated_fake_config(home, response: str = "cli answer") -> None:
-    _write_fake_config(home, response)
-    config_path = home / ".debug-agent" / "config.toml"
-    config_path.write_text(
-        config_path.read_text(encoding="utf-8")
-        + "\n\n[development]\nallow_incomplete_phase3_prompt_execution = true\n",
-        encoding="utf-8",
-    )
-
-
 def test_main_one_shot_prints_fake_answer_and_returns_zero(
     tmp_path, monkeypatch, capsys
 ) -> None:
@@ -34,7 +24,7 @@ def test_main_one_shot_prints_fake_answer_and_returns_zero(
     workspace = tmp_path / "workspace"
     home.mkdir()
     workspace.mkdir()
-    _write_gated_fake_config(home, "hello from cli")
+    _write_fake_config(home, "hello from cli")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(workspace)
 
@@ -52,7 +42,7 @@ def test_main_one_shot_accepts_explicit_approval_mode(
     workspace = tmp_path / "workspace"
     home.mkdir()
     workspace.mkdir()
-    _write_gated_fake_config(home, "hello from semi-auto")
+    _write_fake_config(home, "hello from semi-auto")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(workspace)
 
@@ -105,21 +95,19 @@ def test_main_returns_config_error_without_creating_session(
     assert not (workspace / ".sessions" / "runtime.db").exists()
 
 
-def test_main_one_shot_phase3_development_gate_fails_before_creating_database(
+def test_main_one_shot_fresh_phase3_startup_no_longer_requires_development_gate(
     tmp_path, monkeypatch, capsys
 ) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     home.mkdir()
     workspace.mkdir()
-    _write_fake_config(home, "must not run")
+    _write_fake_config(home, "fresh startup")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(workspace)
 
     exit_code = main(["-p", "hello"])
 
-    assert exit_code == 4
-    assert "Phase 3 prompt execution is gated until durable conversation" in (
-        capsys.readouterr().err
-    )
-    assert not (workspace / ".sessions" / "runtime.db").exists()
+    assert exit_code == 0
+    assert capsys.readouterr().out == "fresh startup\n"
+    assert (workspace / ".sessions" / "runtime.db").exists()

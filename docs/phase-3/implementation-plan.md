@@ -289,21 +289,21 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 
 **Runnable state:** fresh Phase 3 user-facing one-shot/REPL sessions can start, append accepted durable conversation, terminalize eligible sessions, and fail closed for non-resumable startup failures.
 
-- [ ] Route one-shot and REPL prompt execution through a shared Phase 3 turn lifecycle.
-- [ ] Append accepted user input to durable conversation before model execution.
-- [ ] Append accepted final assistant output only after complete authoritative result.
-- [ ] Append accepted assistant tool-call messages only after complete tool-call id/name/arguments exist.
-- [ ] Append accepted tool observations only after ToolBroker returns normalized model-visible output.
-- [ ] Append runtime failure/cancellation facts only at recovery boundaries.
-- [ ] Update compression/omission so process-local conversation and projection state are updated together with durable conversation rows.
-- [ ] Ensure `todo`, active skills, approval state, frozen snapshots, and `view_image` availability stay out of durable conversation and remain dedicated runtime truth.
-- [ ] Implement one-shot normal completion terminalization with terminal reason `terminal_completion`, status `completed`, no terminal error, and terminal recovery checkpoint.
-- [ ] Implement `/exit` and normal graceful REPL shutdown terminalization with terminal reason `user_exit`.
-- [ ] Ensure graceful terminalization releases active ownership only after terminal facts are consistent.
-- [ ] Keep prompt execution paths fail-closed if terminal checkpoint or durable fact consistency cannot be established.
-- [ ] Remove the broad Phase 3 development gate for fresh workspaces after the minimum runnable slice is complete.
-- [ ] Add integration tests for one-shot completion checkpoint, REPL `/exit` checkpoint, zero-message `/exit`, startup failure non-resume marker, durable conversation ordering, Todo Plan independence, approval state preservation, and context summary durability.
-- [ ] Run canonical verification.
+- [x] Route one-shot and REPL prompt execution through a shared Phase 3 turn lifecycle.
+- [x] Append accepted user input to durable conversation before model execution.
+- [x] Append accepted final assistant output only after complete authoritative result.
+- [x] Append accepted assistant tool-call messages only after complete tool-call id/name/arguments exist.
+- [x] Append accepted tool observations only after ToolBroker returns normalized model-visible output.
+- [x] Append runtime failure/cancellation facts only at recovery boundaries.
+- [x] Update compression/omission so process-local conversation and projection state are updated together with durable conversation rows.
+- [x] Ensure `todo`, active skills, approval state, frozen snapshots, and `view_image` availability stay out of durable conversation and remain dedicated runtime truth.
+- [x] Implement one-shot normal completion terminalization with terminal reason `terminal_completion`, status `completed`, no terminal error, and terminal recovery checkpoint.
+- [x] Implement `/exit` and normal graceful REPL shutdown terminalization with terminal reason `user_exit`.
+- [x] Ensure graceful terminalization releases active ownership only after terminal facts are consistent.
+- [x] Keep prompt execution paths fail-closed if terminal checkpoint or durable fact consistency cannot be established.
+- [x] Remove the broad Phase 3 development gate for fresh workspaces after the minimum runnable slice is complete.
+- [x] Add integration tests for one-shot completion checkpoint, REPL `/exit` checkpoint, zero-message `/exit`, startup failure non-resume marker, durable conversation ordering, Todo Plan independence, approval state preservation, and context summary durability.
+- [x] Run canonical verification.
 
 ## Milestone 5: Explicit Same-Lineage Resume
 

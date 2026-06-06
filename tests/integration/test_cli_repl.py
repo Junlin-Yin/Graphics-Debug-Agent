@@ -33,9 +33,6 @@ def _write_fake_config(home: Path, response: str = "integration repl answer") ->
 provider = "fake"
 model = "fake-model"
 fake_response = "{response}"
-
-[development]
-allow_incomplete_phase3_prompt_execution = true
 """.strip(),
         encoding="utf-8",
     )
@@ -57,9 +54,6 @@ def _fake_config_snapshot(
             "You are debug-agent, a local debugging assistant. Answer concisely "
             "and use only tools exposed by the runtime."
         ),
-        "development": {
-            "allow_incomplete_phase3_prompt_execution": True,
-        },
     }
     if stream_chunks is not None:
         snapshot["fake_stream_chunks"] = stream_chunks
@@ -143,11 +137,28 @@ def test_debug_agent_repl_accepts_two_turns_status_and_exit(tmp_path) -> None:
         assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "completed"
         assert conn.execute("SELECT status FROM runs").fetchone()[0] == "completed"
         assert (
+            conn.execute("SELECT terminal_reason FROM runs").fetchone()[0]
+            == "user_exit"
+        )
+        assert (
             conn.execute(
                 "SELECT COUNT(*) FROM run_events WHERE kind = 'user_message'"
             ).fetchone()[0]
             == 2
         )
+        durable_rows = conn.execute(
+            """
+            SELECT message_index, role, kind, content_json
+            FROM conversation_messages
+            ORDER BY message_index
+            """
+        ).fetchall()
+        assert [row[:3] for row in durable_rows] == [
+            (1, "user", "user_input"),
+            (2, "assistant", "assistant_output"),
+            (3, "user", "user_input"),
+            (4, "assistant", "assistant_output"),
+        ]
         checkpoint_kinds = [
             row[0] for row in conn.execute("SELECT kind FROM checkpoints ORDER BY rowid")
         ]

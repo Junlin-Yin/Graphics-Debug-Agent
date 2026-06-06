@@ -429,16 +429,6 @@ class RuntimeOrchestrator:
         if isinstance(policy_result, OneShotResult):
             return policy_result
         config_snapshot = _ensure_phase3_frozen_runtime_defaults(policy_result)
-        gate_error = _phase3_prompt_execution_gate_error(config_snapshot)
-        if gate_error is not None:
-            return OneShotResult(
-                exit_code=ERROR_STARTUP_CONFIG,
-                assistant_output=None,
-                error=gate_error,
-                message=gate_error["message"],
-                session_id=None,
-                run_id=None,
-            )
         try:
             db = RuntimeDatabase.bootstrap(self.workspace_root)
         except RuntimeBootstrapError as exc:
@@ -875,16 +865,6 @@ class RuntimeOrchestrator:
                 ),
             )
         config_snapshot = _ensure_phase3_frozen_runtime_defaults(policy_result)
-        gate_error = _phase3_prompt_execution_gate_error(config_snapshot)
-        if gate_error is not None:
-            return ReplStartResult(
-                runtime=None,
-                error=ReplStartError(
-                    exit_code=ERROR_STARTUP_CONFIG,
-                    message=gate_error["message"],
-                    error=gate_error,
-                ),
-            )
         try:
             db = RuntimeDatabase.bootstrap(self.workspace_root)
         except RuntimeBootstrapError as exc:
@@ -1401,31 +1381,6 @@ def _bootstrap_one_shot_error(exc: RuntimeBootstrapError) -> OneShotResult:
         session_id=None,
         run_id=None,
     )
-
-
-def _phase3_prompt_execution_gate_error(
-    config_snapshot: dict[str, Any],
-) -> dict[str, Any] | None:
-    development = config_snapshot.get("development")
-    allowed = (
-        isinstance(development, dict)
-        and development.get("allow_incomplete_phase3_prompt_execution") is True
-    )
-    if allowed:
-        return None
-    message = (
-        "Phase 3 prompt execution is gated until durable conversation and terminal "
-        "recovery checkpoints are implemented."
-    )
-    return {
-        "error_class": "config_error",
-        "reason": "startup_schema_validation_failed",
-        "message": message,
-        "scope": "startup",
-        "recoverability": "recoverable",
-        "source": "orchestrator",
-        "recoverable": True,
-    }
 
 
 def _ensure_phase3_frozen_runtime_defaults(config_snapshot: dict[str, Any]) -> dict[str, Any]:
