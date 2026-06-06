@@ -10,6 +10,14 @@ from uuid import uuid4
 
 from debug_agent.adapters.langchain_adapter import LangChainAgentLoopAdapter
 from debug_agent.adapters.model_factory import ModelFactory
+from debug_agent.cli.exit_codes import (
+    ERROR_ACTIVE_SESSION_CONFLICT,
+    ERROR_EXECUTION_FAILED,
+    ERROR_LOOKUP_NOT_FOUND,
+    ERROR_STARTUP_CONFIG,
+    ERROR_USAGE,
+    map_error_to_exit_code,
+)
 from debug_agent.observability.logging import write_runtime_log
 from debug_agent.observability.trace_writer import TraceWriter
 from debug_agent.persistence.artifacts import ArtifactStore
@@ -29,6 +37,7 @@ from debug_agent.runtime.contracts import (
     RunEvent,
     utc_now_iso,
 )
+from debug_agent.runtime.errors import NormalizedError
 from debug_agent.runtime.policy import load_main_agent_policy, policy_facts_to_snapshot
 from debug_agent.runtime.prompt_executor import (
     PromptAgentExecutor,
@@ -65,6 +74,14 @@ class TraceResult:
     trace_path: Path
     summary: dict[str, Any]
     message: str
+
+
+@dataclass(frozen=True)
+class ResumeResult:
+    exit_code: int
+    message: str
+    error: dict[str, Any] | None
+    session_id: str | None
 
 
 @dataclass(frozen=True)
@@ -390,7 +407,7 @@ class RuntimeOrchestrator:
     ) -> OneShotResult:
         if approval_mode not in APPROVAL_MODES:
             return OneShotResult(
-                exit_code=2,
+                exit_code=ERROR_USAGE,
                 assistant_output=None,
                 error={
                     "error_class": "config_error",
@@ -406,6 +423,16 @@ class RuntimeOrchestrator:
         if isinstance(policy_result, OneShotResult):
             return policy_result
         config_snapshot = policy_result
+        gate_error = _phase3_prompt_execution_gate_error(config_snapshot)
+        if gate_error is not None:
+            return OneShotResult(
+                exit_code=ERROR_STARTUP_CONFIG,
+                assistant_output=None,
+                error=gate_error,
+                message=gate_error["message"],
+                session_id=None,
+                run_id=None,
+            )
         try:
             db = RuntimeDatabase.bootstrap(self.workspace_root)
         except RuntimeBootstrapError as exc:
@@ -437,7 +464,7 @@ class RuntimeOrchestrator:
                         metadata={"workspace_root": str(self.workspace_root)},
                     )
                 return OneShotResult(
-                    exit_code=3,
+                    exit_code=ERROR_ACTIVE_SESSION_CONFLICT,
                     assistant_output=None,
                     error={
                         "error_class": exc.error_class,
@@ -508,7 +535,7 @@ class RuntimeOrchestrator:
                     ),
                 )
                 return OneShotResult(
-                    exit_code=4,
+                    exit_code=ERROR_STARTUP_CONFIG,
                     assistant_output=None,
                     error=failed.error,
                     message=failed.message,
@@ -587,7 +614,10 @@ class RuntimeOrchestrator:
                     exit_code=0,
                     assistant_output=agent_result.assistant_output,
                     error=None,
-                    message=agent_result.assistant_output or "",
+                    message=_startup_success_message(
+                        db,
+                        agent_result.assistant_output or "",
+                    ),
                     session_id=session.session_id,
                     run_id=run.run_id,
                 )
@@ -606,16 +636,30 @@ class RuntimeOrchestrator:
 
     def status(self, session_id: str) -> StatusResult:
         try:
-            db = RuntimeDatabase.bootstrap(self.workspace_root)
+            db = RuntimeDatabase.bootstrap_read_only(self.workspace_root)
         except RuntimeBootstrapError as exc:
-            return StatusResult(exit_code=4, fields={}, message=str(exc))
+            return StatusResult(
+                exit_code=map_error_to_exit_code(exc.normalized_error),
+                fields={},
+                message=str(exc),
+            )
+        if db is None:
+            return StatusResult(
+                exit_code=0,
+                fields={"runtime_database": "missing", "active_session": None},
+                message="",
+            )
         try:
             sessions = SessionStore(db.connection)
             runs = RunStore(db.connection)
             try:
                 session = sessions.get(session_id)
             except StoreError as exc:
-                return StatusResult(exit_code=1, fields={}, message=exc.message)
+                return StatusResult(
+                    exit_code=ERROR_LOOKUP_NOT_FOUND,
+                    fields={},
+                    message=exc.message,
+                )
             latest_run = runs.latest_for_session(session.session_id)
             fields = {
                 "session_id": session.session_id,
@@ -643,13 +687,20 @@ class RuntimeOrchestrator:
 
     def trace(self, session_id: str) -> TraceResult:
         try:
-            db = RuntimeDatabase.bootstrap(self.workspace_root)
+            db = RuntimeDatabase.bootstrap_read_only(self.workspace_root)
         except RuntimeBootstrapError as exc:
             return TraceResult(
-                exit_code=4,
+                exit_code=map_error_to_exit_code(exc.normalized_error, boundary="trace"),
                 trace_path=Path(),
                 summary={},
                 message=str(exc),
+            )
+        if db is None:
+            return TraceResult(
+                exit_code=ERROR_LOOKUP_NOT_FOUND,
+                trace_path=Path(),
+                summary={},
+                message=f"No session found for id: {session_id}",
             )
         sessions_root = db.path.parent
         try:
@@ -659,7 +710,7 @@ class RuntimeOrchestrator:
                 )
             except StoreError as exc:
                 return TraceResult(
-                    exit_code=1,
+                    exit_code=ERROR_LOOKUP_NOT_FOUND,
                     trace_path=Path(),
                     summary={},
                     message=exc.message,
@@ -680,6 +731,59 @@ class RuntimeOrchestrator:
                 trace_path=result.trace_path,
                 summary=summary,
                 message="",
+            )
+        finally:
+            db.close()
+
+    def resume(self, session_id: str) -> ResumeResult:
+        try:
+            db = RuntimeDatabase.bootstrap_read_only(self.workspace_root)
+        except RuntimeBootstrapError as exc:
+            return ResumeResult(
+                exit_code=map_error_to_exit_code(exc.normalized_error),
+                message=str(exc),
+                error=exc.normalized_error.to_dict(),
+                session_id=None,
+            )
+        if db is None:
+            return ResumeResult(
+                exit_code=ERROR_LOOKUP_NOT_FOUND,
+                message=f"No session found for id: {session_id}",
+                error={
+                    "error_class": "user_error",
+                    "reason": "lookup_not_found",
+                    "message": f"No session found for id: {session_id}",
+                },
+                session_id=None,
+            )
+        try:
+            sessions = SessionStore(db.connection)
+            try:
+                session = sessions.get(session_id)
+            except StoreError as exc:
+                return ResumeResult(
+                    exit_code=ERROR_LOOKUP_NOT_FOUND,
+                    message=exc.message,
+                    error={
+                        "error_class": "user_error",
+                        "reason": "lookup_not_found",
+                        "message": exc.message,
+                    },
+                    session_id=None,
+                )
+            message = (
+                "Resume is gated until Phase 3 terminal recovery checkpoints "
+                "are implemented."
+            )
+            return ResumeResult(
+                exit_code=ERROR_EXECUTION_FAILED,
+                message=message,
+                error={
+                    "error_class": "runtime_error",
+                    "reason": "resume_checkpoint_required",
+                    "message": message,
+                },
+                session_id=session.session_id,
             )
         finally:
             db.close()
@@ -752,7 +856,7 @@ class RuntimeOrchestrator:
             return ReplStartResult(
                 runtime=None,
                 error=ReplStartError(
-                    exit_code=2,
+                    exit_code=ERROR_USAGE,
                     message="approval mode must be one of: normal, semi-auto, yolo",
                     error={
                         "error_class": "config_error",
@@ -773,16 +877,27 @@ class RuntimeOrchestrator:
                 ),
             )
         config_snapshot = policy_result
+        gate_error = _phase3_prompt_execution_gate_error(config_snapshot)
+        if gate_error is not None:
+            return ReplStartResult(
+                runtime=None,
+                error=ReplStartError(
+                    exit_code=ERROR_STARTUP_CONFIG,
+                    message=gate_error["message"],
+                    error=gate_error,
+                ),
+            )
         try:
             db = RuntimeDatabase.bootstrap(self.workspace_root)
         except RuntimeBootstrapError as exc:
             return ReplStartResult(
                 runtime=None,
                 error=ReplStartError(
-                    exit_code=4,
+                    exit_code=map_error_to_exit_code(exc.normalized_error),
                     message=str(exc),
                     error={
                         "error_class": exc.error_class,
+                        "reason": exc.reason,
                         "message": str(exc),
                         "source": exc.source,
                         "recoverable": exc.recoverable,
@@ -1163,6 +1278,10 @@ def _mark_failed_terminal(
         "source": "orchestrator",
         "recoverable": False,
     }
+    terminal_error = _normalize_terminal_failure_error(
+        error,
+        result_metadata=agent_result.metadata,
+    )
     latest_run = runs.get(run_id)
     latest_session = sessions.get(session_id)
     latest_checkpoint_id = latest_run.latest_checkpoint_id
@@ -1214,14 +1333,14 @@ def _mark_failed_terminal(
         session.session_id,
         run.run_id,
         "run_failed",
-        {**_error_payload(error), "error": error},
+        {**_error_payload(error), "error": terminal_error},
     )
     _append_event(
         events,
         session.session_id,
         run.run_id,
         "session_failed",
-        {**_error_payload(error), "error": error},
+        {**_error_payload(error), "error": terminal_error},
     )
     if trace_writer is not None:
         trace_writer.refresh_if_stale(session.session_id)
@@ -1237,10 +1356,11 @@ def _mark_failed_terminal(
 
 def _bootstrap_one_shot_error(exc: RuntimeBootstrapError) -> OneShotResult:
     return OneShotResult(
-        exit_code=4,
+        exit_code=map_error_to_exit_code(exc.normalized_error),
         assistant_output=None,
         error={
             "error_class": exc.error_class,
+            "reason": exc.reason,
             "message": str(exc),
             "source": exc.source,
             "recoverable": exc.recoverable,
@@ -1249,6 +1369,39 @@ def _bootstrap_one_shot_error(exc: RuntimeBootstrapError) -> OneShotResult:
         session_id=None,
         run_id=None,
     )
+
+
+def _phase3_prompt_execution_gate_error(
+    config_snapshot: dict[str, Any],
+) -> dict[str, Any] | None:
+    development = config_snapshot.get("development")
+    allowed = (
+        isinstance(development, dict)
+        and development.get("allow_incomplete_phase3_prompt_execution") is True
+    )
+    if allowed:
+        return None
+    message = (
+        "Phase 3 prompt execution is gated until durable conversation and terminal "
+        "recovery checkpoints are implemented."
+    )
+    return {
+        "error_class": "config_error",
+        "reason": "startup_schema_validation_failed",
+        "message": message,
+        "scope": "startup",
+        "recoverability": "recoverable",
+        "source": "orchestrator",
+        "recoverable": True,
+    }
+
+
+def _startup_success_message(db: RuntimeDatabase, message: str) -> str:
+    if not db.startup_messages:
+        return message
+    if not message:
+        return "\n".join(db.startup_messages)
+    return "\n".join([*db.startup_messages, message])
 
 
 def _append_event(
@@ -1318,11 +1471,155 @@ def _active_conflict_message(session_id: str) -> str:
 
 def _error_payload(error: dict[str, Any]) -> dict[str, Any]:
     return {
-        "error_class": error.get("error_class", "internal_error"),
+        "error_class": error.get("error_class", "runtime_error"),
+        "reason": error.get("reason"),
         "message": error.get("message", "Prompt execution failed."),
         "source": error.get("source", "orchestrator"),
         "recoverable": error.get("recoverable", False),
     }
+
+
+def _normalize_terminal_failure_error(
+    error: dict[str, Any],
+    *,
+    result_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    existing = error.get("error")
+    if _is_normalized_error(existing):
+        return dict(existing)
+    if _is_normalized_error(error):
+        return dict(error)
+    error_class, reason, scope = _terminal_error_identity(error)
+    metadata = _terminal_error_metadata(error, result_metadata, error_class)
+    return NormalizedError.create(
+        error_class,
+        reason,
+        message=str(error.get("message") or "Prompt execution failed."),
+        scope=scope,
+        metadata=metadata,
+        artifact_ids=_artifact_ids_from_error(error),
+    ).to_dict()
+
+
+def _terminal_error_identity(error: dict[str, Any]) -> tuple[str, str, str]:
+    error_class = str(error.get("error_class") or "runtime_error")
+    reason = error.get("reason")
+    if error_class == "compression_failed":
+        return "model_error", "compression_failed", "turn"
+    if error_class == "context_limit_exceeded":
+        return "model_error", "context_limit_exceeded", "turn"
+    if error_class == "internal_error":
+        return "runtime_error", "internal_invariant_failed", "run"
+    if error_class == "model_error":
+        return "model_error", _valid_reason_or_default(
+            "model_error", reason, "model_call_failed"
+        ), "provider"
+    if error_class == "config_error":
+        return "config_error", _config_terminal_reason(error), "startup"
+    if error_class == "policy_error":
+        return "policy_error", _valid_reason_or_default(
+            "policy_error", reason, "approval_denied"
+        ), "tool"
+    if error_class == "tool_error":
+        return "tool_error", _valid_reason_or_default(
+            "tool_error", reason, "tool_execution_failed"
+        ), "tool"
+    if error_class == "cancelled":
+        return "cancelled", _valid_reason_or_default(
+            "cancelled", reason, "user_cancel_running"
+        ), "session"
+    if error_class == "runtime_error":
+        return "runtime_error", _valid_reason_or_default(
+            "runtime_error", reason, "internal_invariant_failed"
+        ), "run"
+    if error_class == "user_error":
+        return "user_error", _valid_reason_or_default(
+            "user_error", reason, "invalid_command"
+        ), "run"
+    return "runtime_error", "internal_invariant_failed", "run"
+
+
+def _config_terminal_reason(error: dict[str, Any]) -> str:
+    reason = error.get("reason")
+    if _is_valid_reason("config_error", reason):
+        return str(reason)
+    message = str(error.get("message") or "")
+    source = str(error.get("source") or "")
+    if source == "model_factory" and "Missing auth token" in message:
+        return "provider_auth_missing"
+    if source == "model_factory" and "Unsupported provider" in message:
+        return "provider_config_invalid"
+    if source == "model_factory":
+        return "startup_model_unavailable"
+    return "startup_schema_validation_failed"
+
+
+def _valid_reason_or_default(
+    error_class: str,
+    reason: object,
+    default: str,
+) -> str:
+    if _is_valid_reason(error_class, reason):
+        return str(reason)
+    return default
+
+
+def _is_valid_reason(error_class: str, reason: object) -> bool:
+    if not isinstance(reason, str):
+        return False
+    try:
+        NormalizedError.create(
+            error_class,
+            reason,
+            message="validation",
+            scope="run",
+        )
+    except ValueError:
+        return False
+    return True
+
+
+def _terminal_error_metadata(
+    error: dict[str, Any],
+    result_metadata: dict[str, Any],
+    normalized_error_class: str,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    legacy_class = error.get("error_class")
+    if isinstance(legacy_class, str) and legacy_class != normalized_error_class:
+        metadata["legacy_error_class"] = legacy_class
+    source = error.get("source")
+    if isinstance(source, str):
+        metadata["source"] = source
+    if "recoverable" in error:
+        metadata["legacy_recoverable"] = bool(error["recoverable"])
+    failure_scope = result_metadata.get("failure_scope")
+    if isinstance(failure_scope, str):
+        metadata["failure_scope"] = failure_scope
+    return metadata
+
+
+def _artifact_ids_from_error(error: dict[str, Any]) -> list[str]:
+    artifact_ids = error.get("artifact_ids")
+    if isinstance(artifact_ids, list) and all(
+        isinstance(artifact_id, str) for artifact_id in artifact_ids
+    ):
+        return list(artifact_ids)
+    return []
+
+
+def _is_normalized_error(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("schema_version") == 1
+        and isinstance(value.get("error_class"), str)
+        and isinstance(value.get("reason"), str)
+        and isinstance(value.get("message"), str)
+        and isinstance(value.get("scope"), str)
+        and isinstance(value.get("recoverability"), str)
+        and isinstance(value.get("metadata"), dict)
+        and isinstance(value.get("artifact_ids"), list)
+    )
 
 
 def _serializable_metadata(metadata: dict[str, Any]) -> dict[str, Any]:

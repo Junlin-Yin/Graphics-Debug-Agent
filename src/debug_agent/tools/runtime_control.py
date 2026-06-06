@@ -321,13 +321,13 @@ def _validate_todo(arguments: dict[str, Any]) -> RuntimeControlTarget:
             return RuntimeControlTarget(
                 False,
                 "Todo item content must not be empty.",
-                error_class="user_error",
+                error_class="tool_error",
             )
         if len(content) > 240:
             return RuntimeControlTarget(
                 False,
                 "Todo item content must be at most 240 characters.",
-                error_class="user_error",
+                error_class="tool_error",
             )
         active_form = item.get("activeForm")
         if active_form is not None:
@@ -336,13 +336,13 @@ def _validate_todo(arguments: dict[str, Any]) -> RuntimeControlTarget:
                 return RuntimeControlTarget(
                     False,
                     "Todo item activeForm must not be empty when provided.",
-                    error_class="user_error",
+                    error_class="tool_error",
                 )
             if len(active_form) > 120:
                 return RuntimeControlTarget(
                     False,
                     "Todo item activeForm must be at most 120 characters.",
-                    error_class="user_error",
+                    error_class="tool_error",
                 )
         if item["status"] == "in_progress":
             in_progress_count += 1
@@ -350,7 +350,7 @@ def _validate_todo(arguments: dict[str, Any]) -> RuntimeControlTarget:
         return RuntimeControlTarget(
             False,
             "Todo Plan may contain at most one in_progress item.",
-            error_class="user_error",
+            error_class="tool_error",
         )
     return RuntimeControlTarget(True)
 

@@ -16,7 +16,7 @@ from debug_agent.runtime.policy import (
     build_builtin_policy,
     policy_facts_to_snapshot,
 )
-from debug_agent.tools.broker import FakeApprovalProvider, ToolBroker
+from debug_agent.tools.broker import FakeApprovalProvider, NonInteractiveApprovalProvider, ToolBroker
 from debug_agent.tools.shell import FakeShellRunner
 
 
@@ -83,7 +83,8 @@ def test_schema_validation_rejects_unknown_fields_and_invalid_limits(tmp_path) -
     assert extra.status == "denied"
     assert zero.status == "denied"
     assert missing.status == "denied"
-    assert extra.error["error_class"] == "user_error"
+    assert extra.error["error_class"] == "tool_error"
+    assert extra.error["reason"] == "tool_schema_invalid"
     assert zero.error["message"] == "limit must be a positive integer."
     assert _event_kinds(runtime) == [
         "tool_call_denied",
@@ -176,6 +177,8 @@ def test_interactive_approval_prompt_renders_required_facts_and_denial_aborts_tu
     ).fetchall()
 
     assert result.status == "denied"
+    assert result.error["error_class"] == "policy_error"
+    assert result.error["reason"] == "approval_denied"
     assert result.metadata["turn_aborted"] is True
     assert provider.requests
     request_text, facts = provider.requests[0]
@@ -192,6 +195,25 @@ def test_interactive_approval_prompt_renders_required_facts_and_denial_aborts_tu
     assert "Grant scope:" not in request_text
     assert facts["grant_scope"] == "once or session"
     assert rows == [("denied", "none", request_text)]
+    runtime["db"].close()
+
+
+def test_non_interactive_approval_required_uses_specific_policy_reason(tmp_path) -> None:
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    runtime = _runtime(tmp_path, approval_mode="normal")
+
+    result = _invoke(
+        runtime,
+        "read_file",
+        {"path": str(outside)},
+        approval_provider=NonInteractiveApprovalProvider(),
+    )
+
+    assert result.status == "denied"
+    assert result.error["error_class"] == "policy_error"
+    assert result.error["reason"] == "approval_required_non_interactive"
+    assert result.error["message"] == "Interactive approval is unavailable."
     runtime["db"].close()
 
 
@@ -558,8 +580,12 @@ def test_broker_restores_policy_from_frozen_config_when_policy_facts_are_absent(
 
     assert denied_read.status == "denied"
     assert denied_read.error["message"].startswith("Path denied by policy:")
+    assert denied_read.error["error_class"] == "policy_error"
+    assert denied_read.error["reason"] == "path_policy_denied"
     assert denied_shell.status == "denied"
     assert denied_shell.error["message"] == "Command denied by user shell policy."
+    assert denied_shell.error["error_class"] == "policy_error"
+    assert denied_shell.error["reason"] == "shell_policy_denied"
     assert _event_kinds(runtime) == ["tool_call_denied", "tool_call_denied"]
     runtime["db"].close()
 
@@ -606,6 +632,8 @@ def test_non_executed_denials_record_zero_approval_wait_and_no_execution_duratio
         if event.kind == "tool_call_denied"
     ][0]
     assert result.status == "denied"
+    assert result.error["error_class"] == "policy_error"
+    assert result.error["reason"] == "shell_policy_denied"
     assert denied["target"] == "rm -rf target"
     assert denied["approval_wait_duration_ms"] == 0
     assert "execution_duration_ms" not in denied

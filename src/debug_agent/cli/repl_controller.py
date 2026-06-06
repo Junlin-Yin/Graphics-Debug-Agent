@@ -828,5 +828,21 @@ def _is_approval_denied_abort(result: AgentRunResult) -> bool:
     return (
         _is_turn_scoped_failure(result)
         and result.metadata.get("approval_denied_abort") is True
-        and _error_class(result) == "policy_denied"
+        and (
+            _error_class(result) == "policy_denied"
+            or (
+                _error_class(result) == "policy_error"
+                and _error_reason(result) in {
+                    "approval_denied",
+                    "approval_required_non_interactive",
+                }
+            )
+        )
     )
+
+
+def _error_reason(result: AgentRunResult) -> str | None:
+    if result.error is None:
+        return None
+    reason = result.error.get("reason")
+    return str(reason) if reason is not None else None

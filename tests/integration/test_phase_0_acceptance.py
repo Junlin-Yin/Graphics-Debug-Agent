@@ -29,6 +29,9 @@ def _write_fake_config(home: Path, response: str = "acceptance answer") -> None:
 provider = "fake"
 model = "fake-model"
 fake_response = "{response}"
+
+[development]
+allow_incomplete_phase3_prompt_execution = true
 """.strip(),
         encoding="utf-8",
     )
@@ -157,6 +160,9 @@ def test_phase_0_active_workspace_conflict_acceptance(tmp_path) -> None:
         "max_tokens": 8192,
         "timeout_seconds": 120,
         "system_prompt": "You are debug-agent, a local debugging assistant. Answer concisely and use only tools exposed by the runtime.",
+        "development": {
+            "allow_incomplete_phase3_prompt_execution": True,
+        },
     }
     from debug_agent.runtime.orchestrator import RuntimeOrchestrator
 
@@ -293,6 +299,9 @@ def test_phase_0_model_config_failure_after_session_records_config_error(
         "provider_settings": {
             "base_url_env": "ANTHROPIC_BASE_URL",
             "base_url_present": False,
+        },
+        "development": {
+            "allow_incomplete_phase3_prompt_execution": True,
         },
     }
     from debug_agent.runtime.orchestrator import RuntimeOrchestrator

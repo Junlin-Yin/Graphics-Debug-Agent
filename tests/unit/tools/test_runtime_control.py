@@ -140,7 +140,8 @@ def test_runtime_control_schema_rejects_missing_and_unknown_fields(
     result = _invoke(runtime, tool_name, arguments)
 
     assert result.status == "denied"
-    assert result.error["error_class"] == "user_error"
+    assert result.error["error_class"] == "tool_error"
+    assert result.error["reason"] == "tool_schema_invalid"
     assert _event_kinds(runtime) == ["tool_call_denied"]
     runtime["db"].close()
 

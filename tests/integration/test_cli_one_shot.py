@@ -23,6 +23,9 @@ def test_debug_agent_one_shot_completes_with_fake_model(tmp_path) -> None:
 provider = "fake"
 model = "fake-model"
 fake_response = "integration answer"
+
+[development]
+allow_incomplete_phase3_prompt_execution = true
 """.strip(),
         encoding="utf-8",
     )
@@ -80,6 +83,9 @@ fake_response = "skill activated"
 fake_tool_calls = [
   {name = "activate_skill", args = {name = "alpha"}, id = "call_alpha"}
 ]
+
+[development]
+allow_incomplete_phase3_prompt_execution = true
 """.strip(),
         encoding="utf-8",
     )
@@ -132,6 +138,9 @@ fake_response = "must not be printed"
 fake_tool_calls = [
   {{name = "read_file", args = {{path = "{outside.as_posix()}", limit = 10}}, id = "call_read"}}
 ]
+
+[development]
+allow_incomplete_phase3_prompt_execution = true
 """.strip(),
         encoding="utf-8",
     )
@@ -152,18 +161,20 @@ fake_tool_calls = [
         assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "failed"
         assert conn.execute("SELECT status FROM runs").fetchone()[0] == "failed"
         assert conn.execute("SELECT active_run_id FROM sessions").fetchone()[0] is None
-        failed_error_class = conn.execute(
+        failed_error = conn.execute(
             """
-            SELECT json_extract(payload_json, '$.error_class')
+            SELECT
+              json_extract(payload_json, '$.error_class'),
+              json_extract(payload_json, '$.reason')
             FROM run_events
             WHERE kind = 'run_failed'
             """
-        ).fetchone()[0]
+        ).fetchone()
         assert conn.execute("SELECT COUNT(*) FROM approval_grants").fetchone()[0] == 0
         event_kinds = [
             row[0] for row in conn.execute("SELECT kind FROM run_events ORDER BY rowid")
         ]
-    assert failed_error_class == "policy_denied"
+    assert failed_error == ("policy_error", "approval_required_non_interactive")
     assert "approval_requested" not in event_kinds
     assert "approval_decision_recorded" not in event_kinds
 
@@ -182,6 +193,9 @@ def test_debug_agent_one_shot_model_cancellation_records_terminal_failure(
 provider = "fake"
 model = "fake-model"
 fake_cancelled = true
+
+[development]
+allow_incomplete_phase3_prompt_execution = true
 """.strip(),
         encoding="utf-8",
     )
@@ -217,6 +231,9 @@ def test_debug_agent_one_shot_model_timeout_records_terminal_failure(tmp_path) -
 provider = "fake"
 model = "fake-model"
 fake_timeout = true
+
+[development]
+allow_incomplete_phase3_prompt_execution = true
 """.strip(),
         encoding="utf-8",
     )

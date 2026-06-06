@@ -118,6 +118,9 @@ base_url_env = "ANTHROPIC_BASE_URL"
         "execution": {
             "default_shell_timeout_seconds": 300,
         },
+        "development": {
+            "allow_incomplete_phase3_prompt_execution": False,
+        },
     }
     assert "secret-value" not in str(result.snapshot)
 
@@ -159,6 +162,9 @@ fake_response = "hello"
         },
         "execution": {
             "default_shell_timeout_seconds": 300,
+        },
+        "development": {
+            "allow_incomplete_phase3_prompt_execution": False,
         },
         "multimodal": {
             "provider": None,

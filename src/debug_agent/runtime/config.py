@@ -76,6 +76,9 @@ def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
     execution_result = _resolve_execution_settings(raw_config.get("execution", {}))
     if isinstance(execution_result, ConfigError):
         return ConfigLoadResult(snapshot=None, error=execution_result, defaults=defaults)
+    development_result = _resolve_development_settings(raw_config.get("development", {}))
+    if isinstance(development_result, ConfigError):
+        return ConfigLoadResult(snapshot=None, error=development_result, defaults=defaults)
     multimodal_result = _resolve_multimodal_settings(raw_config.get("multimodal"))
     provider = config_defaults.get("provider")
     model = config_defaults.get("model")
@@ -95,6 +98,7 @@ def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
             **runtime_settings,
             "context": context_result,
             "execution": execution_result,
+            "development": development_result,
             "multimodal": multimodal_result,
             "fake_response": config_defaults.get("fake_response", "fake response"),
         }
@@ -137,6 +141,7 @@ def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
         **runtime_settings,
         "context": context_result,
         "execution": execution_result,
+        "development": development_result,
         "auth": {
             "api_key_env": api_key_env,
             "api_key_present": api_key_present,
@@ -243,6 +248,24 @@ def _resolve_execution_settings(raw_execution: Any) -> dict[str, Any] | ConfigEr
             "execution.default_shell_timeout_seconds must be a positive integer."
         )
     return {"default_shell_timeout_seconds": timeout}
+
+
+def _resolve_development_settings(raw_development: Any) -> dict[str, Any] | ConfigError:
+    if raw_development is None:
+        raw_development = {}
+    if not isinstance(raw_development, dict):
+        return _config_error("[development] must be a table.")
+    allow_prompt_execution = raw_development.get(
+        "allow_incomplete_phase3_prompt_execution",
+        False,
+    )
+    if not isinstance(allow_prompt_execution, bool):
+        return _config_error(
+            "development.allow_incomplete_phase3_prompt_execution must be a boolean."
+        )
+    return {
+        "allow_incomplete_phase3_prompt_execution": allow_prompt_execution,
+    }
 
 
 def _resolve_multimodal_settings(raw_multimodal: Any) -> dict[str, Any]:

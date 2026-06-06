@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Sequence
 
+from debug_agent.cli.exit_codes import ERROR_USAGE, INTERRUPTED
 from debug_agent.cli.repl import run_repl
 from debug_agent.persistence.sqlite import RuntimeBootstrapError
 from debug_agent.runtime.config import load_config_snapshot
@@ -12,7 +13,8 @@ from debug_agent.runtime.orchestrator import RuntimeOrchestrator
 USAGE = (
     'Usage: debug-agent [--approval-mode normal|semi-auto|yolo]  # REPL | '
     'debug-agent [--approval-mode normal|semi-auto|yolo] -p "prompt" | '
-    "debug-agent status <session_id> | debug-agent trace <session_id>"
+    "debug-agent status <session_id> | debug-agent trace <session_id> | "
+    "debug-agent resume <session_id>"
 )
 APPROVAL_MODES = {"normal", "semi-auto", "yolo"}
 
@@ -24,17 +26,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         result = RuntimeOrchestrator().cancel_active_session("Interrupted by Ctrl+C.")
         print(result.message, file=sys.stderr)
-        return result.exit_code
+        return result.exit_code or INTERRUPTED
     except RuntimeBootstrapError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
 
 def _main(args: list[str]) -> int:
-    if args and args[0] in {"status", "trace"}:
+    if args and args[0] in {"status", "trace", "resume"}:
         if len(args) != 2 or not args[1]:
             print(USAGE, file=sys.stderr)
-            return 2
+            return ERROR_USAGE
         orchestrator = RuntimeOrchestrator()
         if args[0] == "status":
             result = orchestrator.status(args[1])
@@ -43,17 +45,24 @@ def _main(args: list[str]) -> int:
                 return result.exit_code
             print(_format_fields(result.fields))
             return 0
-        result = orchestrator.trace(args[1])
+        if args[0] == "trace":
+            result = orchestrator.trace(args[1])
+            if result.exit_code != 0:
+                print(result.message, file=sys.stderr)
+                return result.exit_code
+            print(_format_fields(result.summary))
+            return 0
+        result = orchestrator.resume(args[1])
         if result.exit_code != 0:
             print(result.message, file=sys.stderr)
             return result.exit_code
-        print(_format_fields(result.summary))
+        print(result.message)
         return 0
 
     parse_result = _parse_prompt_args(args)
     if isinstance(parse_result, str):
         print(parse_result, file=sys.stderr)
-        return 2
+        return ERROR_USAGE
     approval_mode, prompt = parse_result
 
     config = load_config_snapshot()
@@ -71,7 +80,7 @@ def _main(args: list[str]) -> int:
         approval_mode=approval_mode,
     )
     if result.exit_code == 0:
-        print(result.assistant_output or "")
+        print(result.message)
     else:
         print(result.message, file=sys.stderr)
     return result.exit_code

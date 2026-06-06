@@ -20,7 +20,43 @@ def _config(response: str = "fake answer") -> dict:
             "You are debug-agent, a local debugging assistant. Answer concisely "
             "and use only tools exposed by the runtime."
         ),
+        "development": {
+            "allow_incomplete_phase3_prompt_execution": True,
+        },
     }
+
+
+def _terminal_failure_errors(workspace) -> dict[str, dict]:
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT kind, payload_json
+            FROM run_events
+            WHERE kind IN ('run_failed', 'session_failed')
+            ORDER BY kind
+            """
+        ).fetchall()
+    return {kind: json.loads(payload)["error"] for kind, payload in rows}
+
+
+def _assert_normalized_terminal_errors(
+    workspace,
+    *,
+    error_class: str,
+    reason: str,
+    scope: str,
+) -> None:
+    errors = _terminal_failure_errors(workspace)
+    assert set(errors) == {"run_failed", "session_failed"}
+    for error in errors.values():
+        assert error["schema_version"] == 1
+        assert error["error_class"] == error_class
+        assert error["reason"] == reason
+        assert error["scope"] == scope
+        assert error["recoverability"]
+        assert isinstance(error["metadata"], dict)
+        assert isinstance(error["artifact_ids"], list)
+        assert error["message"]
 
 
 def test_one_shot_success_persists_lifecycle_and_completes_session(
@@ -261,6 +297,12 @@ def test_one_shot_model_failure_marks_run_and_session_failed(tmp_path) -> None:
         ]
     assert "run_failed" in event_kinds
     assert "session_failed" in event_kinds
+    _assert_normalized_terminal_errors(
+        workspace,
+        error_class="model_error",
+        reason="model_call_failed",
+        scope="provider",
+    )
 
 
 def test_one_shot_context_limit_exceeded_records_context_fact_before_terminal_failure(
@@ -299,6 +341,12 @@ def test_one_shot_context_limit_exceeded_records_context_fact_before_terminal_fa
     assert "context_limit_exceeded" in event_kinds
     assert event_kinds.index("context_limit_exceeded") < event_kinds.index("run_failed")
     assert checkpoint_kinds[:2] == ["context", "error"]
+    _assert_normalized_terminal_errors(
+        workspace,
+        error_class="model_error",
+        reason="context_limit_exceeded",
+        scope="turn",
+    )
 
 
 def test_one_shot_compression_failed_records_context_fact_before_terminal_failure(
@@ -367,6 +415,12 @@ def test_one_shot_compression_failed_records_context_fact_before_terminal_failur
     assert "compression_failed" in event_kinds
     assert event_kinds.index("compression_failed") < event_kinds.index("run_failed")
     assert checkpoint_kinds[:2] == ["context", "error"]
+    _assert_normalized_terminal_errors(
+        workspace,
+        error_class="model_error",
+        reason="compression_failed",
+        scope="turn",
+    )
 
 
 def test_one_shot_invalid_skill_fails_before_model_call_and_releases_ownership(
@@ -413,6 +467,12 @@ def test_one_shot_invalid_skill_fails_before_model_call_and_releases_ownership(
         "run_failed",
         "session_failed",
     ]
+    _assert_normalized_terminal_errors(
+        workspace,
+        error_class="config_error",
+        reason="startup_schema_validation_failed",
+        scope="startup",
+    )
 
     (skill_dir / "SKILL.md").write_text(
         "---\nname: bad\ndescription: Fixed\n---\nbody\n", encoding="utf-8"

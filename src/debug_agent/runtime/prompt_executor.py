@@ -27,6 +27,7 @@ from debug_agent.runtime.contracts import (
 )
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.runtime.context_manager import CompressionError, ContextManager
+from debug_agent.runtime.errors import NormalizedError
 from debug_agent.runtime.model_context import CompressionContextFrame, ConversationMessage
 from debug_agent.runtime.policy import PermissionEvaluator, policy_facts_from_snapshot
 from debug_agent.runtime.prompt_composer import PromptComposer, PromptCompositionRequest
@@ -1022,6 +1023,16 @@ class PromptAgentExecutor:
                 "reason": reason,
                 "message": message,
                 "token_estimate": token_estimate,
+                "error": _normalized_error_dict(
+                    "model_error",
+                    "compression_failed",
+                    message=message,
+                    scope="turn",
+                    metadata={
+                        "compression_reason": reason,
+                        "token_estimate": token_estimate,
+                    },
+                ),
             },
         )
         checkpoint = self._save_checkpoint(
@@ -1090,6 +1101,17 @@ class PromptAgentExecutor:
                 "window_tokens": window_tokens,
                 "optimization_applied": applied,
                 "message": CONTEXT_LIMIT_EXCEEDED_MESSAGE,
+                "error": _normalized_error_dict(
+                    "model_error",
+                    "context_limit_exceeded",
+                    message=CONTEXT_LIMIT_EXCEEDED_MESSAGE,
+                    scope="turn",
+                    metadata={
+                        "estimated_tokens": estimated_tokens,
+                        "window_tokens": window_tokens,
+                        "optimization_applied": applied,
+                    },
+                ),
             },
         )
         checkpoint = self._save_checkpoint(
@@ -1317,6 +1339,8 @@ class PromptAgentExecutor:
     ) -> None:
         if kind == "model_call_completed":
             payload = self._normalize_model_completed_payload(session, run, payload)
+        if kind == "model_call_failed":
+            payload = _normalize_model_call_failed_payload(payload)
         self._append_event(
             session_id=session.session_id,
             run_id=run.run_id,
@@ -1365,6 +1389,64 @@ class PromptAgentExecutor:
             f"[model response stored as artifact: {artifact.artifact_id}]"
         )
         return payload
+
+
+def _normalize_model_call_failed_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if _is_normalized_error(payload.get("error")):
+        return payload
+    purpose = str(payload.get("purpose") or "main")
+    message = _payload_error_message(payload)
+    metadata = {"purpose": purpose}
+    return {
+        **payload,
+        "error": _normalized_error_dict(
+            "model_error",
+            "model_call_failed",
+            message=message,
+            scope="provider",
+            metadata=metadata,
+        ),
+    }
+
+
+def _payload_error_message(payload: dict[str, Any]) -> str:
+    error = payload.get("error")
+    if isinstance(error, dict) and isinstance(error.get("message"), str):
+        return error["message"]
+    if isinstance(payload.get("message"), str):
+        return payload["message"]
+    return "Model call failed."
+
+
+def _is_normalized_error(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("schema_version") == 1
+        and isinstance(value.get("error_class"), str)
+        and isinstance(value.get("reason"), str)
+        and isinstance(value.get("message"), str)
+        and isinstance(value.get("scope"), str)
+        and isinstance(value.get("recoverability"), str)
+        and isinstance(value.get("metadata"), dict)
+        and isinstance(value.get("artifact_ids"), list)
+    )
+
+
+def _normalized_error_dict(
+    error_class: str,
+    reason: str,
+    *,
+    message: str,
+    scope: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return NormalizedError.create(
+        error_class,
+        reason,
+        message=message,
+        scope=scope,
+        metadata=metadata,
+    ).to_dict()
 
 
 def _artifact_ids(result: AgentRunResult) -> list[str]:

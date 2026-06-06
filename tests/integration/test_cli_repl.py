@@ -33,6 +33,9 @@ def _write_fake_config(home: Path, response: str = "integration repl answer") ->
 provider = "fake"
 model = "fake-model"
 fake_response = "{response}"
+
+[development]
+allow_incomplete_phase3_prompt_execution = true
 """.strip(),
         encoding="utf-8",
     )
@@ -54,6 +57,9 @@ def _fake_config_snapshot(
             "You are debug-agent, a local debugging assistant. Answer concisely "
             "and use only tools exposed by the runtime."
         ),
+        "development": {
+            "allow_incomplete_phase3_prompt_execution": True,
+        },
     }
     if stream_chunks is not None:
         snapshot["fake_stream_chunks"] = stream_chunks
@@ -596,7 +602,8 @@ def test_repl_approval_denial_aborts_turn_and_is_visible_to_next_turn(
         assert denied_messages[0]["content"]["tool_call_id"] == "model_call_1_tool_1"
         denied_payload = json.loads(denied_messages[0]["content"]["content"])
         assert denied_payload["status"] == "denied"
-        assert denied_payload["error"]["error_class"] == "policy_denied"
+        assert denied_payload["error"]["error_class"] == "policy_error"
+        assert denied_payload["error"]["reason"] == "approval_denied"
         assert denied_payload["error"]["message"] == "Approval denied."
         assert denied_payload["metadata"]["turn_aborted"] is True
         failure_observations = [
@@ -607,7 +614,7 @@ def test_repl_approval_denial_aborts_turn_and_is_visible_to_next_turn(
         assert len(failure_observations) == 1
         assert failure_observations[0]["content"] == {
             "status": "failed",
-            "error_class": "policy_denied",
+            "error_class": "policy_error",
             "message": "Approval denied.",
         }
 
@@ -637,7 +644,8 @@ def test_repl_approval_denial_aborts_turn_and_is_visible_to_next_turn(
             _provider_message_content(message)
             for message in model.messages_by_call[1]
         )
-        assert "policy_denied" in second_call_text
+        assert "policy_error" in second_call_text
+        assert "approval_denied" in second_call_text
         assert "Approval denied." in second_call_text
         assert "second turn saw prior denial" in [
             event.payload.get("text") for event in view.events

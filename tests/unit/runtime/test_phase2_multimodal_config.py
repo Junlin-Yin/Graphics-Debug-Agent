@@ -22,6 +22,9 @@ provider = "fake"
 model = "fake-model"
 fake_response = "done"
 
+[development]
+allow_incomplete_phase3_prompt_execution = true
+
 {multimodal_body}
 """
 

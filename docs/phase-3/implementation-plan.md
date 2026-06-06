@@ -179,22 +179,22 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 
 **Runnable state:** fresh Phase 3 persistence can initialize; legacy handling is deterministic; incomplete Phase 3 prompt execution remains gated.
 
-- [ ] Define `PHASE_3_SCHEMA_USER_VERSION = 3`.
-- [ ] Write `PRAGMA user_version = 3` for fresh Phase 3 databases before runtime truth is interpreted.
-- [ ] Implement startup-only destructive reset for missing/`0` or Phase 0/0.5/1/2 `.sessions/runtime.db` before reading any legacy rows.
-- [ ] Ensure startup reset deletes only `.sessions/runtime.db` and does not reference orphaned legacy artifacts/logs/traces/checkpoint payloads.
-- [ ] Ensure unknown future schema versions always fail closed and are never deleted.
-- [ ] Ensure `status`, `trace`, and `resume` never create a missing runtime DB and never delete an existing DB.
-- [ ] Ensure startup, active ownership checks, `status`, `trace`, and `resume` validate schema version before session/run/event/checkpoint/artifact/Todo/ownership reads.
-- [ ] Add user-facing startup reset guidance and read-only/recovery fail-closed guidance required by `scope.md`.
-- [ ] Add centralized normalized error classes, reason registry, constructor validation, recoverability defaults, and model-visible projection helpers.
-- [ ] Add semantic CLI exit-code constants and route one-shot, REPL, `resume`, `status`, and `trace` boundaries through the Phase 3 dispatch order.
-- [ ] Update failure-class events to persist normalized error objects at `payload.error`.
-- [ ] Remap model-visible tool argument and local semantic validation failures for `todo` and `view_image` to `tool_error/tool_schema_invalid`.
-- [ ] Preserve disabled `view_image` behavior: malformed disabled calls validate first; valid calls against frozen disabled availability return `config_error/tool_unavailable`; unknown tools remain `tool_error/unknown_tool`.
-- [ ] Audit model factory, adapter construction, provider config, approval provider, context/compression, and old top-level error paths for unnormalized errors.
-- [ ] Add unit tests for fresh DB user version, startup legacy reset, read-only/recovery fail-closed behavior, error registry rejection, CLI exit mapping, `payload.error`, and tool validation remapping.
-- [ ] Run canonical verification.
+- [x] Define `PHASE_3_SCHEMA_USER_VERSION = 3`.
+- [x] Write `PRAGMA user_version = 3` for fresh Phase 3 databases before runtime truth is interpreted.
+- [x] Implement startup-only destructive reset for missing/`0` or Phase 0/0.5/1/2 `.sessions/runtime.db` before reading any legacy rows.
+- [x] Ensure startup reset deletes only `.sessions/runtime.db` and does not reference orphaned legacy artifacts/logs/traces/checkpoint payloads.
+- [x] Ensure unknown future schema versions always fail closed and are never deleted.
+- [x] Ensure `status`, `trace`, and `resume` never create a missing runtime DB and never delete an existing DB.
+- [x] Ensure startup, active ownership checks, `status`, `trace`, and `resume` validate schema version before session/run/event/checkpoint/artifact/Todo/ownership reads.
+- [x] Add user-facing startup reset guidance and read-only/recovery fail-closed guidance required by `scope.md`.
+- [x] Add centralized normalized error classes, reason registry, constructor validation, recoverability defaults, and model-visible projection helpers.
+- [x] Add semantic CLI exit-code constants and route one-shot, REPL, `resume`, `status`, and `trace` boundaries through the Phase 3 dispatch order.
+- [x] Update failure-class events to persist normalized error objects at `payload.error`.
+- [x] Remap model-visible tool argument and local semantic validation failures for `todo` and `view_image` to `tool_error/tool_schema_invalid`.
+- [x] Preserve disabled `view_image` behavior: malformed disabled calls validate first; valid calls against frozen disabled availability return `config_error/tool_unavailable`; unknown tools remain `tool_error/unknown_tool`.
+- [x] Audit model factory, adapter construction, provider config, approval provider, context/compression, and old top-level error paths for unnormalized errors.
+- [x] Add unit tests for fresh DB user version, startup legacy reset, read-only/recovery fail-closed behavior, error registry rejection, CLI exit mapping, `payload.error`, and tool validation remapping.
+- [x] Run canonical verification.
 
 ## Milestone 2: Durable Conversation Store And Projection State
 

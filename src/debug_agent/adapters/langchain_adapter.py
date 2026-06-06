@@ -1125,6 +1125,9 @@ def _latest_tool_audit_payload(
 
 
 def _error_from_tool_audit(payload: dict[str, Any]) -> dict[str, Any] | None:
+    normalized_error = payload.get("error")
+    if isinstance(normalized_error, dict):
+        return dict(normalized_error)
     message = payload.get("message")
     error_class = payload.get("error_class")
     if not isinstance(message, str) or not message:
@@ -1186,19 +1189,21 @@ def _approval_denied_abort_result(
     error = latest.get("error")
     if not isinstance(metadata, dict) or metadata.get("turn_aborted") is not True:
         return None
-    if not isinstance(error, dict) or error.get("error_class") != "policy_denied":
+    if not isinstance(error, dict):
+        return None
+    is_legacy_denial = error.get("error_class") == "policy_denied"
+    is_normalized_denial = (
+        error.get("error_class") == "policy_error"
+        and error.get("reason") in {"approval_denied", "approval_required_non_interactive"}
+    )
+    if not is_legacy_denial and not is_normalized_denial:
         return None
     return AgentRunResult(
         status="failed",
         assistant_output=None,
         tool_results=list(tool_results),
         usage={},
-        error={
-            "error_class": "policy_denied",
-            "message": str(error.get("message") or "Approval denied."),
-            "source": str(error.get("source") or "toolbroker"),
-            "recoverable": True,
-        },
+        error=error,
         metadata={
             "failure_scope": "turn",
             "approval_denied_abort": True,

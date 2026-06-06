@@ -11,6 +11,7 @@ from uuid import uuid4
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.events import EventWriter
 from debug_agent.runtime.contracts import RunEvent, ToolDefinition, ToolResult, utc_now_iso
+from debug_agent.runtime.errors import NormalizedError
 from debug_agent.runtime.policy import (
     ApprovalGrant,
     NormalizedToolCall,
@@ -180,7 +181,12 @@ class ToolBroker:
         approval_wait_duration_ms = 0
         tool_audit_recorder = context.get("tool_audit_recorder")
         if not isinstance(arguments, dict):
-            result = _denied_result("Tool arguments must be an object.", error_class="user_error")
+            result = _denied_result(
+                "Tool arguments must be an object.",
+                error_class="tool_error",
+                reason="tool_schema_invalid",
+                metadata={"tool_name": tool_name},
+            )
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
@@ -204,7 +210,9 @@ class ToolBroker:
         if definition is None or not tool_name.strip():
             result = _denied_result(
                 "Invalid tool name." if not tool_name.strip() else f"Unknown tool: {tool_name}",
-                error_class="policy_denied",
+                error_class="tool_error",
+                reason="unknown_tool",
+                metadata={"tool_name": tool_name},
             )
             self._write_event(
                 session_id=session_id,
@@ -224,7 +232,12 @@ class ToolBroker:
 
         schema_error = _validate_schema(definition, normalized_arguments)
         if schema_error is not None:
-            result = _denied_result(schema_error, error_class="user_error")
+            result = _denied_result(
+                schema_error,
+                error_class="tool_error",
+                reason="tool_schema_invalid",
+                metadata={"tool_name": tool_name},
+            )
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
@@ -246,7 +259,12 @@ class ToolBroker:
             frozen_config=context.get("frozen_config", {}),
         )
         if semantic_error is not None:
-            result = _denied_result(semantic_error, error_class="user_error")
+            result = _denied_result(
+                semantic_error,
+                error_class="tool_error",
+                reason="tool_schema_invalid",
+                metadata={"tool_name": tool_name},
+            )
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
@@ -267,7 +285,12 @@ class ToolBroker:
             frozen_config=context.get("frozen_config", {}),
         )
         if view_image_denial is not None:
-            result = _denied_result(view_image_denial, error_class="config_error")
+            result = _denied_result(
+                view_image_denial,
+                error_class="config_error",
+                reason="tool_unavailable",
+                metadata={"tool_name": tool_name},
+            )
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
@@ -302,6 +325,10 @@ class ToolBroker:
                 normalized.runtime_control_error_message
                 or "Invalid runtime-control target.",
                 error_class=normalized.runtime_control_error_class,
+                reason="tool_schema_invalid"
+                if normalized.runtime_control_error_class == "tool_error"
+                else None,
+                metadata={"tool_name": tool_name},
             )
             self._write_event(
                 session_id=session_id,
@@ -358,7 +385,9 @@ class ToolBroker:
         if decision.decision == "deny":
             result = _denied_result(
                 decision.message or "Tool call denied by policy.",
-                error_class=decision.error_class or "policy_denied",
+                error_class="policy_error",
+                reason=_policy_denial_reason(decision),
+                metadata={"tool_name": tool_name},
             )
             self._write_event(
                 session_id=session_id,
@@ -438,7 +467,8 @@ class ToolBroker:
             if approval.decision not in {"approved_once", "approved_for_session"}:
                 result = _denied_result(
                     approval.message or "Approval denied.",
-                    error_class="policy_denied",
+                    error_class="policy_error",
+                    reason=_approval_denial_reason(is_interactive_prompt),
                     metadata={"turn_aborted": True},
                 )
                 self._write_event(
@@ -665,6 +695,9 @@ class ToolBroker:
                 return _denied_result(
                     output.error_message or "Runtime-control target denied.",
                     error_class=output.error_class,
+                    reason="tool_schema_invalid"
+                    if output.error_class == "tool_error"
+                    else None,
                 )
             if output.status == "error":
                 return tool_error_result(output.error_message or "Tool failed.", source=tool_name)
@@ -1370,17 +1403,20 @@ def _denied_result(
     message: str,
     *,
     error_class: str,
+    reason: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> ToolResult:
+    normalized = _normalized_error(
+        error_class=error_class,
+        reason=reason,
+        message=message,
+        scope="tool",
+        metadata=metadata or {},
+    )
     return ToolResult(
         status="denied",
         output=None,
-        error={
-            "error_class": error_class,
-            "message": message,
-            "source": "toolbroker",
-            "recoverable": True,
-        },
+        error=normalized.to_dict(),
         artifacts=[],
         metadata=metadata or {},
         redacted_output=None,
@@ -1388,15 +1424,17 @@ def _denied_result(
 
 
 def _timeout_result(timeout_seconds: float, *, metadata: dict[str, Any] | None = None) -> ToolResult:
+    normalized = NormalizedError.create(
+        "tool_error",
+        "tool_execution_timeout",
+        message=f"Tool timed out after {timeout_seconds:g} seconds.",
+        scope="tool",
+        metadata=metadata or {},
+    )
     return ToolResult(
         status="timeout",
         output=None,
-        error={
-            "error_class": "timeout",
-            "message": f"Tool timed out after {timeout_seconds:g} seconds.",
-            "source": "toolbroker",
-            "recoverable": True,
-        },
+        error=normalized.to_dict(),
         artifacts=[],
         metadata=metadata or {},
         redacted_output=None,
@@ -1426,10 +1464,9 @@ def _audit_payload(
     if include_execution_duration:
         payload["execution_duration_ms"] = max(0, round(duration_seconds * 1000))
     if result.error is not None:
+        payload["error"] = result.error
         payload["error_class"] = result.error["error_class"]
         payload["message"] = result.error["message"]
-        payload["source"] = result.error["source"]
-        payload["recoverable"] = result.error["recoverable"]
     if result.status == "ok":
         payload["result"] = result.to_dict()
     if tool_name == "view_image":
@@ -1449,6 +1486,62 @@ def _audit_payload(
         if "projected_request_bytes" in metadata:
             payload["projected_request_bytes"] = metadata["projected_request_bytes"]
     return payload
+
+
+def _normalized_error(
+    *,
+    error_class: str,
+    reason: str | None,
+    message: str,
+    scope: str,
+    metadata: dict[str, Any],
+) -> NormalizedError:
+    normalized_class = error_class
+    normalized_reason = reason
+    if normalized_class == "tool_error":
+        normalized_reason = normalized_reason or "tool_execution_failed"
+    elif normalized_class == "config_error":
+        normalized_reason = normalized_reason or "invalid_runtime_config"
+    elif normalized_class == "policy_error":
+        normalized_reason = normalized_reason or "approval_denied"
+    elif normalized_class == "user_error":
+        normalized_reason = normalized_reason or "invalid_runtime_control_target"
+    elif normalized_class == "internal_error":
+        normalized_class = "runtime_error"
+        normalized_reason = "internal_invariant_failed"
+    elif normalized_class == "policy_denied":
+        normalized_class = "policy_error"
+        normalized_reason = "approval_denied"
+    else:
+        normalized_reason = normalized_reason or "tool_execution_failed"
+        normalized_class = "tool_error"
+    return NormalizedError.create(
+        normalized_class,
+        normalized_reason,
+        message=message,
+        scope=scope,
+        metadata=metadata,
+    )
+
+
+def _policy_denial_reason(decision: PermissionDecision) -> str:
+    if decision.reason == "path_denied":
+        return "path_policy_denied"
+    if decision.reason in {
+        "builtin_shell_denied",
+        "user_shell_denied",
+        "shell_allowlist_miss",
+    }:
+        return "shell_policy_denied"
+    if decision.reason == "approval_required_non_interactive":
+        return "approval_required_non_interactive"
+    return "approval_denied"
+
+
+def _approval_denial_reason(is_interactive_prompt: bool) -> str:
+    if is_interactive_prompt:
+        return "approval_denied"
+    return "approval_required_non_interactive"
 
 
 def _audit_arguments(*, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:

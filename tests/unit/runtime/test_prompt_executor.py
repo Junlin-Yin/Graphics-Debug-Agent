@@ -1610,6 +1610,16 @@ def test_prompt_executor_writes_failed_model_event_and_error_checkpoint(tmp_path
         "checkpoint_written",
     ]
     failed_event = events.list_for_run(run.run_id)[2]
+    assert failed_event.payload["error"] == {
+        "schema_version": 1,
+        "error_class": "model_error",
+        "reason": "model_call_failed",
+        "message": "provider failed",
+        "scope": "provider",
+        "recoverability": "non_recoverable",
+        "metadata": {"purpose": "main"},
+        "artifact_ids": [],
+    }
     assert failed_event.payload["error_class"] == "model_error"
     assert failed_event.payload["message"] == "provider failed"
     assert failed_event.payload["source"] == "model"
@@ -2053,6 +2063,9 @@ def test_prompt_executor_compression_failure_aborts_without_conversation_mutatio
     ]
     assert persisted[1].payload["purpose"] == "compression"
     assert persisted[3].payload["error_class"] == "compression_failed"
+    assert persisted[3].payload["error"]["error_class"] == "model_error"
+    assert persisted[3].payload["error"]["reason"] == "compression_failed"
+    assert persisted[3].payload["error"]["scope"] == "turn"
     context_checkpoint = next(
         checkpoint for checkpoint in checkpoints.list_for_session(session.session_id)
         if checkpoint.kind == "context"
@@ -2141,6 +2154,9 @@ def test_prompt_executor_context_limit_exceeded_aborts_without_model_call(
     ]
     assert persisted[1].payload["message"] == expected_message
     assert persisted[1].payload["error_class"] == "context_limit_exceeded"
+    assert persisted[1].payload["error"]["error_class"] == "model_error"
+    assert persisted[1].payload["error"]["reason"] == "context_limit_exceeded"
+    assert persisted[1].payload["error"]["scope"] == "turn"
     context_checkpoint = checkpoints.latest_for_run(run.run_id)
     assert context_checkpoint.kind == "context"
     assert context_checkpoint.state["error_class"] == "context_limit_exceeded"

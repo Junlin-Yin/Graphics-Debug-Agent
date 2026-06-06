@@ -3,7 +3,12 @@ from __future__ import annotations
 import sqlite3
 
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
-from debug_agent.persistence.sqlite import UNSUPPORTED_PHASE_2_DATABASE_MESSAGE
+from debug_agent.cli.exit_codes import ERROR_LOOKUP_NOT_FOUND, ERROR_STARTUP_PERSISTENCE
+from debug_agent.persistence.sqlite import (
+    PHASE_3_SCHEMA_USER_VERSION,
+    READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
+    STARTUP_LEGACY_RESET_GUIDANCE,
+)
 
 
 def _config(response: str = "fake answer") -> dict:
@@ -18,6 +23,9 @@ def _config(response: str = "fake answer") -> dict:
             "You are debug-agent, a local debugging assistant. Answer concisely "
             "and use only tools exposed by the runtime."
         ),
+        "development": {
+            "allow_incomplete_phase3_prompt_execution": True,
+        },
     }
 
 
@@ -79,11 +87,14 @@ def test_status_query_returns_missing_session_error(tmp_path) -> None:
 
     status = RuntimeOrchestrator(workspace_root=workspace).status("sess_missing")
 
-    assert status.exit_code == 1
-    assert status.message == "No session found for id: sess_missing"
+    assert status.exit_code == 0
+    assert status.fields == {"runtime_database": "missing", "active_session": None}
+    assert not (workspace / ".sessions" / "runtime.db").exists()
 
 
-def test_status_trace_and_startup_fail_closed_for_legacy_schema(tmp_path) -> None:
+def test_status_trace_and_resume_fail_closed_for_legacy_schema_but_startup_resets(
+    tmp_path,
+) -> None:
     workspace = tmp_path / "workspace"
     db_dir = workspace / ".sessions"
     db_dir.mkdir(parents=True)
@@ -96,12 +107,34 @@ def test_status_trace_and_startup_fail_closed_for_legacy_schema(tmp_path) -> Non
 
     status = orchestrator.status("legacy_session")
     trace = orchestrator.trace("legacy_session")
+    resume = orchestrator.resume("legacy_session")
     one_shot = orchestrator.run_one_shot("hello", _config())
 
-    for result in (status, trace, one_shot):
-        assert result.exit_code != 0
-        assert UNSUPPORTED_PHASE_2_DATABASE_MESSAGE in result.message
-    assert one_shot.error["error_class"] == "config_error"
+    for result in (status, trace, resume):
+        assert result.exit_code == ERROR_STARTUP_PERSISTENCE
+        assert READ_ONLY_SCHEMA_FAILURE_GUIDANCE in result.message
+    assert one_shot.exit_code == 0
+    assert STARTUP_LEGACY_RESET_GUIDANCE in one_shot.message
+    with sqlite3.connect(db_dir / "runtime.db") as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == PHASE_3_SCHEMA_USER_VERSION
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+
+
+def test_trace_and_resume_missing_database_return_lookup_without_creating_db(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    orchestrator = RuntimeOrchestrator(workspace_root=workspace)
+
+    trace = orchestrator.trace("sess_missing")
+    resume = orchestrator.resume("sess_missing")
+
+    assert trace.exit_code == ERROR_LOOKUP_NOT_FOUND
+    assert trace.message == "No session found for id: sess_missing"
+    assert resume.exit_code == ERROR_LOOKUP_NOT_FOUND
+    assert resume.message == "No session found for id: sess_missing"
+    assert not (workspace / ".sessions" / "runtime.db").exists()
 
 
 def test_startup_rejects_invalid_agent_policy_before_creating_database(tmp_path, monkeypatch) -> None:

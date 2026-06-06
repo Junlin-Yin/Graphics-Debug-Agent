@@ -37,6 +37,9 @@ def _config_with_todo_call() -> dict:
         ],
         "timeout_seconds": 30,
         "system_prompt": "Use runtime tools when needed.",
+        "development": {
+            "allow_incomplete_phase3_prompt_execution": True,
+        },
     }
 
 

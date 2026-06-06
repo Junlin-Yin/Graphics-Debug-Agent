@@ -12,8 +12,10 @@ from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.sqlite import (
+    PHASE_3_SCHEMA_USER_VERSION,
+    READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
     RuntimeDatabase,
-    UNSUPPORTED_PHASE_2_DATABASE_MESSAGE,
+    STARTUP_LEGACY_RESET_GUIDANCE,
 )
 from debug_agent.runtime.contracts import RunEvent, utc_now_iso
 
@@ -31,6 +33,9 @@ def _write_fake_config(home: Path, response: str = "integration answer") -> None
 provider = "fake"
 model = "fake-model"
 fake_response = "{response}"
+
+[development]
+allow_incomplete_phase3_prompt_execution = true
 """.strip(),
         encoding="utf-8",
     )
@@ -148,9 +153,11 @@ def test_status_and_trace_missing_session_errors(tmp_path) -> None:
         check=False,
     )
 
-    assert status.returncode == 1
-    assert "No session found for id: sess_missing" in status.stderr
-    assert trace.returncode == 1
+    assert status.returncode == 0
+    assert "runtime_database: missing" in status.stdout
+    assert "active_session:" in status.stdout
+    assert not (workspace / ".sessions" / "runtime.db").exists()
+    assert trace.returncode == 10
     assert "No session found for id: sess_missing" in trace.stderr
 
 
@@ -301,15 +308,7 @@ def test_startup_status_and_trace_fail_closed_on_legacy_schema(tmp_path) -> None
         conn.commit()
 
     executable = str(Path(sys.executable).parent / "debug-agent")
-    startup = subprocess.run(
-        [executable, "-p", "hello"],
-        cwd=workspace,
-        env=_subprocess_env(home),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    status = subprocess.run(
+    status_before_startup = subprocess.run(
         [executable, "status", "sess_legacy"],
         cwd=workspace,
         env=_subprocess_env(home),
@@ -317,7 +316,7 @@ def test_startup_status_and_trace_fail_closed_on_legacy_schema(tmp_path) -> None
         text=True,
         check=False,
     )
-    trace = subprocess.run(
+    trace_before_startup = subprocess.run(
         [executable, "trace", "sess_legacy"],
         cwd=workspace,
         env=_subprocess_env(home),
@@ -326,24 +325,46 @@ def test_startup_status_and_trace_fail_closed_on_legacy_schema(tmp_path) -> None
         check=False,
     )
 
-    assert startup.returncode == 4
-    assert UNSUPPORTED_PHASE_2_DATABASE_MESSAGE in startup.stderr
-    assert status.returncode == 4
-    assert UNSUPPORTED_PHASE_2_DATABASE_MESSAGE in status.stderr
-    assert trace.returncode == 4
-    assert UNSUPPORTED_PHASE_2_DATABASE_MESSAGE in trace.stderr
+    assert status_before_startup.returncode == 6
+    assert READ_ONLY_SCHEMA_FAILURE_GUIDANCE in status_before_startup.stderr
+    assert trace_before_startup.returncode == 6
+    assert READ_ONLY_SCHEMA_FAILURE_GUIDANCE in trace_before_startup.stderr
+    startup = subprocess.run(
+        [executable, "-p", "hello"],
+        cwd=workspace,
+        env=_subprocess_env(home),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert startup.returncode == 0
+    assert STARTUP_LEGACY_RESET_GUIDANCE in startup.stdout
+    status_after_startup = subprocess.run(
+        [executable, "status", "sess_legacy"],
+        cwd=workspace,
+        env=_subprocess_env(home),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    trace_after_startup = subprocess.run(
+        [executable, "trace", "sess_legacy"],
+        cwd=workspace,
+        env=_subprocess_env(home),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert status_after_startup.returncode == 10
+    assert "No session found for id: sess_legacy" in status_after_startup.stderr
+    assert trace_after_startup.returncode == 10
+    assert "No session found for id: sess_legacy" in trace_after_startup.stderr
     with sqlite3.connect(sessions_dir / "runtime.db") as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
-        assert (
-            conn.execute(
-                "SELECT status FROM sessions WHERE session_id = 'sess_legacy'"
-            ).fetchone()[0]
-            == "running"
-        )
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == PHASE_3_SCHEMA_USER_VERSION
         tables = {
             row[0]
             for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
-    assert "run_events" not in tables
+    assert "run_events" in tables

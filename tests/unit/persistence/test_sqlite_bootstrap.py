@@ -3,14 +3,14 @@ import sqlite3
 import pytest
 
 from debug_agent.persistence.sqlite import (
-    PHASE_2_SCHEMA_USER_VERSION,
+    PHASE_3_SCHEMA_USER_VERSION,
     RuntimeBootstrapError,
     RuntimeDatabase,
-    UNSUPPORTED_PHASE_2_DATABASE_MESSAGE,
+    READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
 )
 
 
-def test_runtime_database_bootstrap_creates_phase_2_tables_and_user_version(
+def test_runtime_database_bootstrap_creates_phase_3_tables_and_user_version(
     tmp_path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -31,7 +31,7 @@ def test_runtime_database_bootstrap_creates_phase_2_tables_and_user_version(
             )
         }
 
-    assert user_version == PHASE_2_SCHEMA_USER_VERSION
+    assert user_version == PHASE_3_SCHEMA_USER_VERSION
     assert {
         "sessions",
         "runs",
@@ -306,19 +306,83 @@ def test_skill_snapshot_uniqueness_and_resource_foreign_key(tmp_path) -> None:
     db.close()
 
 
-def test_existing_legacy_or_unknown_user_version_fails_closed(tmp_path) -> None:
+def test_startup_legacy_user_version_resets_only_runtime_db(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     db_dir = workspace / ".sessions"
     db_dir.mkdir(parents=True)
+    orphan = db_dir / "sess_legacy" / "artifacts" / "old.txt"
+    orphan.parent.mkdir(parents=True)
+    orphan.write_text("legacy artifact", encoding="utf-8")
     with sqlite3.connect(db_dir / "runtime.db") as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('legacy')")
         conn.execute("PRAGMA user_version = 0")
+
+    db = RuntimeDatabase.bootstrap(workspace)
+    db.close()
+
+    assert orphan.read_text(encoding="utf-8") == "legacy artifact"
+    with sqlite3.connect(db_dir / "runtime.db") as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+def test_startup_unknown_future_user_version_fails_closed_without_deleting(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    db_dir = workspace / ".sessions"
+    db_dir.mkdir(parents=True)
+    db_path = db_dir / "runtime.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('future')")
+        conn.execute("PRAGMA user_version = 99")
 
     with pytest.raises(RuntimeBootstrapError) as exc:
         RuntimeDatabase.bootstrap(workspace)
 
-    assert UNSUPPORTED_PHASE_2_DATABASE_MESSAGE in str(exc.value)
     assert exc.value.error_class == "config_error"
+    assert exc.value.reason == "unknown_schema_version"
+    assert db_path.exists()
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT session_id FROM sessions").fetchone()[0] == "future"
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 99
+
+
+def test_read_only_bootstrap_missing_database_does_not_create_runtime_db(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    db = RuntimeDatabase.bootstrap_read_only(workspace)
+
+    assert db is None
+    assert not (workspace / ".sessions" / "runtime.db").exists()
+
+
+def test_read_only_bootstrap_legacy_user_version_fails_closed_without_deleting(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    db_dir = workspace / ".sessions"
+    db_dir.mkdir(parents=True)
+    db_path = db_dir / "runtime.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('legacy')")
+        conn.execute("PRAGMA user_version = 2")
+
+    with pytest.raises(RuntimeBootstrapError) as exc:
+        RuntimeDatabase.bootstrap_read_only(workspace)
+
+    assert exc.value.error_class == "config_error"
+    assert exc.value.reason == "legacy_schema_version"
+    assert READ_ONLY_SCHEMA_FAILURE_GUIDANCE in str(exc.value)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT session_id FROM sessions").fetchone()[0] == "legacy"
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
 
 
 def test_runtime_database_bootstrap_is_idempotent_and_enables_foreign_keys(

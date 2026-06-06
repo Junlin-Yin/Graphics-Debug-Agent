@@ -42,7 +42,11 @@ def test_plain_approval_provider_maps_y_a_n_and_renders_prompt() -> None:
 
 
 def _write_fake_config(
-    home, response: str = "repl answer", *, error: str | None = None
+    home,
+    response: str = "repl answer",
+    *,
+    error: str | None = None,
+    allow_incomplete_prompt_execution: bool = True,
 ) -> None:
     config_dir = home / ".debug-agent"
     config_dir.mkdir(parents=True)
@@ -56,6 +60,13 @@ fake_response = "{response}"{fake_error}
 """.strip(),
         encoding="utf-8",
     )
+    if allow_incomplete_prompt_execution:
+        config_path = config_dir / "config.toml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8")
+            + "\n\n[development]\nallow_incomplete_phase3_prompt_execution = true\n",
+            encoding="utf-8",
+        )
 
 
 def test_main_repl_accepts_two_turns_status_and_exit(
@@ -101,6 +112,27 @@ def test_main_repl_accepts_two_turns_status_and_exit(
     assert run_status == "completed"
     assert user_messages == 2
     assert checkpoint_kinds == ["turn", "turn", "terminal"]
+
+
+def test_main_repl_phase3_development_gate_fails_before_creating_database(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home.mkdir()
+    workspace.mkdir()
+    _write_fake_config(home, "must not run", allow_incomplete_prompt_execution=False)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr("sys.stdin", io.StringIO("hello\n"))
+
+    exit_code = main([])
+
+    assert exit_code == 4
+    assert "Phase 3 prompt execution is gated until durable conversation" in (
+        capsys.readouterr().err
+    )
+    assert not (workspace / ".sessions" / "runtime.db").exists()
 
 
 def test_main_repl_accepts_explicit_initial_approval_mode(
@@ -206,6 +238,9 @@ def test_repl_rejects_ordinary_input_while_execution_is_active(
                 "You are debug-agent, a local debugging assistant. Answer concisely "
                 "and use only tools exposed by the runtime."
             ),
+            "development": {
+                "allow_incomplete_phase3_prompt_execution": True,
+            },
         },
         workspace_root=workspace,
     )
@@ -244,6 +279,9 @@ def test_repl_ctrl_c_after_session_creation_marks_failed_and_releases_ownership(
             "You are debug-agent, a local debugging assistant. Answer concisely "
             "and use only tools exposed by the runtime."
         ),
+        "development": {
+            "allow_incomplete_phase3_prompt_execution": True,
+        },
     }
 
     try:
@@ -375,6 +413,9 @@ def test_tty_repl_ctrl_c_marks_failed_and_releases_ownership(
             "You are debug-agent, a local debugging assistant. Answer concisely "
             "and use only tools exposed by the runtime."
         ),
+        "development": {
+            "allow_incomplete_phase3_prompt_execution": True,
+        },
     }
     monkeypatch.setattr(
         repl_module, "PromptToolkitReplView", InterruptingPromptToolkitView

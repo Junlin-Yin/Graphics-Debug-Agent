@@ -127,7 +127,8 @@ def test_shell_schema_rejects_raw_strings_empty_argv_and_unknown_fields(
     result = _invoke(runtime, arguments)
 
     assert result.status == "denied"
-    assert result.error["error_class"] == "user_error"
+    assert result.error["error_class"] == "tool_error"
+    assert result.error["reason"] == "tool_schema_invalid"
     assert _event_kinds(runtime) == ["tool_call_denied"]
     runtime["db"].close()
 
@@ -204,7 +205,8 @@ def test_shell_timeout_returns_tool_result_through_broker(tmp_path) -> None:
     result = _invoke(runtime, {"argv": ["sleep", "10"]})
 
     assert result.status == "timeout"
-    assert result.error["error_class"] == "timeout"
+    assert result.error["error_class"] == "tool_error"
+    assert result.error["reason"] == "tool_execution_timeout"
     assert result.metadata["effective_timeout_seconds"] == 5
     assert _event_kinds(runtime) == ["tool_call_started", "tool_call_failed"]
     runtime["db"].close()
