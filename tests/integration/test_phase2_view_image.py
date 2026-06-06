@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import Future
 from io import BytesIO
 
 from PIL import Image
@@ -22,6 +23,14 @@ class _FakeVisionClient:
     def analyze(self, **kwargs):
         self.calls.append(kwargs)
         return type("VisionResponse", (), {"text": self.text, "provider_metadata": {}})()
+
+    def analyze_async(self, **kwargs):
+        cleaned = dict(kwargs)
+        cleaned.pop("register_cancellation_handle", None)
+        cleaned.pop("cancellation_token", None)
+        future = Future()
+        future.set_result(self.analyze(**cleaned))
+        return future
 
 
 def _enabled_multimodal() -> dict:

@@ -4,6 +4,12 @@ import base64
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from debug_agent.runtime.provider_execution import (
+    ProviderCancellationHandle,
+    ProviderCallTask,
+    start_provider_call,
+)
+
 
 @dataclass(frozen=True)
 class VisionImageInput:
@@ -90,6 +96,32 @@ class VisionModelClient:
         )
         text = _completion_text(completion)
         return VisionModelResponse(text=text, provider_metadata={})
+
+    def analyze_async(
+        self,
+        *,
+        config: VisionClientConfig,
+        images: list[VisionImageInput],
+        instruction: str,
+        timeout_seconds: float,
+        register_cancellation_handle: Callable[[ProviderCancellationHandle], None] | None = None,
+        cancellation_token: object | None = None,
+    ) -> ProviderCallTask:
+        return start_provider_call(
+            operation="view_image",
+            provider=config.provider,
+            model=config.model,
+            call=lambda: self.analyze(
+                config=config,
+                images=images,
+                instruction=instruction,
+                timeout_seconds=timeout_seconds,
+            ),
+            timeout_seconds=timeout_seconds,
+            cancellation_token=cancellation_token,
+            register_cancellation_handle=register_cancellation_handle,
+            cleanup_timeout_seconds=timeout_seconds,
+        )
 
     def _make_client(self, **kwargs: Any) -> Any:
         if self._factory is not None:

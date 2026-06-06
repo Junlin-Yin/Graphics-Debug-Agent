@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import json
-import queue
-import threading
 from time import monotonic
 from typing import Any
 
@@ -12,6 +10,13 @@ from langchain_core.tools import StructuredTool
 
 from debug_agent.runtime.contracts import AgentRunRequest, AgentRunResult, RunContext
 from debug_agent.runtime.model_context import ConversationMessage
+from debug_agent.runtime.provider_execution import (
+    ProviderBoundaryNotClosed,
+    ProviderCallCancelled,
+    provider_cancellation_uncertainty_metadata,
+    run_provider_call,
+    stream_provider_call,
+)
 from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
@@ -29,23 +34,22 @@ class _StreamModelResponse:
         tool_calls: list[dict[str, Any]],
         usage: dict[str, Any],
         duration_seconds: float,
+        provider_finish: dict[str, Any],
     ) -> None:
         self.content = content
         self.text = content
         self.tool_calls = tool_calls
         self.usage = usage
         self.duration_seconds = duration_seconds
+        self.provider_finish = provider_finish
 
 
 class LangChainAgentLoopAdapter:
     def __init__(self, *, model: object, tool_broker: object | None = None) -> None:
         self.model = model
         self.tool_broker = tool_broker
-        self._cancelled_runs: set[str] = set()
 
     def run(self, request: AgentRunRequest, context: RunContext) -> AgentRunResult:
-        if request.run_id in self._cancelled_runs:
-            return _error_result("cancelled", "cancelled", "Run was cancelled.")
         messages = _compose_messages(request)
         model = self.model
         if _request_tool_bindings(request) and hasattr(model, "bind_tools"):
@@ -79,7 +83,7 @@ class LangChainAgentLoopAdapter:
                         tool_results=tool_results,
                         usage=aggregate_usage,
                         error=None,
-                        metadata={},
+                        metadata=_result_metadata(response),
                     )
                 invoked_results = self._invoke_tool_calls(request, context, tool_calls)
                 tool_results.extend(result.to_dict() for _, result in invoked_results)
@@ -104,8 +108,26 @@ class LangChainAgentLoopAdapter:
             )
         except TimeoutError as exc:
             return _error_result("timeout", "timeout", str(exc), source="model")
+        except ProviderCallCancelled as exc:
+            return _error_result(
+                "cancelled",
+                "cancelled",
+                str(exc),
+                source="model",
+                reason="model_call_cancelled",
+                metadata={"provider_cancellation": provider_cancellation_uncertainty_metadata()},
+            )
         except KeyboardInterrupt as exc:
-            return _error_result("cancelled", "cancelled", str(exc), source="model")
+            return _error_result(
+                "cancelled",
+                "cancelled",
+                str(exc),
+                source="model",
+                reason="model_call_cancelled",
+                metadata={"provider_cancellation": provider_cancellation_uncertainty_metadata()},
+            )
+        except ProviderBoundaryNotClosed:
+            raise
         except Exception as exc:
             compression_failed = _compression_failed_abort_result(exc)
             if compression_failed is not None:
@@ -118,8 +140,6 @@ class LangChainAgentLoopAdapter:
         context: RunContext,
         on_event: Callable[[AgentStreamEvent], None],
     ) -> AgentRunResult:
-        if request.run_id in self._cancelled_runs:
-            return _error_result("cancelled", "cancelled", "Run was cancelled.")
         model = self.model
         if _request_tool_bindings(request) and hasattr(model, "bind_tools"):
             model = model.bind_tools(
@@ -168,7 +188,9 @@ class LangChainAgentLoopAdapter:
                         tool_results=tool_results,
                         usage=aggregate_usage,
                         error=None,
-                        metadata={},
+                        metadata={"provider_finish": response.provider_finish}
+                        if response.provider_finish
+                        else {},
                     )
                 invoked_results = self._invoke_stream_tool_calls(
                     request=request,
@@ -200,16 +222,31 @@ class LangChainAgentLoopAdapter:
             return _streaming_fallback(self.run(request, context))
         except TimeoutError as exc:
             return _error_result("timeout", "timeout", str(exc), source="model")
+        except ProviderCallCancelled as exc:
+            return _error_result(
+                "cancelled",
+                "cancelled",
+                str(exc),
+                source="model",
+                reason="model_call_cancelled",
+                metadata={"provider_cancellation": provider_cancellation_uncertainty_metadata()},
+            )
         except KeyboardInterrupt as exc:
-            return _error_result("cancelled", "cancelled", str(exc), source="model")
+            return _error_result(
+                "cancelled",
+                "cancelled",
+                str(exc),
+                source="model",
+                reason="model_call_cancelled",
+                metadata={"provider_cancellation": provider_cancellation_uncertainty_metadata()},
+            )
+        except ProviderBoundaryNotClosed:
+            raise
         except Exception as exc:
             compression_failed = _compression_failed_abort_result(exc)
             if compression_failed is not None:
                 return compression_failed
             return _error_result("failed", "model_error", str(exc), source="model")
-
-    def cancel(self, run_id: str) -> None:
-        self._cancelled_runs.add(run_id)
 
     def _invoke_tool_calls(
         self,
@@ -498,12 +535,31 @@ def _invoke_model(
         )
     start = monotonic()
     try:
-        response = _invoke_with_timeout(model, messages, request.timeout_seconds)
+        response = _invoke_with_timeout(model, messages, request, context)
     except TimeoutError as exc:
         _record_model_failure(recorder, "timeout", str(exc), start)
         raise
+    except ProviderCallCancelled as exc:
+        _record_model_failure(
+            recorder,
+            "cancelled",
+            str(exc),
+            start,
+            reason="model_call_cancelled",
+            metadata=provider_cancellation_uncertainty_metadata(),
+        )
+        raise
     except KeyboardInterrupt as exc:
-        _record_model_failure(recorder, "cancelled", str(exc), start)
+        _record_model_failure(
+            recorder,
+            "cancelled",
+            str(exc),
+            start,
+            reason="model_call_cancelled",
+            metadata=provider_cancellation_uncertainty_metadata(),
+        )
+        raise
+    except ProviderBoundaryNotClosed:
         raise
     except Exception as exc:
         _record_model_failure(recorder, "model_error", str(exc), start)
@@ -514,6 +570,7 @@ def _invoke_model(
             {
                 "usage": getattr(response, "usage", {}) or {},
                 "metadata": {},
+                "provider_finish": _provider_finish_metadata(response),
                 "duration": monotonic() - start,
                 "content": _response_content(response),
                 "tool_calls": _normalized_tool_calls(
@@ -556,8 +613,9 @@ def _stream_model_call(
     tool_calls: list[dict[str, Any]] = []
     tool_call_chunks: list[dict[str, Any]] = []
     usage: dict[str, Any] = {}
+    provider_finish: dict[str, Any] = {}
     try:
-        for chunk in _stream_with_timeout(model, messages, request.timeout_seconds):
+        for chunk in _stream_with_timeout(model, messages, request, context):
             chunk_text = _displayable_chunk_text(chunk)
             if chunk_text:
                 text_parts.append(chunk_text)
@@ -576,11 +634,33 @@ def _stream_model_call(
             chunk_usage = getattr(chunk, "usage", {}) or {}
             if chunk_usage:
                 usage = dict(chunk_usage)
+            chunk_finish = _provider_finish_metadata(chunk)
+            if chunk_finish:
+                provider_finish = chunk_finish
     except TimeoutError as exc:
         _record_model_failure(recorder, "timeout", str(exc), started_at)
         raise
+    except ProviderCallCancelled as exc:
+        _record_model_failure(
+            recorder,
+            "cancelled",
+            str(exc),
+            started_at,
+            reason="model_call_cancelled",
+            metadata=provider_cancellation_uncertainty_metadata(),
+        )
+        raise
     except KeyboardInterrupt as exc:
-        _record_model_failure(recorder, "cancelled", str(exc), started_at)
+        _record_model_failure(
+            recorder,
+            "cancelled",
+            str(exc),
+            started_at,
+            reason="model_call_cancelled",
+            metadata=provider_cancellation_uncertainty_metadata(),
+        )
+        raise
+    except ProviderBoundaryNotClosed:
         raise
     except Exception as exc:
         if isinstance(exc, NotImplementedError):
@@ -592,6 +672,7 @@ def _stream_model_call(
         tool_calls=_merge_stream_tool_calls(tool_calls, tool_call_chunks),
         usage=usage,
         duration_seconds=monotonic() - started_at,
+        provider_finish=provider_finish,
     )
 
 
@@ -610,6 +691,11 @@ def _emit_stream_model_call_completed(
                 "model_call_id": model_call_id,
                 "is_final": is_final,
                 "usage": response.usage,
+                **(
+                    {"provider_finish": response.provider_finish}
+                    if response.provider_finish
+                    else {}
+                ),
                 "duration_ms": int(duration_seconds * 1000),
             },
         )
@@ -630,6 +716,7 @@ def _record_stream_model_completion(
         {
             "usage": response.usage,
             "metadata": {},
+            "provider_finish": response.provider_finish,
             "duration": duration_seconds,
             "content": response.text,
             "tool_calls": _normalized_tool_calls(_tool_calls(response)),
@@ -642,76 +729,53 @@ def _record_stream_model_completion(
 def _invoke_with_timeout(
     model: object,
     messages: list[object],
-    timeout_seconds: int | float | None,
+    request: AgentRunRequest,
+    context: RunContext,
 ) -> object:
-    if timeout_seconds is None or timeout_seconds <= 0:
-        return model.invoke(messages)
-
-    result_queue: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
-
-    def invoke() -> None:
-        try:
-            result_queue.put(("ok", model.invoke(messages)))
-        except BaseException as exc:
-            result_queue.put(("error", exc))
-
-    thread = threading.Thread(target=invoke, daemon=True)
-    thread.start()
-    thread.join(timeout=float(timeout_seconds))
-    if thread.is_alive():
-        raise TimeoutError(f"Model call timed out after {timeout_seconds:g} seconds.")
-
-    try:
-        status, value = result_queue.get_nowait()
-    except queue.Empty as exc:
-        raise RuntimeError("Model call finished without returning a result.") from exc
-    if status == "error":
-        if not isinstance(value, BaseException):
-            raise RuntimeError("Model call failed without returning an exception.")
-        raise value
-    if status != "ok":
-        raise RuntimeError(f"Unsupported model call result status: {status}")
-    return value
+    return run_provider_call(
+        operation="main_model",
+        provider=request.model_config.get("provider"),
+        model=request.model_config.get("model"),
+        call=lambda: model.invoke(messages),
+        timeout_seconds=request.timeout_seconds,
+        cancellation_token=context.cancellation_token,
+        register_cancellation_handle=_provider_cancellation_registry(context),
+        cleanup_timeout_seconds=_provider_cleanup_timeout_seconds(request),
+    )
 
 
 def _stream_with_timeout(
     model: object,
     messages: list[object],
-    timeout_seconds: int | float | None,
+    request: AgentRunRequest,
+    context: RunContext,
 ):
-    if timeout_seconds is None or timeout_seconds <= 0:
-        yield from model.stream(messages)
-        return
+    yield from stream_provider_call(
+        operation="main_model_stream",
+        provider=request.model_config.get("provider"),
+        model=request.model_config.get("model"),
+        stream=lambda: model.stream(messages),
+        timeout_seconds=request.timeout_seconds,
+        cancellation_token=context.cancellation_token,
+        register_cancellation_handle=_provider_cancellation_registry(context),
+        cleanup_timeout_seconds=_provider_cleanup_timeout_seconds(request),
+    )
 
-    result_queue: queue.Queue[tuple[str, object | None]] = queue.Queue()
 
-    def stream() -> None:
-        try:
-            for chunk in model.stream(messages):
-                result_queue.put(("chunk", chunk))
-            result_queue.put(("ok", None))
-        except BaseException as exc:
-            result_queue.put(("error", exc))
+def _provider_cancellation_registry(
+    context: RunContext,
+) -> Callable[[object], None] | None:
+    registry = context.metadata.get("provider_cancellation_registry")
+    return registry if callable(registry) else None
 
-    thread = threading.Thread(target=stream, daemon=True)
-    thread.start()
-    while True:
-        try:
-            status, value = result_queue.get(timeout=float(timeout_seconds))
-        except queue.Empty as exc:
-            raise TimeoutError(
-                f"Model stream timed out after {timeout_seconds:g} seconds."
-            ) from exc
-        if status == "chunk":
-            yield value
-            continue
-        if status == "ok":
-            return
-        if status == "error":
-            if not isinstance(value, BaseException):
-                raise RuntimeError("Model stream failed without returning an exception.")
-            raise value
-        raise RuntimeError(f"Unsupported model stream result status: {status}")
+
+def _provider_cleanup_timeout_seconds(request: AgentRunRequest) -> int | float:
+    execution = request.model_config.get("execution")
+    if isinstance(execution, dict):
+        value = execution.get("cancellation_timeout_seconds")
+        if isinstance(value, (int, float)) and value > 0:
+            return value
+    return 1
 
 
 def _record_model_failure(
@@ -719,14 +783,19 @@ def _record_model_failure(
     error_class: str,
     message: str,
     start: float,
+    *,
+    reason: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     if recorder is None:
         return
     error = {
         "error_class": error_class,
+        **({"reason": reason} if reason is not None else {}),
         "message": message,
         "source": "model",
         "recoverable": True,
+        **({"metadata": metadata} if metadata is not None else {}),
     }
     recorder(
         "model_call_failed",
@@ -1078,6 +1147,43 @@ def _streaming_fallback(result: AgentRunResult) -> AgentRunResult:
     )
 
 
+def _result_metadata(response: object) -> dict[str, Any]:
+    provider_finish = _provider_finish_metadata(response)
+    return {"provider_finish": provider_finish} if provider_finish else {}
+
+
+def _provider_finish_metadata(response: object) -> dict[str, Any]:
+    finish_reason = _provider_finish_reason(response)
+    if finish_reason is None:
+        return {}
+    return {
+        "finish_reason": finish_reason,
+        "output_token_limit_reached": finish_reason
+        in {"length", "max_tokens", "max_output_tokens", "token_limit"},
+    }
+
+
+def _provider_finish_reason(response: object) -> str | None:
+    metadata = getattr(response, "response_metadata", None)
+    if isinstance(metadata, dict):
+        for key in ("finish_reason", "stop_reason", "stop_sequence"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value:
+                return value
+    usage_metadata = getattr(response, "usage_metadata", None)
+    if isinstance(usage_metadata, dict):
+        value = usage_metadata.get("finish_reason")
+        if isinstance(value, str) and value:
+            return value
+    direct = getattr(response, "finish_reason", None)
+    if isinstance(direct, str) and direct:
+        return direct
+    direct = getattr(response, "stop_reason", None)
+    if isinstance(direct, str) and direct:
+        return direct
+    return None
+
+
 def _aggregate_usage(current: dict[str, Any], usage: dict[str, Any]) -> dict[str, Any]:
     if not usage:
         return current
@@ -1146,6 +1252,7 @@ def _error_result(
     message: str,
     *,
     source: str = "adapter",
+    reason: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> AgentRunResult:
     return AgentRunResult(
@@ -1155,6 +1262,7 @@ def _error_result(
         usage={},
         error={
             "error_class": error_class,
+            **({"reason": reason} if reason is not None else {}),
             "message": message,
             "source": source,
             "recoverable": True,

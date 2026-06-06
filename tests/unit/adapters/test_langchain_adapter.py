@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import replace
 from typing import Any
 
+import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 from debug_agent.adapters.langchain_adapter import (
@@ -25,6 +27,7 @@ from debug_agent.runtime.contracts import (
     ToolResult,
 )
 from debug_agent.runtime.model_context import ConversationMessage, ModelContextFrame
+from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
 from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
@@ -122,6 +125,67 @@ def test_langchain_adapter_maps_model_success() -> None:
     assert "runtime safety" in adapter.model.messages[0]["content"]
     assert adapter.model.messages[-1]["role"] == "user"
     assert adapter.model.messages[-1]["content"] == "hello"
+
+
+def test_langchain_adapter_extracts_provider_finish_metadata_for_token_limit() -> None:
+    class TokenLimitModel:
+        def invoke(self, messages):
+            return type(
+                "Response",
+                (),
+                {
+                    "content": "partial",
+                    "tool_calls": [],
+                    "usage": {"output_tokens": 128},
+                    "response_metadata": {"stop_reason": "max_tokens"},
+                },
+            )()
+
+    result = LangChainAgentLoopAdapter(model=TokenLimitModel()).run(_request(), _context())
+
+    assert result.status == "completed"
+    assert result.metadata["provider_finish"] == {
+        "finish_reason": "max_tokens",
+        "output_token_limit_reached": True,
+    }
+
+
+def test_langchain_adapter_stream_extracts_provider_finish_metadata() -> None:
+    class TokenLimitStreamingModel:
+        stream_chunks = ["partial"]
+
+        def stream(self, messages):
+            yield type(
+                "Chunk",
+                (),
+                {
+                    "content": "partial",
+                    "tool_calls": [],
+                    "usage": {"output_tokens": 128},
+                    "response_metadata": {"finish_reason": "length"},
+                },
+            )()
+
+    events = []
+    result = LangChainAgentLoopAdapter(model=TokenLimitStreamingModel()).stream(
+        _request(),
+        _context(),
+        events.append,
+    )
+
+    assert result.status == "completed"
+    assert result.metadata["provider_finish"] == {
+        "finish_reason": "length",
+        "output_token_limit_reached": True,
+    }
+    completed = _event_payloads(events, "stream_model_call_completed")[0]
+    assert completed["provider_finish"]["finish_reason"] == "length"
+
+
+def test_langchain_adapter_has_no_public_cancel_placeholder() -> None:
+    adapter = LangChainAgentLoopAdapter(model=FakeChatModel(response="answer"))
+
+    assert not hasattr(adapter, "cancel")
 
 
 def test_langchain_adapter_materializes_messages_from_model_context_frame() -> None:
@@ -681,7 +745,7 @@ def test_langchain_adapter_times_out_blocking_model_call() -> None:
 
     class SlowModel:
         def invoke(self, messages):
-            time.sleep(0.2)
+            time.sleep(0.03)
             return type(
                 "Response",
                 (),
@@ -721,6 +785,129 @@ def test_langchain_adapter_times_out_blocking_model_call() -> None:
     assert events[-1][1]["error_class"] == "timeout"
 
 
+def test_langchain_adapter_cancels_worker_and_ignores_late_model_result() -> None:
+    events = []
+    registered_handles = []
+    cancel_requested = threading.Event()
+
+    class Token:
+        def is_cancelled(self):
+            return cancel_requested.is_set()
+
+    class SlowModel:
+        def invoke(self, messages):
+            while not cancel_requested.is_set():
+                time.sleep(0.001)
+            return type(
+                "Response",
+                (),
+                {"content": "too late", "tool_calls": [], "usage": {"output_tokens": 3}},
+            )()
+
+    def register_handle(handle):
+        registered_handles.append(handle)
+        cancel_requested.set()
+
+    request = replace(_request(), timeout_seconds=30)
+    context = replace(
+        _context(),
+        cancellation_token=Token(),
+        metadata={"provider_cancellation_registry": register_handle},
+        model_event_recorder=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    result = LangChainAgentLoopAdapter(model=SlowModel()).run(request, context)
+
+    assert result.status == "cancelled"
+    assert result.assistant_output is None
+    assert result.error["error_class"] == "cancelled"
+    assert result.error["reason"] == "model_call_cancelled"
+    assert result.metadata["provider_cancellation"]["local_cancel_requested"] is True
+    assert result.metadata["provider_cancellation"]["remote_stop_uncertain"] is True
+    assert result.metadata["provider_cancellation"]["billing_stop_uncertain"] is True
+    assert registered_handles and registered_handles[0].cancel_requested is True
+    assert [kind for kind, _payload in events] == [
+        "model_call_started",
+        "model_call_failed",
+    ]
+    assert events[-1][1]["error"]["reason"] == "model_call_cancelled"
+
+
+def test_langchain_adapter_cancellation_collects_model_worker_before_return() -> None:
+    registered_handles = []
+    cancel_requested = threading.Event()
+    provider_finished = threading.Event()
+
+    class Token:
+        def is_cancelled(self):
+            return cancel_requested.is_set()
+
+    class CooperativeSlowModel:
+        def invoke(self, messages):
+            while not cancel_requested.is_set():
+                time.sleep(0.001)
+            provider_finished.set()
+            return type(
+                "Response",
+                (),
+                {"content": "late", "tool_calls": [], "usage": {}},
+            )()
+
+    def register_handle(handle):
+        registered_handles.append(handle)
+        cancel_requested.set()
+
+    result = LangChainAgentLoopAdapter(model=CooperativeSlowModel()).run(
+        replace(_request(), timeout_seconds=30),
+        replace(
+            _context(),
+            cancellation_token=Token(),
+            metadata={"provider_cancellation_registry": register_handle},
+        ),
+    )
+
+    assert result.status == "cancelled"
+    assert provider_finished.is_set()
+    assert registered_handles[0].metadata["local_boundary_closed"] is True
+
+
+def test_langchain_adapter_unclosed_model_worker_propagates_fail_closed() -> None:
+    cancel_requested = threading.Event()
+
+    class Token:
+        def is_cancelled(self):
+            return cancel_requested.is_set()
+
+    class UncooperativeModel:
+        def invoke(self, messages):
+            time.sleep(0.2)
+            return type(
+                "Response",
+                (),
+                {"content": "late", "tool_calls": [], "usage": {}},
+            )()
+
+    def register_handle(handle):
+        cancel_requested.set()
+
+    with pytest.raises(ProviderBoundaryNotClosed):
+        LangChainAgentLoopAdapter(model=UncooperativeModel()).run(
+            replace(
+                _request(),
+                timeout_seconds=30,
+                model_config={
+                    "provider": "fake",
+                    "execution": {"cancellation_timeout_seconds": 0.01},
+                },
+            ),
+            replace(
+                _context(),
+                cancellation_token=Token(),
+                metadata={"provider_cancellation_registry": register_handle},
+            ),
+        )
+
+
 def test_langchain_adapter_times_out_blocking_stream_call() -> None:
     events = []
     stream_events = []
@@ -729,7 +916,7 @@ def test_langchain_adapter_times_out_blocking_stream_call() -> None:
         stream_chunks = ["too late"]
 
         def stream(self, messages):
-            time.sleep(0.2)
+            time.sleep(0.03)
             yield AIMessageChunk(content="too late")
 
         def invoke(self, messages):
@@ -771,6 +958,204 @@ def test_langchain_adapter_times_out_blocking_stream_call() -> None:
     ]
     assert events[-1][1]["error_class"] == "timeout"
     assert [event.kind for event in stream_events] == ["stream_model_call_started"]
+
+
+def test_langchain_adapter_stream_cancellation_collects_worker_before_return() -> None:
+    cancel_requested = threading.Event()
+    provider_finished = threading.Event()
+
+    class Token:
+        def is_cancelled(self):
+            return cancel_requested.is_set()
+
+    class CooperativeStreamingModel:
+        stream_chunks = ["late"]
+
+        def stream(self, messages):
+            while not cancel_requested.is_set():
+                time.sleep(0.001)
+            provider_finished.set()
+            yield AIMessageChunk(content="late")
+
+    def register_handle(handle):
+        cancel_requested.set()
+
+    result = LangChainAgentLoopAdapter(model=CooperativeStreamingModel()).stream(
+        replace(_request(), timeout_seconds=30),
+        replace(
+            _context(),
+            cancellation_token=Token(),
+            metadata={"provider_cancellation_registry": register_handle},
+        ),
+        lambda _event: None,
+    )
+
+    assert result.status == "cancelled"
+    assert provider_finished.is_set()
+
+
+def test_langchain_adapter_unclosed_stream_worker_propagates_fail_closed() -> None:
+    cancel_requested = threading.Event()
+
+    class Token:
+        def is_cancelled(self):
+            return cancel_requested.is_set()
+
+    class UncooperativeStreamingModel:
+        stream_chunks = ["late"]
+
+        def stream(self, messages):
+            time.sleep(0.2)
+            yield AIMessageChunk(content="late")
+
+    def register_handle(handle):
+        cancel_requested.set()
+
+    with pytest.raises(ProviderBoundaryNotClosed):
+        LangChainAgentLoopAdapter(model=UncooperativeStreamingModel()).stream(
+            replace(
+                _request(),
+                timeout_seconds=30,
+                model_config={
+                    "provider": "fake",
+                    "execution": {"cancellation_timeout_seconds": 0.01},
+                },
+            ),
+            replace(
+                _context(),
+                cancellation_token=Token(),
+                metadata={"provider_cancellation_registry": register_handle},
+            ),
+            lambda _event: None,
+        )
+
+
+def test_langchain_adapter_streaming_fallback_uses_cancellable_worker() -> None:
+    events = []
+    registered_handles = []
+    cancel_requested = threading.Event()
+
+    class Token:
+        def is_cancelled(self):
+            return cancel_requested.is_set()
+
+    class NonStreamingSlowModel:
+        stream_chunks = None
+
+        def invoke(self, messages):
+            while not cancel_requested.is_set():
+                time.sleep(0.001)
+            return type(
+                "Response",
+                (),
+                {"content": "too late fallback", "tool_calls": [], "usage": {}},
+            )()
+
+    def register_handle(handle):
+        registered_handles.append(handle)
+        cancel_requested.set()
+
+    context = replace(
+        _context(),
+        cancellation_token=Token(),
+        metadata={"provider_cancellation_registry": register_handle},
+        model_event_recorder=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    result = LangChainAgentLoopAdapter(model=NonStreamingSlowModel()).stream(
+        replace(_request(), timeout_seconds=30),
+        context,
+        lambda _event: None,
+    )
+
+    assert result.status == "cancelled"
+    assert result.assistant_output is None
+    assert result.metadata["streaming_fallback"] is True
+    assert result.metadata["provider_cancellation"]["remote_stop_uncertain"] is True
+    assert registered_handles
+    assert [kind for kind, _payload in events] == [
+        "model_call_started",
+        "model_call_failed",
+    ]
+
+
+def test_langchain_adapter_streaming_fallback_collects_worker_before_return() -> None:
+    cancel_requested = threading.Event()
+    provider_finished = threading.Event()
+
+    class Token:
+        def is_cancelled(self):
+            return cancel_requested.is_set()
+
+    class CooperativeNonStreamingModel:
+        stream_chunks = None
+
+        def invoke(self, messages):
+            while not cancel_requested.is_set():
+                time.sleep(0.001)
+            provider_finished.set()
+            return type(
+                "Response",
+                (),
+                {"content": "late fallback", "tool_calls": [], "usage": {}},
+            )()
+
+    def register_handle(handle):
+        cancel_requested.set()
+
+    result = LangChainAgentLoopAdapter(model=CooperativeNonStreamingModel()).stream(
+        replace(_request(), timeout_seconds=30),
+        replace(
+            _context(),
+            cancellation_token=Token(),
+            metadata={"provider_cancellation_registry": register_handle},
+        ),
+        lambda _event: None,
+    )
+
+    assert result.status == "cancelled"
+    assert result.metadata["streaming_fallback"] is True
+    assert provider_finished.is_set()
+
+
+def test_langchain_adapter_unclosed_streaming_fallback_worker_propagates_fail_closed() -> None:
+    cancel_requested = threading.Event()
+
+    class Token:
+        def is_cancelled(self):
+            return cancel_requested.is_set()
+
+    class UncooperativeNonStreamingModel:
+        stream_chunks = None
+
+        def invoke(self, messages):
+            time.sleep(0.2)
+            return type(
+                "Response",
+                (),
+                {"content": "late fallback", "tool_calls": [], "usage": {}},
+            )()
+
+    def register_handle(handle):
+        cancel_requested.set()
+
+    with pytest.raises(ProviderBoundaryNotClosed):
+        LangChainAgentLoopAdapter(model=UncooperativeNonStreamingModel()).stream(
+            replace(
+                _request(),
+                timeout_seconds=30,
+                model_config={
+                    "provider": "fake",
+                    "execution": {"cancellation_timeout_seconds": 0.01},
+                },
+            ),
+            replace(
+                _context(),
+                cancellation_token=Token(),
+                metadata={"provider_cancellation_registry": register_handle},
+            ),
+            lambda _event: None,
+        )
 
 
 def test_langchain_adapter_stream_timeout_resets_after_each_chunk() -> None:

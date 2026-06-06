@@ -12,6 +12,7 @@ from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.events import EventWriter
 from debug_agent.runtime.contracts import RunEvent, ToolDefinition, ToolResult, utc_now_iso
 from debug_agent.runtime.errors import NormalizedError
+from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
 from debug_agent.runtime.policy import (
     ApprovalGrant,
     NormalizedToolCall,
@@ -113,6 +114,7 @@ class ToolUseContext:
     todo_plan_store: Any = None
     vision_client: Any = None
     view_image_reader: Any = None
+    provider_cancellation_registry: Any = None
     effective_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS
 
 
@@ -137,6 +139,7 @@ class ToolRouter:
                     context,
                     arguments,
                     timeout_seconds=context.effective_timeout_seconds,
+                    register_cancellation_handle=context.provider_cancellation_registry,
                 )
             return self._native_handlers[context.tool_definition.name](context, arguments)
         if context.tool_definition.category == "shell":
@@ -509,6 +512,7 @@ class ToolBroker:
             todo_plan_store=context.get("todo_plan_store"),
             vision_client=context.get("vision_client"),
             view_image_reader=context.get("view_image_reader"),
+            provider_cancellation_registry=context.get("provider_cancellation_registry"),
             effective_timeout_seconds=route_timeout_seconds,
         )
         self._write_event(
@@ -555,6 +559,10 @@ class ToolBroker:
                 ),
             )
             return result
+        except ProviderBoundaryNotClosed:
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
+            raise
         except Exception as exc:
             if executor is not None:
                 executor.shutdown(wait=False, cancel_futures=True)

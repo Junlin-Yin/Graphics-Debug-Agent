@@ -1340,9 +1340,6 @@ def test_prompt_executor_passes_session_timeout_to_adapter_request(tmp_path) -> 
                 metadata={},
             )
 
-        def cancel(self, run_id: str) -> None:
-            raise AssertionError("cancel should not be called")
-
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     db = RuntimeDatabase.bootstrap(workspace)
@@ -1399,9 +1396,6 @@ def test_prompt_executor_passes_estimated_model_context_frame_identity_to_adapte
                 error=None,
                 metadata={},
             )
-
-        def cancel(self, run_id: str) -> None:
-            raise AssertionError("cancel should not be called")
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1472,9 +1466,6 @@ def test_prompt_executor_injects_todo_plan_from_store_without_persisting_to_conv
                 error=None,
                 metadata={},
             )
-
-        def cancel(self, run_id: str) -> None:
-            raise AssertionError("cancel should not be called")
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1570,9 +1561,6 @@ def test_prompt_executor_uses_stream_path_when_callback_is_supplied(tmp_path) ->
                 metadata={},
             )
 
-        def cancel(self, run_id: str) -> None:
-            raise AssertionError("cancel should not be called")
-
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     db = RuntimeDatabase.bootstrap(workspace)
@@ -1657,9 +1645,6 @@ def test_prompt_executor_streams_context_estimate_before_adapter_call(tmp_path) 
                 metadata={},
             )
 
-        def cancel(self, run_id: str) -> None:
-            raise AssertionError("cancel should not be called")
-
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     db = RuntimeDatabase.bootstrap(workspace)
@@ -1733,9 +1718,6 @@ def test_prompt_executor_does_not_persist_agent_stream_events(tmp_path) -> None:
                 error=None,
                 metadata={},
             )
-
-        def cancel(self, run_id: str) -> None:
-            raise AssertionError("cancel should not be called")
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1848,9 +1830,6 @@ def test_prompt_executor_omits_old_tool_results_and_persists_context_snapshot(
                 error=None,
                 metadata={},
             )
-
-        def cancel(self, run_id: str) -> None:
-            raise AssertionError("cancel should not be called")
 
     (
         workspace,
@@ -1994,9 +1973,6 @@ def test_prompt_executor_automatically_compresses_before_initial_model_call(
                 metadata={},
             )
 
-        def cancel(self, run_id: str) -> None:
-            raise AssertionError("cancel should not be called")
-
     compression_frames = []
 
     def compression_model(frame):
@@ -2132,9 +2108,6 @@ def test_prompt_executor_compression_failure_aborts_without_conversation_mutatio
         def run(self, request, context):
             raise AssertionError("ordinary model call should not run after compression failure")
 
-        def cancel(self, run_id: str) -> None:
-            raise AssertionError("cancel should not be called")
-
     (
         workspace,
         db,
@@ -2246,9 +2219,6 @@ def test_prompt_executor_context_limit_exceeded_aborts_without_model_call(
     class FailingAdapter:
         def run(self, request, context):
             raise AssertionError("ordinary model call should not run over context limit")
-
-        def cancel(self, run_id: str) -> None:
-            raise AssertionError("cancel should not be called")
 
     (
         workspace,
@@ -2623,9 +2593,6 @@ def test_omission_plus_compression_writes_only_final_snapshot(tmp_path) -> None:
                 metadata={},
             )
 
-        def cancel(self, run_id: str) -> None:
-            raise AssertionError("cancel should not be called")
-
     def compression_model(_frame):
         return json.dumps(
             {
@@ -2837,9 +2804,6 @@ def test_repl_runtime_writes_back_omitted_conversation_and_metadata(tmp_path) ->
                 error=None,
                 metadata={},
             )
-
-        def cancel(self, run_id: str) -> None:
-            raise AssertionError("cancel should not be called")
 
     (
         workspace,
@@ -3331,9 +3295,6 @@ def test_repl_runtime_updates_latest_context_estimate_from_stream_event(tmp_path
                 error=None,
                 metadata={},
             )
-
-        def cancel(self, run_id: str) -> None:
-            raise AssertionError("cancel should not be called")
 
     (
         workspace,

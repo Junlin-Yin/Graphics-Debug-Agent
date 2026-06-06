@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 
 import pytest
 
@@ -129,6 +131,60 @@ def test_client_uses_single_non_streaming_request_with_timeout_and_no_retry() ->
     assert calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
     assert calls[0]["response_format"] == {"type": "json_object"}
     assert calls[0]["max_tokens"] == 321
+
+
+def test_client_async_analysis_registers_cancellation_handle_and_ignores_late_result() -> None:
+    started = threading.Event()
+    release = threading.Event()
+    registered_handles = []
+
+    class _SlowCompletions:
+        def create(self, **_kwargs):
+            started.set()
+            release.wait(timeout=1)
+
+            class _Message:
+                content = '{"analysis":"too late"}'
+
+            class _Choice:
+                message = _Message()
+
+            class _Completion:
+                choices = [_Choice()]
+
+            return _Completion()
+
+    class _SlowOpenAI:
+        def __init__(self, **_kwargs) -> None:
+            self.chat = type("Chat", (), {"completions": _SlowCompletions()})()
+
+    client = VisionModelClient(factory=_SlowOpenAI)
+    config = VisionClientConfig(
+        provider="openai",
+        model="kimi-k2.5",
+        api_key="secret",
+        base_url="https://example.test/v1",
+        max_tokens=321,
+    )
+
+    future = client.analyze_async(
+        config=config,
+        images=[VisionImageInput(mime_type="image/png", data=b"abc")],
+        instruction="Return JSON.",
+        timeout_seconds=7.5,
+        register_cancellation_handle=registered_handles.append,
+    )
+    assert started.wait(timeout=1)
+    registered_handles[0].cancel()
+
+    with pytest.raises(KeyboardInterrupt, match="view_image provider call cancelled"):
+        future.result(timeout=1)
+    release.set()
+    time.sleep(0.03)
+
+    assert registered_handles[0].cancel_requested is True
+    assert registered_handles[0].metadata["remote_stop_uncertain"] is True
+    assert registered_handles[0].metadata["billing_stop_uncertain"] is True
 
 
 def test_client_rejects_completion_without_message_content() -> None:

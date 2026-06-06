@@ -8,6 +8,7 @@ from io import BytesIO
 from pathlib import Path
 from time import monotonic
 from typing import Any, Callable
+from concurrent.futures import TimeoutError as FutureTimeoutError
 
 from openai import APITimeoutError
 from PIL import Image, UnidentifiedImageError
@@ -19,6 +20,13 @@ from debug_agent.adapters.vision_client import (
     project_chat_completions_request,
 )
 from debug_agent.runtime.contracts import ToolDefinition, ToolResult
+from debug_agent.runtime.errors import NormalizedError
+from debug_agent.runtime.provider_execution import (
+    ProviderBoundaryNotClosed,
+    ProviderCallCancelled,
+    ProviderCancellationHandle,
+    provider_cancellation_uncertainty_metadata,
+)
 
 
 DEFAULT_QUERY = (
@@ -86,6 +94,7 @@ class ViewImageTool:
         arguments: dict[str, Any],
         *,
         timeout_seconds: float,
+        register_cancellation_handle: Callable[[ProviderCancellationHandle], None] | None = None,
     ) -> ViewImageResult:
         multimodal = _multimodal_config(context.frozen_config)
         query_result = _effective_query(
@@ -145,7 +154,14 @@ class ViewImageTool:
 
         start = monotonic()
         try:
-            provider_response = self.vision_client.analyze(
+            analyze_async = getattr(self.vision_client, "analyze_async", None)
+            if not callable(analyze_async):
+                return ViewImageResult(
+                    status="error",
+                    error_message="Vision provider does not expose async cancellation.",
+                    error_class="runtime_error",
+                )
+            future = analyze_async(
                 config=client_config,
                 images=[
                     VisionImageInput(mime_type=image.mime_type, data=image.data)
@@ -153,13 +169,28 @@ class ViewImageTool:
                 ],
                 instruction=instruction,
                 timeout_seconds=timeout_seconds,
+                register_cancellation_handle=register_cancellation_handle,
+                cancellation_token=getattr(context, "cancellation_token", None),
             )
-        except (TimeoutError, APITimeoutError):
+            provider_response = future.result(timeout=timeout_seconds)
+        except (TimeoutError, FutureTimeoutError, APITimeoutError):
             return ViewImageResult(
                 status="timeout",
                 error_message=f"Tool timed out after {timeout_seconds:g} seconds.",
                 error_class="timeout",
             )
+        except (ProviderCallCancelled, KeyboardInterrupt) as exc:
+            return ViewImageResult(
+                status="cancelled",
+                error_message=str(exc) or "view_image provider call cancelled.",
+                error_class="cancelled",
+                metadata={
+                    "tool_name": "view_image",
+                    "provider_cancellation": provider_cancellation_uncertainty_metadata(),
+                },
+            )
+        except ProviderBoundaryNotClosed:
+            raise
         except Exception as exc:
             return ViewImageResult(
                 status="error",
@@ -272,19 +303,32 @@ def tool_result_from_view_image(result: ViewImageResult, *, source: str) -> Tool
             metadata=result.metadata or {},
             redacted_output=result.redacted_output,
         )
+    error = _view_image_error(result, source=source)
     return ToolResult(
         status=result.status,
         output=None,
-        error={
-            "error_class": result.error_class,
-            "message": result.error_message or "view_image failed.",
-            "source": source,
-            "recoverable": True,
-        },
+        error=error,
         artifacts=[],
         metadata=result.metadata or {},
         redacted_output=None,
     )
+
+
+def _view_image_error(result: ViewImageResult, *, source: str) -> dict[str, Any]:
+    if result.error_class == "cancelled":
+        return NormalizedError.create(
+            "cancelled",
+            "tool_call_cancelled",
+            message=result.error_message or "view_image provider call cancelled.",
+            scope="tool",
+            metadata=dict(result.metadata or {}),
+        ).to_dict()
+    return {
+        "error_class": result.error_class,
+        "message": result.error_message or "view_image failed.",
+        "source": source,
+        "recoverable": True,
+    }
 
 
 def _multimodal_config(frozen_config: dict[str, Any]) -> dict[str, Any]:

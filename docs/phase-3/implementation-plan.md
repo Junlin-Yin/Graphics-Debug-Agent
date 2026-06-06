@@ -361,19 +361,19 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 
 **Runnable state:** ordinary successful provider calls still work through existing public adapter methods, and provider paths are ready for runtime cancellation control.
 
-- [ ] Audit concrete main model adapter invocation path and document any blocking provider limitations in the milestone checkpoint.
-- [ ] Audit concrete `view_image` provider invocation path and document any blocking provider limitations in the milestone checkpoint.
-- [ ] Remove placeholder public `AgentLoopAdapter.cancel(run_id)` from protocol, concrete adapter, and tests that only model future cancellation state.
-- [ ] Preserve `AgentLoopAdapter.run()` and `AgentLoopAdapter.stream()` public contracts.
-- [ ] Wrap main model provider calls in runtime-owned cancellable workers or async tasks.
-- [ ] Ensure streaming fallback to non-streaming provider invocation still runs through a cancellable worker.
-- [ ] Add async/cancellable `view_image` provider path and cancellation-handle registration.
-- [ ] Ignore and audit late provider results after cancellation or retry abandonment.
-- [ ] Ensure stream deltas are presentation-only and not accepted after cancellation.
-- [ ] Capture provider stop/finish metadata needed for `output_token_limit_reached`.
-- [ ] Represent provider remote-stop/billing uncertainty only in internal/audit metadata.
-- [ ] Add fake provider tests for cancellable main model calls, cancellable `view_image`, late-result ignoring, stream delta non-acceptance, uncertainty metadata, and output-token metadata.
-- [ ] Run canonical verification.
+- [x] Audit concrete main model adapter invocation path and document any blocking provider limitations in the milestone checkpoint.
+- [x] Audit concrete `view_image` provider invocation path and document any blocking provider limitations in the milestone checkpoint.
+- [x] Remove placeholder public `AgentLoopAdapter.cancel(run_id)` from protocol, concrete adapter, and tests that only model future cancellation state.
+- [x] Preserve `AgentLoopAdapter.run()` and `AgentLoopAdapter.stream()` public contracts.
+- [x] Wrap main model provider calls in runtime-owned cancellable workers or async tasks.
+- [x] Ensure streaming fallback to non-streaming provider invocation still runs through a cancellable worker.
+- [x] Add async/cancellable `view_image` provider path and cancellation-handle registration.
+- [x] Ignore and audit late provider results after cancellation or retry abandonment.
+- [x] Ensure stream deltas are presentation-only and not accepted after cancellation.
+- [x] Capture provider stop/finish metadata needed for `output_token_limit_reached`.
+- [x] Represent provider remote-stop/billing uncertainty only in internal/audit metadata.
+- [x] Add fake provider tests for cancellable main model calls, cancellable `view_image`, late-result ignoring, stream delta non-acceptance, uncertainty metadata, and output-token metadata.
+- [x] Run canonical verification.
 
 ## Milestone 7: Running Cancellation, Active Shell Termination, And Idle Terminalization
 

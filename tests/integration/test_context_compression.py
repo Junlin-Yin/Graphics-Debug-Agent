@@ -81,9 +81,6 @@ def test_automatic_compression_runs_before_initial_model_call(tmp_path) -> None:
             self.request = request
             return AgentRunResult("completed", "answer", [], {}, None, {})
 
-        def cancel(self, run_id: str) -> None:
-            raise AssertionError("cancel should not be called")
-
     session = _with_context(runtime["session"], window_tokens=420, ratio=0.1)
     adapter = RecordingAdapter()
     executor = PromptAgentExecutor(

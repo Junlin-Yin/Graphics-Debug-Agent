@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from concurrent.futures import Future
 from dataclasses import replace
+import threading
 
 import httpx
 import openai
+import pytest
 
 from debug_agent.persistence.approval_grants import ApprovalGrantStore
 from debug_agent.persistence.artifacts import ArtifactStore
@@ -12,6 +15,7 @@ from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
 from debug_agent.runtime.policy import build_builtin_policy
+from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
 from debug_agent.tools.broker import (
     LARGE_OUTPUT_THRESHOLD_BYTES,
     FakeApprovalProvider,
@@ -145,6 +149,11 @@ class _FakeVisionClient:
         self.calls.append(kwargs)
         return type("VisionResponse", (), {"text": self.text, "provider_metadata": {}})()
 
+    def analyze_async(self, **kwargs):
+        future = Future()
+        future.set_result(self.analyze(**_without_async_controls(kwargs)))
+        return future
+
 
 class _OpenAITimeoutVisionClient:
     def __init__(self) -> None:
@@ -153,6 +162,62 @@ class _OpenAITimeoutVisionClient:
     def analyze(self, **kwargs):
         self.calls.append(kwargs)
         raise openai.APITimeoutError(httpx.Request("POST", "https://example.test/v1"))
+
+    def analyze_async(self, **kwargs):
+        future = Future()
+        try:
+            self.analyze(**_without_async_controls(kwargs))
+        except BaseException as exc:
+            future.set_exception(exc)
+        return future
+
+
+def _without_async_controls(kwargs: dict) -> dict:
+    cleaned = dict(kwargs)
+    cleaned.pop("register_cancellation_handle", None)
+    cleaned.pop("cancellation_token", None)
+    return cleaned
+
+
+class _CancellableVisionClient:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.finished = threading.Event()
+        self.calls: list[dict] = []
+
+    def analyze_async(self, **kwargs):
+        self.calls.append(kwargs)
+        register = kwargs.get("register_cancellation_handle")
+        future = Future()
+        finished = self.finished
+
+        class _Handle:
+            cancel_requested = False
+            metadata = {
+                "remote_stop_uncertain": True,
+                "billing_stop_uncertain": True,
+            }
+
+            def cancel(self):
+                self.cancel_requested = True
+                self.metadata["local_boundary_closed"] = True
+                finished.set()
+                future.set_exception(KeyboardInterrupt("view_image provider call cancelled."))
+
+        handle = _Handle()
+        if callable(register):
+            register(handle)
+        self.started.set()
+        return future
+
+
+class _UnclosedVisionClient:
+    def analyze_async(self, **_kwargs):
+        class _Task:
+            def result(self, timeout=None):
+                raise ProviderBoundaryNotClosed("view_image provider worker did not close locally.")
+
+        return _Task()
 
 
 def _write_image(path, *, fmt: str = "PNG", size: tuple[int, int] = (4, 3)) -> bytes:
@@ -301,6 +366,88 @@ def test_enabled_view_image_definition_routes_with_fake_provider(
     assert vision_client.calls[0]["timeout_seconds"] == 60
     assert vision_client.calls[0]["config"].model == "kimi-k2.5"
     assert vision_client.calls[0]["images"][0].mime_type == "image/png"
+    runtime["db"].close()
+
+
+def test_view_image_provider_call_uses_async_cancellation_handle(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = _runtime(tmp_path, multimodal=_enabled_multimodal())
+    image = runtime["workspace"] / "capture.png"
+    _write_image(image)
+    monkeypatch.setenv("MOONSHOT_API_KEY", "secret")
+    monkeypatch.setenv("MOONSHOT_BASE_URL", "https://example.test/v1")
+    vision_client = _CancellableVisionClient()
+    registered_handles = []
+
+    result = runtime["broker"].invoke(
+        session_id=runtime["session"].session_id,
+        run_id=runtime["run"].run_id,
+        tool_name="view_image",
+        arguments={"paths": ["capture.png"]},
+        context={
+            "workspace_root": str(runtime["workspace"]),
+            "approval_mode": runtime["approval_mode"],
+            "policy_facts": runtime["policy_facts"],
+            "approval_grants": ApprovalGrantStore(runtime["db"].connection),
+            "approval_provider": FakeApprovalProvider("denied"),
+            "frozen_config": runtime["config_snapshot"],
+            "vision_client": vision_client,
+            "provider_cancellation_registry": lambda handle: (
+                registered_handles.append(handle),
+                handle.cancel(),
+            ),
+        },
+    )
+
+    assert result.status == "cancelled"
+    assert result.error["error_class"] == "cancelled"
+    assert result.error["reason"] == "tool_call_cancelled"
+    assert result.error["schema_version"] == 1
+    assert result.error["scope"] == "tool"
+    assert result.error["recoverability"] == "turn_recoverable"
+    assert result.error["artifact_ids"] == []
+    assert result.output is None
+    assert result.error["metadata"]["tool_name"] == "view_image"
+    assert result.error["metadata"]["provider_cancellation"]["remote_stop_uncertain"] is True
+    assert result.error["metadata"]["provider_cancellation"]["billing_stop_uncertain"] is True
+    assert result.metadata["provider_cancellation"]["remote_stop_uncertain"] is True
+    assert result.metadata["provider_cancellation"]["billing_stop_uncertain"] is True
+    assert registered_handles and registered_handles[0].cancel_requested is True
+    assert vision_client.started.is_set()
+    assert vision_client.finished.is_set()
+    assert runtime["events"].list_for_run("run_1")[-1].kind == "tool_call_failed"
+    assert runtime["events"].list_for_run("run_1")[-1].payload["error"]["schema_version"] == 1
+    runtime["db"].close()
+
+
+def test_view_image_unclosed_provider_boundary_propagates_fail_closed(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = _runtime(tmp_path, multimodal=_enabled_multimodal())
+    image = runtime["workspace"] / "capture.png"
+    _write_image(image)
+    monkeypatch.setenv("MOONSHOT_API_KEY", "secret")
+    monkeypatch.setenv("MOONSHOT_BASE_URL", "https://example.test/v1")
+
+    with pytest.raises(ProviderBoundaryNotClosed):
+        runtime["broker"].invoke(
+            session_id=runtime["session"].session_id,
+            run_id=runtime["run"].run_id,
+            tool_name="view_image",
+            arguments={"paths": ["capture.png"]},
+            context={
+                "workspace_root": str(runtime["workspace"]),
+                "approval_mode": runtime["approval_mode"],
+                "policy_facts": runtime["policy_facts"],
+                "approval_grants": ApprovalGrantStore(runtime["db"].connection),
+                "approval_provider": FakeApprovalProvider("denied"),
+                "frozen_config": runtime["config_snapshot"],
+                "vision_client": _UnclosedVisionClient(),
+            },
+        )
     runtime["db"].close()
 
 

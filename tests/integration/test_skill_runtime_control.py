@@ -325,9 +325,6 @@ def test_omitted_tool_output_remains_recoverable_from_artifact(tmp_path) -> None
                 metadata={},
             )
 
-        def cancel(self, run_id: str) -> None:
-            raise AssertionError("cancel should not be called")
-
     session = type(runtime["session"])(
         **{
             **runtime["session"].to_dict(),
