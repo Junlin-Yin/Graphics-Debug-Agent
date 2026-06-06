@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import hashlib
+import os
 import json
+import socket
+import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -108,6 +112,7 @@ class ReplRuntime:
         session_id: str,
         run_id: str,
         workspace_root: Path,
+        conversation: list[dict[str, Any]] | None = None,
     ) -> None:
         self.db = db
         self.sessions = sessions
@@ -119,7 +124,9 @@ class ReplRuntime:
         self.run_id = run_id
         self.workspace_root = workspace_root
         self.turn_counter = 0
-        self.conversation: list[dict[str, Any]] = []
+        self.conversation: list[dict[str, Any]] = (
+            [] if conversation is None else [dict(message) for message in conversation]
+        )
         self.latest_context_estimate: dict[str, Any] | None = None
         self.approval_provider = NonInteractiveApprovalProvider()
         self.closed = False
@@ -723,6 +730,118 @@ class RuntimeOrchestrator:
             db.close()
 
     def resume(self, session_id: str) -> ResumeResult:
+        result = self._resume_lineage(session_id)
+        if result.exit_code != 0:
+            return result
+        return ResumeResult(
+            exit_code=0,
+            message=f"Resumed session {session_id}",
+            error=None,
+            session_id=session_id,
+        )
+
+    def start_resumed_repl(self, session_id: str) -> ReplStartResult:
+        preflight = self._preflight_resumed_repl(session_id)
+        if preflight is not None:
+            return preflight
+        resume = self._resume_lineage(session_id)
+        if resume.exit_code != 0:
+            return ReplStartResult(
+                runtime=None,
+                error=ReplStartError(
+                    exit_code=resume.exit_code,
+                    message=resume.message,
+                    error=resume.error,
+                ),
+            )
+        try:
+            db = RuntimeDatabase.bootstrap(self.workspace_root)
+        except RuntimeBootstrapError as exc:
+            return ReplStartResult(
+                runtime=None,
+                error=ReplStartError(
+                    exit_code=map_error_to_exit_code(exc.normalized_error),
+                    message=str(exc),
+                    error=exc.normalized_error.to_dict(),
+                ),
+            )
+        try:
+            runtime = _runtime_from_resumed_session(
+                db=db,
+                workspace_root=self.workspace_root,
+                session_id=session_id,
+            )
+        except StoreError as exc:
+            _rollback_failed_resume_handoff(db.connection, session_id=session_id)
+            db.close()
+            error = NormalizedError.create(
+                "persistence_error",
+                "persistence_read_failed",
+                message=exc.message,
+                scope="persistence",
+            )
+            return ReplStartResult(
+                runtime=None,
+                error=ReplStartError(
+                    exit_code=map_error_to_exit_code(error),
+                    message=exc.message,
+                    error=error.to_dict(),
+                ),
+            )
+        return ReplStartResult(runtime=runtime, error=None)
+
+    def _preflight_resumed_repl(self, session_id: str) -> ReplStartResult | None:
+        try:
+            db = RuntimeDatabase.bootstrap_read_only(self.workspace_root)
+        except RuntimeBootstrapError as exc:
+            return ReplStartResult(
+                runtime=None,
+                error=ReplStartError(
+                    exit_code=map_error_to_exit_code(exc.normalized_error),
+                    message=str(exc),
+                    error=exc.normalized_error.to_dict(),
+                ),
+            )
+        if db is None:
+            error = NormalizedError.create(
+                "user_error",
+                "lookup_not_found",
+                message=f"No session found for id: {session_id}",
+                scope="session",
+            )
+            return ReplStartResult(
+                runtime=None,
+                error=ReplStartError(
+                    exit_code=map_error_to_exit_code(error),
+                    message=error.message,
+                    error=error.to_dict(),
+                ),
+            )
+        try:
+            _preflight_resumed_runtime_construction(
+                db=db,
+                session_id=session_id,
+            )
+            return None
+        except StoreError as exc:
+            error = NormalizedError.create(
+                "persistence_error",
+                "persistence_read_failed",
+                message=exc.message,
+                scope="persistence",
+            )
+            return ReplStartResult(
+                runtime=None,
+                error=ReplStartError(
+                    exit_code=map_error_to_exit_code(error),
+                    message=exc.message,
+                    error=error.to_dict(),
+                ),
+            )
+        finally:
+            db.close()
+
+    def _resume_lineage(self, session_id: str) -> ResumeResult:
         try:
             db = RuntimeDatabase.bootstrap_read_only(self.workspace_root)
         except RuntimeBootstrapError as exc:
@@ -743,8 +862,28 @@ class RuntimeOrchestrator:
                 },
                 session_id=None,
             )
+        db.close()
+        try:
+            db = RuntimeDatabase.bootstrap(self.workspace_root)
+        except RuntimeBootstrapError as exc:
+            return ResumeResult(
+                exit_code=map_error_to_exit_code(exc.normalized_error),
+                message=str(exc),
+                error=exc.normalized_error.to_dict(),
+                session_id=None,
+            )
         try:
             sessions = SessionStore(db.connection)
+            runs = RunStore(db.connection)
+            events = EventWriter(db.connection, db.path.parent)
+            artifacts = ArtifactStore(db.connection, db.path.parent)
+            conversation_store = ConversationStore(db.connection, artifact_store=artifacts)
+            checkpoints = CheckpointStore(
+                db.connection,
+                conversation_store=conversation_store,
+                todo_plan_store=TodoPlanStore(db.connection),
+                artifact_store=artifacts,
+            )
             try:
                 session = sessions.get(session_id)
             except StoreError as exc:
@@ -758,18 +897,143 @@ class RuntimeOrchestrator:
                     },
                     session_id=None,
                 )
-            message = (
-                "Resume is gated until Phase 3 terminal recovery checkpoints "
-                "are implemented."
-            )
+            run = runs.latest_for_session(session.session_id)
+            if run is None:
+                return _resume_error(
+                    session_id=session.session_id,
+                    message=f"No prompt run found for session id: {session.session_id}",
+                    error_class="user_error",
+                    reason="lookup_not_found",
+                )
+            if (
+                run.run_type != "prompt"
+                or session.non_resumable_startup_failure
+                or run.non_resumable_startup_failure
+            ):
+                return _resume_error(
+                    session_id=session.session_id,
+                    message=f"Session is not eligible for resume: {session.session_id}",
+                    error_class="runtime_error",
+                    reason="resume_not_eligible",
+                )
+            if session.status == "running" or run.status == "running":
+                return _resume_error(
+                    session_id=session.session_id,
+                    message=f"Session is not eligible for resume: {session.session_id}",
+                    error_class="runtime_error",
+                    reason="resume_not_eligible",
+                )
+            if session.status not in {"completed", "failed"} or run.status not in {
+                "completed",
+                "failed",
+            }:
+                return _resume_error(
+                    session_id=session.session_id,
+                    message=f"Session is not eligible for resume: {session.session_id}",
+                    error_class="runtime_error",
+                    reason="resume_not_eligible",
+                )
+            checkpoint_id = session.latest_checkpoint_id
+            if not checkpoint_id or checkpoint_id != run.latest_checkpoint_id:
+                return _resume_error(
+                    session_id=session.session_id,
+                    message=f"Session requires a terminal recovery checkpoint: {session.session_id}",
+                    error_class="runtime_error",
+                    reason="resume_checkpoint_required",
+                )
+            try:
+                checkpoint = checkpoints.get(checkpoint_id)
+            except StoreError:
+                return _resume_error(
+                    session_id=session.session_id,
+                    message=f"Checkpoint not found for resume: {checkpoint_id}",
+                    error_class="persistence_error",
+                    reason="checkpoint_missing",
+                )
+            if (
+                checkpoint.session_id != session.session_id
+                or checkpoint.run_id != run.run_id
+            ):
+                return _resume_error(
+                    session_id=session.session_id,
+                    message="Terminal recovery checkpoint identity does not match resume target.",
+                    error_class="persistence_error",
+                    reason="checkpoint_invalid",
+                )
+            try:
+                checkpoints.validate_terminal_recovery(
+                    checkpoint,
+                    validate_current_todo=False,
+                )
+            except StoreError as exc:
+                return _resume_error(
+                    session_id=session.session_id,
+                    message=exc.message,
+                    error_class="persistence_error",
+                    reason="checkpoint_invalid",
+                )
+            try:
+                conversation = _conversation_from_checkpoint_projection(
+                    conversation_store=conversation_store,
+                    run_id=run.run_id,
+                    checkpoint_state=checkpoint.state,
+                )
+            except StoreError as exc:
+                return _resume_error(
+                    session_id=session.session_id,
+                    message=exc.message,
+                    error_class="persistence_error",
+                    reason="conversation_cut_invalid",
+                )
+            active = sessions.find_active_for_workspace(self.workspace_root)
+            if active is not None:
+                return _resume_error(
+                    session_id=session.session_id,
+                    message=_active_conflict_message(active.session_id),
+                    error_class="policy_error",
+                    reason="workspace_owner_active",
+                )
+            owner_facts = _current_owner_facts()
+            try:
+                _revive_same_lineage(
+                    db.connection,
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    owner_facts=owner_facts,
+                    checkpoint_state=checkpoint.state,
+                )
+                _append_event(
+                    events,
+                    session.session_id,
+                    run.run_id,
+                    "session_resumed",
+                    {
+                        "checkpoint_id": checkpoint.checkpoint_id,
+                        "owner_pid": owner_facts["pid"],
+                        "owner_host_id": owner_facts["host_id"],
+                    },
+                )
+                _append_event(
+                    events,
+                    session.session_id,
+                    run.run_id,
+                    "run_resumed",
+                    {"checkpoint_id": checkpoint.checkpoint_id},
+                )
+                TraceWriter(db.connection, db.path.parent).refresh_if_stale(
+                    session.session_id
+                )
+            except StoreError as exc:
+                return _resume_error(
+                    session_id=session.session_id,
+                    message=exc.message,
+                    error_class="persistence_error",
+                    reason="persistence_transition_failed",
+                )
             return ResumeResult(
-                exit_code=ERROR_EXECUTION_FAILED,
-                message=message,
-                error={
-                    "error_class": "runtime_error",
-                    "reason": "resume_checkpoint_required",
-                    "message": message,
-                },
+                exit_code=0,
+                message=f"Resumed session {session.session_id}",
+                error=None,
                 session_id=session.session_id,
             )
         finally:
@@ -1432,6 +1696,324 @@ def _append_event(
             payload=payload,
         )
     )
+
+
+def _resume_error(
+    *,
+    session_id: str | None,
+    message: str,
+    error_class: str,
+    reason: str,
+) -> ResumeResult:
+    error = NormalizedError.create(
+        error_class,
+        reason,
+        message=message,
+        scope="session",
+    )
+    return ResumeResult(
+        exit_code=map_error_to_exit_code(error),
+        message=message,
+        error=error.to_dict(),
+        session_id=session_id,
+    )
+
+
+def _conversation_from_checkpoint_projection(
+    *,
+    conversation_store: ConversationStore,
+    run_id: str,
+    checkpoint_state: dict[str, Any],
+) -> list[dict[str, Any]]:
+    projection = checkpoint_state["conversation"]["projection_snapshot"]
+    source_high_watermark = int(projection["source_high_watermark"])
+    message_refs = projection["message_refs"]
+    conversation_store.validate_projection_snapshot(
+        run_id=run_id,
+        source_high_watermark=source_high_watermark,
+        message_refs=message_refs,
+        checksum=projection["checksum"],
+    )
+    rows = {
+        row.message_index: row
+        for row in conversation_store.list_messages(run_id)
+        if row.message_index <= source_high_watermark
+    }
+    restored: list[dict[str, Any]] = []
+    for seq, index in enumerate(_indexes_from_message_refs(message_refs), start=1):
+        row = rows[index]
+        restored.append(
+            {
+                "seq": seq,
+                "role": row.role,
+                "kind": row.kind,
+                "turn_id": row.turn_id,
+                "model_call_id": row.model_call_id,
+                "tool_call_id": row.tool_call_id,
+                "content": row.content,
+                "artifact_refs": [] if row.artifact_id is None else [row.artifact_id],
+                "metadata": dict(row.metadata),
+                "durable_message_index": row.message_index,
+            }
+        )
+    return restored
+
+
+def _indexes_from_message_refs(message_refs: list[dict[str, int]]) -> list[int]:
+    indexes: list[int] = []
+    for ref in message_refs:
+        if "index" in ref:
+            indexes.append(int(ref["index"]))
+        else:
+            indexes.extend(range(int(ref["start"]), int(ref["end"]) + 1))
+    return indexes
+
+
+def _current_owner_facts() -> dict[str, Any]:
+    host_name = socket.gethostname() or "unknown"
+    host_digest = hashlib.sha256(host_name.encode("utf-8")).hexdigest()
+    return {
+        "pid": os.getpid(),
+        "host_id": f"host-v1:sha256({host_digest})",
+        "owner_token": f"owner_{uuid4().hex}",
+    }
+
+
+def _revive_same_lineage(
+    connection,
+    *,
+    session_id: str,
+    run_id: str,
+    owner_facts: dict[str, Any],
+    checkpoint_state: dict[str, Any],
+) -> None:
+    try:
+        with connection:
+            TodoPlanStore(connection).restore_checkpoint_snapshot(
+                session_id=session_id,
+                run_id=run_id,
+                snapshot=checkpoint_state["todo_plan"],
+            )
+            RunStore(connection).revive_for_explicit_resume(
+                run_id=run_id,
+                session_id=session_id,
+            )
+            SessionStore(connection).revive_for_explicit_resume(
+                session_id=session_id,
+                run_id=run_id,
+                owner_pid=int(owner_facts["pid"]),
+                owner_host_id=str(owner_facts["host_id"]),
+                owner_token=str(owner_facts["owner_token"]),
+            )
+    except sqlite3.IntegrityError as exc:
+        raise _resume_transition_error("Active workspace ownership is blocked.") from exc
+
+
+def _resume_transition_error(message: str) -> StoreError:
+    return StoreError(
+        error_class="persistence_error",
+        message=message,
+        recoverable=False,
+    )
+
+
+def _rollback_failed_resume_handoff(connection, *, session_id: str) -> None:
+    row = connection.execute(
+        """
+        SELECT s.active_run_id, s.latest_checkpoint_id, c.state_json
+        FROM sessions s
+        LEFT JOIN checkpoints c ON c.checkpoint_id = s.latest_checkpoint_id
+        WHERE s.session_id = ? AND s.status = 'running'
+        """,
+        (session_id,),
+    ).fetchone()
+    if row is None or row[0] is None or row[1] is None or row[2] is None:
+        return
+    run_id = row[0]
+    checkpoint_id = row[1]
+    checkpoint_state = json.loads(row[2])
+    terminal_status = checkpoint_state.get("terminal_status")
+    if terminal_status not in {"completed", "failed"}:
+        return
+    now = utc_now_iso()
+    with connection:
+        connection.execute(
+            """
+            UPDATE runs
+            SET status = ?, updated_at = ?
+            WHERE run_id = ? AND session_id = ? AND status = 'running'
+            """,
+            (terminal_status, now, run_id, session_id),
+        )
+        connection.execute(
+            """
+            UPDATE sessions
+            SET status = ?, active_run_id = NULL, owner_pid = NULL,
+                owner_host_id = NULL, owner_token = NULL, updated_at = ?
+            WHERE session_id = ? AND status = 'running' AND active_run_id = ?
+            """,
+            (terminal_status, now, session_id, run_id),
+        )
+        _delete_resume_events_for_checkpoint(
+            connection,
+            session_id=session_id,
+            run_id=run_id,
+            checkpoint_id=checkpoint_id,
+        )
+
+
+def _delete_resume_events_for_checkpoint(
+    connection,
+    *,
+    session_id: str,
+    run_id: str,
+    checkpoint_id: str,
+) -> None:
+    rows = connection.execute(
+        """
+        SELECT rowid, kind, payload_json
+        FROM run_events
+        WHERE session_id = ? AND run_id = ?
+        ORDER BY rowid DESC
+        """,
+        (session_id, run_id),
+    ).fetchall()
+    rowids: list[int] = []
+    remaining = {"session_resumed", "run_resumed"}
+    for rowid, kind, payload_json in rows:
+        if kind not in remaining:
+            continue
+        payload = json.loads(payload_json)
+        if payload.get("checkpoint_id") != checkpoint_id:
+            continue
+        rowids.append(int(rowid))
+        remaining.remove(kind)
+        if not remaining:
+            break
+    if rowids:
+        connection.executemany(
+            "DELETE FROM run_events WHERE rowid = ?",
+            [(rowid,) for rowid in rowids],
+        )
+
+
+def _runtime_from_resumed_session(
+    *,
+    db: RuntimeDatabase,
+    workspace_root: Path,
+    session_id: str,
+) -> ReplRuntime:
+    sessions = SessionStore(db.connection)
+    runs = RunStore(db.connection)
+    events = EventWriter(db.connection, db.path.parent)
+    artifacts = ArtifactStore(db.connection, db.path.parent)
+    conversation_store = ConversationStore(db.connection, artifact_store=artifacts)
+    checkpoints = CheckpointStore(
+        db.connection,
+        conversation_store=conversation_store,
+        todo_plan_store=TodoPlanStore(db.connection),
+        artifact_store=artifacts,
+    )
+    session = sessions.get(session_id)
+    if session.status != "running" or session.active_run_id is None:
+        raise StoreError(
+            error_class="persistence_error",
+            message="Resumed session is not running.",
+            recoverable=False,
+        )
+    run = runs.get(session.active_run_id)
+    if run.status != "running" or not run.latest_checkpoint_id:
+        raise StoreError(
+            error_class="persistence_error",
+            message="Resumed run is not running.",
+            recoverable=False,
+        )
+    checkpoint = checkpoints.get(run.latest_checkpoint_id)
+    checkpoints.validate_terminal_recovery(checkpoint, validate_current_todo=True)
+    conversation = _conversation_from_checkpoint_projection(
+        conversation_store=conversation_store,
+        run_id=run.run_id,
+        checkpoint_state=checkpoint.state,
+    )
+    model_result = ModelFactory().create(session.config_snapshot)
+    if model_result.error is not None:
+        raise StoreError(
+            error_class="config_error",
+            message=model_result.error["message"],
+            recoverable=False,
+        )
+    broker = ToolBroker(event_writer=events, artifact_store=artifacts)
+    adapter = LangChainAgentLoopAdapter(
+        model=model_result.model,
+        tool_broker=broker,
+    )
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=artifacts,
+        adapter=adapter,
+        tool_definitions=visible_tool_definitions(session.config_snapshot),
+        system_prompt=session.config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
+        conversation_store=conversation_store,
+        run_store=runs,
+        compression_model=make_compression_model_callable(model_result.model),
+    )
+    runtime = ReplRuntime(
+        db=db,
+        sessions=sessions,
+        runs=runs,
+        events=events,
+        checkpoints=checkpoints,
+        executor=executor,
+        session_id=session.session_id,
+        run_id=run.run_id,
+        workspace_root=workspace_root,
+        conversation=conversation,
+    )
+    runtime._sync_durable_message_indexes()
+    return runtime
+
+
+def _preflight_resumed_runtime_construction(
+    *,
+    db: RuntimeDatabase,
+    session_id: str,
+) -> None:
+    sessions = SessionStore(db.connection)
+    runs = RunStore(db.connection)
+    artifacts = ArtifactStore(db.connection, db.path.parent)
+    conversation_store = ConversationStore(db.connection, artifact_store=artifacts)
+    checkpoints = CheckpointStore(
+        db.connection,
+        conversation_store=conversation_store,
+        todo_plan_store=TodoPlanStore(db.connection),
+        artifact_store=artifacts,
+    )
+    session = sessions.get(session_id)
+    run = runs.latest_for_session(session.session_id)
+    if (
+        run is None
+        or session.status not in {"completed", "failed"}
+        or run.status not in {"completed", "failed"}
+        or not session.latest_checkpoint_id
+    ):
+        return
+    checkpoint = checkpoints.get(session.latest_checkpoint_id)
+    checkpoints.validate_terminal_recovery(checkpoint, validate_current_todo=False)
+    _conversation_from_checkpoint_projection(
+        conversation_store=conversation_store,
+        run_id=run.run_id,
+        checkpoint_state=checkpoint.state,
+    )
+    model_result = ModelFactory().create(session.config_snapshot)
+    if model_result.error is not None:
+        raise StoreError(
+            error_class="config_error",
+            message=model_result.error["message"],
+            recoverable=False,
+        )
 
 
 def _artifact_ids(result: AgentRunResult) -> list[str]:

@@ -154,6 +154,72 @@ class TodoPlanStore:
         if snapshot != expected:
             raise ValueError("Todo Plan checkpoint checksum is invalid.")
 
+    def validate_checkpoint_snapshot_payload(
+        self, run_id: str, snapshot: dict[str, Any]
+    ) -> None:
+        if not isinstance(snapshot, dict):
+            raise ValueError("Todo Plan checkpoint snapshot is invalid.")
+        payload = {
+            "run_id": run_id,
+            "plan_version": snapshot.get("plan_version"),
+            "items": snapshot.get("items"),
+        }
+        expected_checksum = sha256_hex(canonical_json_bytes(payload))
+        if snapshot.get("checksum") != expected_checksum:
+            raise ValueError("Todo Plan checkpoint checksum is invalid.")
+
+    def restore_checkpoint_snapshot(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        snapshot: dict[str, Any],
+    ) -> TodoPlan:
+        self.validate_checkpoint_snapshot_payload(run_id, snapshot)
+        plan_version = snapshot["plan_version"]
+        items = snapshot["items"]
+        now = utc_now_iso()
+        items_json = json.dumps(
+            items,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        created_at = self.connection.execute(
+            "SELECT created_at FROM todo_plans WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        self.connection.execute(
+            """
+            INSERT INTO todo_plans (
+                run_id, session_id, plan_version, items_json, created_at,
+                updated_at, version
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 1)
+            ON CONFLICT(run_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                plan_version = excluded.plan_version,
+                items_json = excluded.items_json,
+                updated_at = excluded.updated_at,
+                version = excluded.version
+            """,
+            (
+                run_id,
+                session_id,
+                plan_version,
+                items_json,
+                created_at[0] if created_at is not None else now,
+                now,
+            ),
+        )
+        return TodoPlan(
+            run_id=run_id,
+            version=plan_version,
+            items=list(items),
+            updated_at=now,
+            is_empty=len(items) == 0,
+        )
+
 
 def _indexed_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     indexed: list[dict[str, Any]] = []

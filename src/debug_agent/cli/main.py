@@ -4,7 +4,7 @@ import sys
 from collections.abc import Sequence
 
 from debug_agent.cli.exit_codes import ERROR_USAGE, INTERRUPTED
-from debug_agent.cli.repl import run_repl
+from debug_agent.cli.repl import run_repl, run_resumed_repl
 from debug_agent.persistence.sqlite import RuntimeBootstrapError
 from debug_agent.runtime.config import load_config_snapshot
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
@@ -52,12 +52,7 @@ def _main(args: list[str]) -> int:
                 return result.exit_code
             print(_format_fields(result.summary))
             return 0
-        result = orchestrator.resume(args[1])
-        if result.exit_code != 0:
-            print(result.message, file=sys.stderr)
-            return result.exit_code
-        print(result.message)
-        return 0
+        return run_resumed_repl(args[1])
 
     parse_result = _parse_prompt_args(args)
     if isinstance(parse_result, str):

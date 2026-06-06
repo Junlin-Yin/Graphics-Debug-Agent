@@ -157,6 +157,25 @@ class RunStore:
             non_resumable_startup_failure=True,
         )
 
+    def revive_for_explicit_resume(self, *, run_id: str, session_id: str) -> None:
+        now = utc_now_iso()
+        result = self.connection.execute(
+            """
+            UPDATE runs
+            SET status = 'running', updated_at = ?
+            WHERE run_id = ? AND session_id = ? AND status IN ('completed', 'failed')
+              AND run_type = 'prompt' AND non_resumable_startup_failure = 0
+              AND latest_checkpoint_id IS NOT NULL
+            """,
+            (now, run_id, session_id),
+        )
+        if result.rowcount != 1:
+            raise StoreError(
+                error_class="persistence_error",
+                message="Explicit resume run transition failed.",
+                recoverable=False,
+            )
+
     def activate_skill(
         self,
         run_id: str,

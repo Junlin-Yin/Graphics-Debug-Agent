@@ -323,25 +323,25 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 
 **Runnable state:** eligible terminalized REPL and one-shot prompt sessions can resume into REPL using the same session/run lineage.
 
-- [ ] Add `debug-agent resume <session_id>` and usage/lookup error mapping.
-- [ ] Route resume through Runtime Orchestrator.
-- [ ] Validate schema before reading runtime truth.
-- [ ] Perform target preflight: session/run exist, prompt lineage, not startup/config/schema failure.
-- [ ] Reject non-terminal targets except the later stale-target branch added in Milestone 8.
-- [ ] Validate terminal lifecycle, `latest_checkpoint_id`, checkpoint kind/schema/checksum, durable conversation fact cut, projection snapshot, Todo Plan snapshot, approval grant cut, active skill snapshot refs, frozen config/policy/tool availability refs, terminal facts, and artifacts.
-- [ ] Reacquire active workspace ownership with current `pid`, `host_id`, and fresh `owner_token` before lifecycle revival.
-- [ ] Make ownership claim and lifecycle revival one consistency boundary or an equivalent fenced sequence with cleanup on failure.
-- [ ] Add store APIs that allow terminal-to-running only from explicit resume orchestration.
-- [ ] Preserve prior terminal facts and terminal recovery checkpoint rows.
-- [ ] Write `session_resumed` and `run_resumed` audit events.
-- [ ] Rebuild process-local conversation from checkpoint-frozen projection snapshot and durable rows.
-- [ ] Restore the same run's current Todo Plan row from the checkpoint-embedded snapshot without incrementing plan version or writing `todo_updated`.
-- [ ] Restore approval mode and valid session-scoped grants; do not reactivate `approved_once` grants.
-- [ ] Restore active skill runtime records and frozen snapshot references without hot reload.
-- [ ] Restore tool schemas and availability from frozen session facts, including `view_image` and shell maximum timeout.
-- [ ] Start REPL with restored runtime context and no model-visible resume observation.
-- [ ] Add tests for REPL resume, one-shot resume into REPL, same lineage, no successor run, startup failure rejection, missing/invalid checkpoint rejection, active ownership conflict, Todo Plan restore, approval grant restore, active skill/frozen config restore, and no model-visible resume append.
-- [ ] Run canonical verification.
+- [x] Add `debug-agent resume <session_id>` and usage/lookup error mapping.
+- [x] Route resume through Runtime Orchestrator.
+- [x] Validate schema before reading runtime truth.
+- [x] Perform target preflight: session/run exist, prompt lineage, not startup/config/schema failure.
+- [x] Reject non-terminal targets except the later stale-target branch added in Milestone 8.
+- [x] Validate terminal lifecycle, `latest_checkpoint_id`, checkpoint kind/schema/checksum, durable conversation fact cut, projection snapshot, Todo Plan snapshot, approval grant cut, active skill snapshot refs, frozen config/policy/tool availability refs, terminal facts, and artifacts.
+- [x] Reacquire active workspace ownership with current `pid`, `host_id`, and fresh `owner_token` before lifecycle revival.
+- [x] Make ownership claim and lifecycle revival one consistency boundary or an equivalent fenced sequence with cleanup on failure.
+- [x] Add store APIs that allow terminal-to-running only from explicit resume orchestration.
+- [x] Preserve prior terminal facts and terminal recovery checkpoint rows.
+- [x] Write `session_resumed` and `run_resumed` audit events.
+- [x] Rebuild process-local conversation from checkpoint-frozen projection snapshot and durable rows.
+- [x] Restore the same run's current Todo Plan row from the checkpoint-embedded snapshot without incrementing plan version or writing `todo_updated`.
+- [x] Restore approval mode and valid session-scoped grants; do not reactivate `approved_once` grants.
+- [x] Restore active skill runtime records and frozen snapshot references without hot reload.
+- [x] Restore tool schemas and availability from frozen session facts, including `view_image` and shell maximum timeout.
+- [x] Start REPL with restored runtime context and no model-visible resume observation.
+- [x] Add tests for REPL resume, one-shot resume into REPL, same lineage, no successor run, startup failure rejection, missing/invalid checkpoint rejection, active ownership conflict, Todo Plan restore, approval grant restore, active skill/frozen config restore, and no model-visible resume append.
+- [x] Run canonical verification.
 
 ## Milestone 6: Provider Capability Audit And Cancellable Workers
 

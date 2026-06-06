@@ -84,6 +84,9 @@ def test_runtime_database_schema_matches_contract_columns(tmp_path) -> None:
         "terminal_reason",
         "terminal_error_json",
         "non_resumable_startup_failure",
+        "owner_pid",
+        "owner_host_id",
+        "owner_token",
         "version",
     ]
     assert columns["runs"] == [

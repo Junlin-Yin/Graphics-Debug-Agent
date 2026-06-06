@@ -183,6 +183,41 @@ class SessionStore:
             non_resumable_startup_failure=True,
         )
 
+    def revive_for_explicit_resume(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        owner_pid: int,
+        owner_host_id: str,
+        owner_token: str,
+    ) -> None:
+        now = utc_now_iso()
+        result = self.connection.execute(
+            """
+            UPDATE sessions
+            SET status = 'running', active_run_id = ?, updated_at = ?,
+                owner_pid = ?, owner_host_id = ?, owner_token = ?
+            WHERE session_id = ? AND status IN ('completed', 'failed')
+              AND non_resumable_startup_failure = 0
+              AND latest_checkpoint_id IS NOT NULL
+            """,
+            (
+                run_id,
+                now,
+                owner_pid,
+                owner_host_id,
+                owner_token,
+                session_id,
+            ),
+        )
+        if result.rowcount != 1:
+            raise StoreError(
+                error_class="persistence_error",
+                message="Explicit resume session transition failed.",
+                recoverable=False,
+            )
+
     def _mark_terminal(
         self,
         session_id: str,

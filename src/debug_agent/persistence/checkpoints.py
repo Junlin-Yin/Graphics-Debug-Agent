@@ -159,7 +159,9 @@ class CheckpointStore:
         self.validate_terminal_recovery(checkpoint)
         return checkpoint
 
-    def validate_terminal_recovery(self, checkpoint: Checkpoint) -> None:
+    def validate_terminal_recovery(
+        self, checkpoint: Checkpoint, *, validate_current_todo: bool = True
+    ) -> None:
         if checkpoint.kind != "terminal_recovery":
             raise _store_error("Checkpoint kind is not terminal_recovery.")
         payload = checkpoint.state
@@ -176,7 +178,11 @@ class CheckpointStore:
         self._validate_payload_checksum(payload)
         self._validate_terminal_matrix(payload)
         self._validate_conversation(payload, checkpoint.run_id)
-        self._validate_todo(payload, checkpoint.run_id)
+        self._validate_todo(
+            payload,
+            checkpoint.run_id,
+            validate_current=validate_current_todo,
+        )
         self._validate_approval(payload, checkpoint.session_id)
         self._validate_active_skills(payload, checkpoint.session_id, checkpoint.run_id)
         self._validate_frozen_refs(payload, checkpoint.session_id)
@@ -466,11 +472,18 @@ class CheckpointStore:
         ):
             raise _store_error("Terminal recovery zero-message checkpoint is not allowed.")
 
-    def _validate_todo(self, payload: dict[str, Any], run_id: str) -> None:
+    def _validate_todo(
+        self, payload: dict[str, Any], run_id: str, *, validate_current: bool
+    ) -> None:
         try:
-            self._todo_plan_store().validate_checkpoint_snapshot(
-                run_id, payload.get("todo_plan")
-            )
+            if validate_current:
+                self._todo_plan_store().validate_checkpoint_snapshot(
+                    run_id, payload.get("todo_plan")
+                )
+            else:
+                self._todo_plan_store().validate_checkpoint_snapshot_payload(
+                    run_id, payload.get("todo_plan")
+                )
         except Exception as exc:
             raise _store_error("Terminal recovery Todo Plan snapshot is invalid.") from exc
 

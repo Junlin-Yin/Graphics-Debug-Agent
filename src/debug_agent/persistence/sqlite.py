@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   terminal_reason TEXT,
   terminal_error_json TEXT,
   non_resumable_startup_failure INTEGER NOT NULL DEFAULT 0,
+  owner_pid INTEGER,
+  owner_host_id TEXT,
+  owner_token TEXT,
   version INTEGER NOT NULL
 );
 

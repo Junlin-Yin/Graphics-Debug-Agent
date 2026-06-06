@@ -78,6 +78,26 @@ class ReplController:
             wakeup_callback=wakeup_callback,
         )
 
+    @classmethod
+    def resume(
+        cls,
+        *,
+        session_id: str,
+        workspace_root: str | None = None,
+        view: ReplView | None = None,
+        wakeup_callback: Callable[[], None] | None = None,
+    ) -> ReplController:
+        result = RuntimeOrchestrator(workspace_root=workspace_root).start_resumed_repl(
+            session_id
+        )
+        if result.error is not None or result.runtime is None:
+            raise ReplStartFailed(result.error.exit_code, result.error.message)
+        return cls(
+            runtime=result.runtime,
+            view=view,
+            wakeup_callback=wakeup_callback,
+        )
+
     def handle_line(self, line: str, output: TextIO) -> bool:
         command = line.strip()
         if not command:

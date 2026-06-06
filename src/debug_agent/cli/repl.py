@@ -83,6 +83,72 @@ def run_repl(
         controller.close()
 
 
+def run_resumed_repl(
+    session_id: str,
+    *,
+    input_stream: TextIO | None = None,
+    output_stream: TextIO | None = None,
+    error_stream: TextIO | None = None,
+    workspace_root: str | Path | None = None,
+) -> int:
+    injected_input = input_stream is not None
+    injected_output = output_stream is not None
+    input_stream = input_stream or sys.stdin
+    output_stream = output_stream or sys.stdout
+    error_stream = error_stream or sys.stderr
+    try:
+        controller = ReplController.resume(
+            session_id=session_id,
+            workspace_root=workspace_root,
+        )
+    except ReplStartFailed as exc:
+        print(exc.message, file=error_stream)
+        return exc.exit_code
+
+    try:
+        view = _select_repl_view(
+            input_stream=input_stream,
+            output_stream=output_stream,
+            error_stream=error_stream,
+            injected_input=injected_input,
+            injected_output=injected_output,
+        )
+        if isinstance(view, PromptToolkitReplView):
+            controller.runtime.set_approval_provider(
+                ControllerApprovalProvider(controller)
+            )
+        elif _stream_isatty(input_stream) and _stream_isatty(output_stream):
+            controller.runtime.set_approval_provider(
+                PlainApprovalProvider(
+                    input_stream=input_stream,
+                    output_stream=output_stream,
+                )
+            )
+        else:
+            controller.runtime.set_approval_provider(NonInteractiveApprovalProvider())
+        return view.run(controller)
+    except KeyboardInterrupt:
+        controller.runtime.fail(
+            AgentRunResult(
+                status="cancelled",
+                assistant_output=None,
+                tool_results=[],
+                usage={},
+                error={
+                    "error_class": "cancelled",
+                    "reason": "user_cancel_idle",
+                    "message": "REPL interrupted by Ctrl+C.",
+                    "source": "cli",
+                    "recoverable": False,
+                },
+                metadata={"prompt_turn_counter": controller.runtime.turn_counter},
+            )
+        )
+        return 1
+    finally:
+        controller.close()
+
+
 def _select_repl_view(
     *,
     input_stream: TextIO,

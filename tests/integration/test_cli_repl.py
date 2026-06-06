@@ -165,6 +165,63 @@ def test_debug_agent_repl_accepts_two_turns_status_and_exit(tmp_path) -> None:
     assert checkpoint_kinds == ["terminal_recovery"]
 
 
+def test_debug_agent_resume_one_shot_enters_repl_without_resume_observation(
+    tmp_path,
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_fake_config(home)
+    executable = str(Path(sys.executable).parent / "debug-agent")
+    one_shot = subprocess.run(
+        [executable, "-p", "hello"],
+        cwd=workspace,
+        env=_subprocess_env(home),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert one_shot.returncode == 0
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        session_id, run_id = conn.execute(
+            "SELECT session_id, active_run_id FROM sessions"
+        ).fetchone()
+        if run_id is None:
+            run_id = conn.execute("SELECT run_id FROM runs").fetchone()[0]
+
+    resumed = subprocess.run(
+        [executable, "resume", session_id],
+        cwd=workspace,
+        env=_subprocess_env(home),
+        input="/exit\n",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert resumed.returncode == 0
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        session_rows = conn.execute(
+            "SELECT session_id, status, active_run_id FROM sessions"
+        ).fetchall()
+        run_rows = conn.execute("SELECT run_id, status FROM runs").fetchall()
+        event_kinds = [
+            row[0] for row in conn.execute("SELECT kind FROM run_events ORDER BY rowid")
+        ]
+        durable_rows = conn.execute(
+            "SELECT role, kind, content_json FROM conversation_messages ORDER BY message_index"
+        ).fetchall()
+
+    assert session_rows == [(session_id, "completed", None)]
+    assert run_rows == [(run_id, "completed")]
+    assert "session_resumed" in event_kinds
+    assert "run_resumed" in event_kinds
+    assert [(row[0], row[1], json.loads(row[2])) for row in durable_rows] == [
+        ("user", "user_input", {"content": "hello"}),
+        ("assistant", "assistant_output", {"content": "integration repl answer"}),
+    ]
+
+
 def test_non_streaming_repl_controller_completes_fake_model_turn(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

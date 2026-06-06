@@ -45,6 +45,8 @@ RUN_EVENT_KINDS = frozenset(
         "checkpoint_written",
         "artifact_registered",
         "todo_updated",
+        "session_resumed",
+        "run_resumed",
     }
 )
 CHECKPOINT_KINDS = frozenset({"turn", "terminal", "error", "context", "terminal_recovery"})
