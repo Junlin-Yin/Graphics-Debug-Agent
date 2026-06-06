@@ -6,6 +6,7 @@ from debug_agent.adapters.langchain_adapter import LangChainAgentLoopAdapter
 from debug_agent.adapters.model_factory import FakeChatModel
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.checkpoints import CheckpointStore
+from debug_agent.persistence.conversation import ConversationAppend, ConversationStore
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
@@ -49,6 +50,7 @@ def _runtime(tmp_path, model):
         event_writer=events,
         checkpoint_store=checkpoints,
         artifact_store=artifacts,
+        conversation_store=ConversationStore(db.connection, artifact_store=artifacts),
         adapter=adapter,
         tool_definitions=tool_definitions(),
         system_prompt=PHASE_0_SYSTEM_PROMPT,
@@ -70,6 +72,197 @@ def _runtime(tmp_path, model):
     )
 
 
+def _with_durable_history(
+    *,
+    store: ConversationStore,
+    session_id: str,
+    run_id: str,
+    conversation: list[dict],
+) -> list[dict]:
+    durable_conversation: list[dict] = []
+    for offset, message in enumerate(conversation, start=1):
+        durable_kind = (
+            "assistant_tool_call"
+            if message.get("kind") == "tool_call"
+            else str(message.get("kind") or "assistant_output")
+        )
+        rows = store.append_closed_group(
+            session_id=session_id,
+            run_id=run_id,
+            messages=[
+                ConversationAppend(
+                    turn_id=str(message.get("turn_id") or f"turn-fixture-{offset}"),
+                    message_group_id=f"fixture-{offset}",
+                    model_call_id=message.get("model_call_id"),
+                    group_position=0,
+                    group_row_count=1,
+                    role=str(message.get("role") or "assistant"),
+                    kind=durable_kind,
+                    content={"content": message.get("content", "")},
+                    tool_call_id=message.get("tool_call_id"),
+                    artifact_id=None,
+                    metadata=dict(message.get("metadata", {})),
+                )
+            ],
+        )
+        retained = dict(message)
+        retained["durable_message_index"] = rows[0].message_index
+        durable_conversation.append(retained)
+    return durable_conversation
+
+
+def test_prompt_executor_appends_accepted_user_and_assistant_durable_messages(
+    tmp_path,
+) -> None:
+    (
+        workspace,
+        db,
+        _sessions,
+        _runs,
+        _events,
+        _checkpoints,
+        artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="assistant answer"))
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="hello",
+        workspace_root=str(workspace),
+    )
+    rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
+        run.run_id
+    )
+
+    assert result.status == "completed"
+    assert [(row.message_index, row.role, row.kind, row.content) for row in rows] == [
+        (1, "user", "user_input", {"content": "hello"}),
+        (2, "assistant", "assistant_output", {"content": "assistant answer"}),
+    ]
+    assert ConversationStore(db.connection, artifact_store=artifacts).get_projection(
+        run.run_id
+    ).source_high_watermark == 2
+    db.close()
+
+
+def test_prompt_executor_appends_accepted_tool_call_and_tool_result_messages(
+    tmp_path,
+) -> None:
+    class ToolLoopModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "read_file_0",
+                                "name": "read_file",
+                                "args": {"path": "notes.txt"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "notes say hello", "tool_calls": [], "usage": {}},
+            )()
+
+    (
+        workspace,
+        db,
+        _sessions,
+        _runs,
+        _events,
+        _checkpoints,
+        artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, ToolLoopModel())
+    (workspace / "notes.txt").write_text("hello", encoding="utf-8")
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="read notes",
+        workspace_root=str(workspace),
+    )
+    store = ConversationStore(db.connection, artifact_store=artifacts)
+    rows = store.list_messages(run.run_id)
+
+    assert result.status == "completed"
+    assert [row.kind for row in rows] == [
+        "user_input",
+        "assistant_tool_call",
+        "tool_result",
+        "assistant_output",
+    ]
+    assert rows[1].tool_call_id == "model_call_1_tool_1"
+    assert rows[2].tool_call_id == "model_call_1_tool_1"
+    assert store.validate_fact_cut(run_id=run.run_id, highest_message_index=4).message_count == 4
+    db.close()
+
+
+def test_prompt_executor_fails_closed_on_projection_drift_before_ordinary_turn(
+    tmp_path,
+) -> None:
+    (
+        workspace,
+        db,
+        _sessions,
+        _runs,
+        _events,
+        _checkpoints,
+        artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="assistant answer"))
+    store = ConversationStore(db.connection, artifact_store=artifacts)
+    store.append_closed_group(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        messages=[
+            ConversationAppend(
+                turn_id="turn-previous",
+                message_group_id="turn-previous:user",
+                model_call_id=None,
+                group_position=0,
+                group_row_count=1,
+                role="user",
+                kind="user_input",
+                content={"content": "previous"},
+            )
+        ],
+    )
+
+    try:
+        executor.run_turn(
+            session=session,
+            run=run,
+            user_input="hello",
+            workspace_root=str(workspace),
+            conversation=[],
+        )
+    except Exception as exc:
+        assert "drifted from durable projection" in str(exc)
+    else:
+        raise AssertionError("ordinary prompt execution must fail closed on projection drift")
+    db.close()
+
+
 def _provider_message_content(message: object) -> str:
     if isinstance(message, dict):
         return str(message.get("content", ""))
@@ -86,7 +279,7 @@ def test_prompt_executor_writes_model_events_assistant_event_and_turn_checkpoint
         runs,
         events,
         checkpoints,
-        _artifacts,
+        artifacts,
         session,
         run,
         executor,
@@ -422,7 +615,7 @@ def test_tool_loop_followup_records_new_context_estimate_before_second_call(
         _runs,
         _events,
         _checkpoints,
-        _artifacts,
+        artifacts,
         session,
         run,
         executor,
@@ -491,7 +684,7 @@ def test_tool_loop_followup_runs_omission_before_second_model_call(tmp_path) -> 
         runs,
         events,
         checkpoints,
-        _artifacts,
+        artifacts,
         session,
         run,
         executor,
@@ -548,6 +741,12 @@ def test_tool_loop_followup_runs_omission_before_second_model_call(tmp_path) -> 
             "metadata": {"consumed_model_call_ids": ["call-old"]},
         },
     ]
+    conversation = _with_durable_history(
+        store=ConversationStore(db.connection, artifact_store=artifacts),
+        session_id=session.session_id,
+        run_id=run.run_id,
+        conversation=conversation,
+    )
 
     result = executor.run_turn(
         session=session,
@@ -693,6 +892,12 @@ def test_tool_loop_followup_runs_compression_before_second_model_call(tmp_path) 
             "metadata": {"consumed_model_call_ids": ["call-old"]},
         },
     ]
+    conversation = _with_durable_history(
+        store=ConversationStore(db.connection, artifact_store=artifacts),
+        session_id=session.session_id,
+        run_id=run.run_id,
+        conversation=conversation,
+    )
 
     result = executor.run_turn(
         session=session,
@@ -806,6 +1011,12 @@ def test_tool_loop_followup_compression_failure_preserves_boundary(tmp_path) -> 
             "metadata": {"consumed_model_call_ids": ["call-old"]},
         },
     ]
+    conversation = _with_durable_history(
+        store=ConversationStore(db.connection, artifact_store=artifacts),
+        session_id=session.session_id,
+        run_id=run.run_id,
+        conversation=conversation,
+    )
 
     result = executor.run_turn(
         session=session,
@@ -1012,7 +1223,7 @@ def test_tool_loop_current_buffer_seq_does_not_protect_retained_tool_result(
         _runs,
         _events,
         _checkpoints,
-        _artifacts,
+        artifacts,
         session,
         run,
         executor,
@@ -1052,6 +1263,12 @@ def test_tool_loop_current_buffer_seq_does_not_protect_retained_tool_result(
             "metadata": {"consumed_model_call_ids": ["call-old"]},
         },
     ]
+    conversation = _with_durable_history(
+        store=ConversationStore(db.connection, artifact_store=artifacts),
+        session_id=session.session_id,
+        run_id=run.run_id,
+        conversation=conversation,
+    )
 
     result = executor.run_turn(
         session=session,
@@ -1114,10 +1331,10 @@ def test_prompt_executor_writes_large_model_response_to_text_artifact(
         "[model response stored as artifact:"
     )
     assert artifacts.resolve_path(artifact_id).read_text(encoding="utf-8") == large_response
-    assert artifacts.get(artifact_id).metadata == {
-        "bytes": 16 * 1024 + 1,
-        "event_kind": "model_call_completed",
-    }
+    metadata = artifacts.get(artifact_id).metadata
+    assert metadata["bytes"] == 16 * 1024 + 1
+    assert metadata["event_kind"] == "model_call_completed"
+    assert metadata["payload_sha256"].startswith("sha256:")
     db.close()
 
 
@@ -1987,6 +2204,7 @@ def test_prompt_executor_compression_failure_aborts_without_conversation_mutatio
         event_writer=events,
         checkpoint_store=checkpoints,
         artifact_store=artifacts,
+        conversation_store=ConversationStore(db.connection, artifact_store=artifacts),
         adapter=FailingAdapter(),
         tool_definitions=[],
         system_prompt="system",
@@ -2073,6 +2291,11 @@ def test_prompt_executor_compression_failure_aborts_without_conversation_mutatio
     assert context_checkpoint.state["latest_error_summary"] == (
         "Context compression failed. The current turn was aborted."
     )
+    durable_rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
+        run.run_id
+    )
+    assert durable_rows[-1].kind == "failure_fact"
+    assert durable_rows[-1].content["reason"] == "compression_failed"
     assert runs.get(run.run_id).status == "running"
     db.close()
 
@@ -2103,6 +2326,7 @@ def test_prompt_executor_context_limit_exceeded_aborts_without_model_call(
         event_writer=events,
         checkpoint_store=checkpoints,
         artifact_store=artifacts,
+        conversation_store=ConversationStore(db.connection, artifact_store=artifacts),
         adapter=FailingAdapter(),
         tool_definitions=[],
         system_prompt="system " * 100,
@@ -2162,6 +2386,11 @@ def test_prompt_executor_context_limit_exceeded_aborts_without_model_call(
     assert context_checkpoint.state["error_class"] == "context_limit_exceeded"
     assert context_checkpoint.state["session_status"] == "running"
     assert context_checkpoint.state["run_status"] == "running"
+    durable_rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
+        run.run_id
+    )
+    assert durable_rows[-1].kind == "failure_fact"
+    assert durable_rows[-1].content["reason"] == "context_limit_exceeded"
     assert runs.get(run.run_id).status == "running"
     db.close()
 
@@ -2192,6 +2421,7 @@ def test_prompt_executor_manual_compress_noop_does_not_call_model_or_snapshot(
         event_writer=events,
         checkpoint_store=checkpoints,
         artifact_store=artifacts,
+        conversation_store=ConversationStore(db.connection, artifact_store=artifacts),
         adapter=LangChainAgentLoopAdapter(model=FakeChatModel(response="unused")),
         tool_definitions=[],
         system_prompt="system",
@@ -2240,6 +2470,7 @@ def test_prompt_executor_manual_compress_success_writes_snapshot_and_message(
         event_writer=events,
         checkpoint_store=checkpoints,
         artifact_store=artifacts,
+        conversation_store=ConversationStore(db.connection, artifact_store=artifacts),
         adapter=LangChainAgentLoopAdapter(model=FakeChatModel(response="unused")),
         tool_definitions=[],
         system_prompt="system",
@@ -2274,9 +2505,10 @@ def test_prompt_executor_manual_compress_success_writes_snapshot_and_message(
         }
     )
 
-    result = executor.manual_compress(
-        session=session,
-        run=run,
+    conversation = _with_durable_history(
+        store=ConversationStore(db.connection, artifact_store=artifacts),
+        session_id=session.session_id,
+        run_id=run.run_id,
         conversation=[
             {
                 "seq": 1,
@@ -2298,6 +2530,12 @@ def test_prompt_executor_manual_compress_success_writes_snapshot_and_message(
                 "metadata": {"consumed_model_call_ids": ["call-1"]},
             },
         ],
+    )
+
+    result = executor.manual_compress(
+        session=session,
+        run=run,
+        conversation=conversation,
         prompt_turn_counter=1,
     )
 
@@ -2316,6 +2554,14 @@ def test_prompt_executor_manual_compress_success_writes_snapshot_and_message(
         "context_optimized",
     ]
     assert checkpoints.latest_for_run(run.run_id).kind == "context"
+    durable_rows = ConversationStore(
+        db.connection,
+        artifact_store=artifacts,
+    ).list_messages(run.run_id)
+    assert (durable_rows[-1].role, durable_rows[-1].kind) == (
+        "runtime",
+        "context_summary",
+    )
     db.close()
 
 
@@ -2555,6 +2801,92 @@ def test_omission_plus_compression_writes_only_final_snapshot(tmp_path) -> None:
         "omission | compression"
     ]
     assert result.metadata["context_optimization"]["omitted_tool_result_count"] == 1
+    db.close()
+
+
+def test_projection_overwrite_preserves_retained_summary_durable_index(
+    tmp_path,
+) -> None:
+    (
+        _workspace,
+        db,
+        _sessions,
+        _runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    store = ConversationStore(db.connection, artifact_store=artifacts)
+    store.append_closed_group(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        messages=[
+            ConversationAppend(
+                turn_id="turn-old",
+                message_group_id="turn-old:assistant",
+                model_call_id="call-old",
+                group_position=0,
+                group_row_count=1,
+                role="assistant",
+                kind="assistant_output",
+                content={"content": "old evicted row"},
+            )
+        ],
+    )
+    summary_rows = store.append_closed_group(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        update_reason="compression",
+        messages=[
+            ConversationAppend(
+                turn_id="turn-2",
+                message_group_id="turn-2:context-summary",
+                model_call_id=None,
+                group_position=0,
+                group_row_count=1,
+                role="runtime",
+                kind="context_summary",
+                content={"content": "summary row"},
+            )
+        ],
+    )
+    summary_index = summary_rows[0].message_index
+    assert summary_index != 1
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=artifacts,
+        conversation_store=store,
+        adapter=LangChainAgentLoopAdapter(model=FakeChatModel(response="unused")),
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
+        run_store=None,
+    )
+
+    executor._overwrite_durable_projection_from_messages(
+        session=session,
+        run=run,
+        messages=[
+            ConversationMessage(
+                seq=1,
+                role="system",
+                kind="context_summary",
+                turn_id=None,
+                model_call_id=None,
+                tool_call_id=None,
+                content="summary row",
+                metadata={"durable_message_index": summary_index},
+            )
+        ],
+        update_reason="omission",
+    )
+
+    assert store.get_projection(run.run_id).message_refs == [{"index": summary_index}]
     db.close()
 
 

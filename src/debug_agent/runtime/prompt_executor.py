@@ -9,6 +9,7 @@ from time import monotonic
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.approval_grants import ApprovalGrantStore
 from debug_agent.persistence.checkpoints import CheckpointStore
+from debug_agent.persistence.conversation import ConversationAppend, ConversationStore
 from debug_agent.persistence.context_snapshots import ContextSnapshotStore
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.todo_plans import TodoPlanStore
@@ -85,6 +86,7 @@ class PromptAgentExecutor:
     system_prompt: str
     skill_snapshot_store: SkillSnapshotStore
     todo_plan_store: TodoPlanStore
+    conversation_store: ConversationStore | None = None
     run_store: RunStore | None = None
     query_control: QueryControlPlane | None = None
     compression_model: Callable[[Any], str] | None = None
@@ -101,6 +103,10 @@ class PromptAgentExecutor:
         agent_stream_callback: Callable[[AgentStreamEvent], None] | None = None,
         approval_provider: object | None = None,
     ) -> AgentRunResult:
+        self._validate_durable_projection_alignment(
+            run_id=run.run_id,
+            conversation=conversation or [],
+        )
         self._append_event(
             session_id=session.session_id,
             run_id=run.run_id,
@@ -140,6 +146,12 @@ class PromptAgentExecutor:
             active_skill_records=run.active_skills,
         )
         query_state_box["state"] = query_state
+        self._append_durable_user_input(
+            session=session,
+            run=run,
+            turn_id=query_state.turn_id,
+            user_input=user_input,
+        )
         current_messages = [
             ConversationMessage(
                 seq=0,
@@ -229,7 +241,7 @@ class PromptAgentExecutor:
             )
             continuation_history.append(query_state.continuation_reason)
             query_state_box["state"] = query_state
-            return _with_context_metadata(
+            failed_result = _with_context_metadata(
                 AgentRunResult(
                     status="failed",
                     assistant_output=None,
@@ -248,6 +260,13 @@ class PromptAgentExecutor:
                 context_optimization=compression_result["metadata"],
                 conversation_writeback=[message.to_dict() for message in retained_messages],
             )
+            self._append_durable_result(
+                session=session,
+                run=run,
+                turn_id=query_state.turn_id,
+                result=failed_result,
+            )
+            return failed_result
         if compression_result is not None:
             retained_messages = compression_result["retained_messages"]
             retained_messages_box["messages"] = retained_messages
@@ -307,7 +326,7 @@ class PromptAgentExecutor:
             )
             continuation_history.append(query_state.continuation_reason)
             query_state_box["state"] = query_state
-            return _with_context_metadata(
+            failed_result = _with_context_metadata(
                 context_limit_result,
                 context_estimate=context_estimate_box["estimate"],
                 context_estimate_history=context_estimate_history,
@@ -318,6 +337,13 @@ class PromptAgentExecutor:
                 else optimization_box["optimization"]["metadata"],
                 conversation_writeback=None,
             )
+            self._append_durable_result(
+                session=session,
+                run=run,
+                turn_id=query_state.turn_id,
+                result=failed_result,
+            )
+            return failed_result
         request = AgentRunRequest(
             session_id=session.session_id,
             run_id=run.run_id,
@@ -425,6 +451,12 @@ class PromptAgentExecutor:
         )
         if result.metadata.get("compression_failed_abort") is True:
             return result
+        self._append_durable_result(
+            session=session,
+            run=run,
+            turn_id=query_state.turn_id,
+            result=result,
+        )
         if result.status == "completed":
             self._append_event(
                 session_id=session.session_id,
@@ -473,6 +505,116 @@ class PromptAgentExecutor:
             payload={"checkpoint_id": checkpoint.checkpoint_id, "kind": checkpoint.kind},
         )
         return result
+
+    def _append_durable_user_input(
+        self,
+        *,
+        session: Session,
+        run: Run,
+        turn_id: str,
+        user_input: str,
+    ) -> None:
+        if self.conversation_store is None:
+            return
+        self.conversation_store.append_closed_group(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            messages=[
+                ConversationAppend(
+                    turn_id=turn_id,
+                    message_group_id=f"{turn_id}:user",
+                    model_call_id=None,
+                    group_position=0,
+                    group_row_count=1,
+                    role="user",
+                    kind="user_input",
+                    content={"content": user_input},
+                    metadata={},
+                )
+            ],
+        )
+
+    def _validate_durable_projection_alignment(
+        self,
+        *,
+        run_id: str,
+        conversation: list[dict[str, Any]],
+    ) -> None:
+        if self.conversation_store is None:
+            return
+        self.conversation_store.validate_runtime_projection_alignment(
+            run_id=run_id,
+            process_message_indexes=_durable_message_indexes(conversation),
+            explicit_resume=False,
+        )
+
+    def _append_durable_result(
+        self,
+        *,
+        session: Session,
+        run: Run,
+        turn_id: str,
+        result: AgentRunResult,
+    ) -> None:
+        if self.conversation_store is None:
+            return
+        turn_tool_loop_messages = result.metadata.get("turn_tool_loop_messages")
+        if isinstance(turn_tool_loop_messages, list):
+            tool_loop_appends: list[ConversationAppend] = []
+            for index, raw_message in enumerate(turn_tool_loop_messages, start=1):
+                if not isinstance(raw_message, dict):
+                    continue
+                append = _durable_append_from_conversation_message(
+                    raw_message,
+                    turn_id=turn_id,
+                    ordinal=index,
+                )
+                if append is None:
+                    continue
+                tool_loop_appends.append(append)
+            if tool_loop_appends:
+                self.conversation_store.append_closed_group(
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    messages=[
+                        _with_group_position(
+                            append,
+                            message_group_id=f"{turn_id}:tool-loop",
+                            group_position=index,
+                            group_row_count=len(tool_loop_appends),
+                        )
+                        for index, append in enumerate(tool_loop_appends)
+                    ],
+                )
+        if result.status == "completed":
+            self.conversation_store.append_closed_group(
+                session_id=session.session_id,
+                run_id=run.run_id,
+                messages=[
+                    ConversationAppend(
+                        turn_id=turn_id,
+                        message_group_id=f"{turn_id}:assistant:final",
+                        model_call_id=f"{turn_id}:assistant",
+                        group_position=0,
+                        group_row_count=1,
+                        role="assistant",
+                        kind="assistant_output",
+                        content={"content": result.assistant_output or ""},
+                        metadata={},
+                    )
+                ],
+            )
+            return
+        self.conversation_store.append_closed_group(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            messages=[
+                _durable_failure_append(
+                    turn_id=turn_id,
+                    result=result,
+                )
+            ],
+        )
 
     def manual_compress(
         self,
@@ -1227,6 +1369,12 @@ class PromptAgentExecutor:
                 },
             },
         )
+        self._overwrite_durable_projection_from_messages(
+            session=session,
+            run=run,
+            messages=optimization["snapshot_messages"],
+            update_reason="omission",
+        )
 
     def _persist_compression(
         self,
@@ -1312,6 +1460,106 @@ class PromptAgentExecutor:
                     "after": dict(after_estimate),
                 },
             },
+        )
+        summary_row_index = self._append_durable_context_summary(
+            session=session,
+            run=run,
+            prompt_turn_counter=prompt_turn_counter,
+            optimization=optimization,
+        )
+        self._overwrite_durable_projection_from_messages(
+            session=session,
+            run=run,
+            messages=optimization["snapshot_messages"],
+            update_reason="compression",
+            summary_row_index=summary_row_index,
+        )
+
+    def _append_durable_context_summary(
+        self,
+        *,
+        session: Session,
+        run: Run,
+        prompt_turn_counter: int,
+        optimization: dict[str, Any],
+    ) -> int | None:
+        if self.conversation_store is None:
+            return None
+        summary = optimization.get("summary")
+        if not isinstance(summary, str):
+            return None
+        metadata = dict(optimization.get("metadata", {}))
+        trigger = str(metadata.get("trigger") or "compression")
+        turn_id = (
+            f"manual-compress-{prompt_turn_counter}"
+            if trigger == "manual"
+            else f"turn-{prompt_turn_counter}"
+        )
+        rows = self.conversation_store.append_closed_group(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            update_reason="compression",
+            messages=[
+                ConversationAppend(
+                    turn_id=turn_id,
+                    message_group_id=f"{turn_id}:context-summary",
+                    model_call_id=None,
+                    group_position=0,
+                    group_row_count=1,
+                    role="runtime",
+                    kind="context_summary",
+                    content={"content": summary},
+                    metadata={
+                        "trigger": trigger,
+                        "evicted_message_count": int(
+                            metadata.get("evicted_message_count", 0)
+                        ),
+                        "evicted_model_call_group_count": int(
+                            metadata.get("evicted_model_call_group_count", 0)
+                        ),
+                    },
+                )
+            ],
+        )
+        return rows[0].message_index
+
+    def _overwrite_durable_projection_from_messages(
+        self,
+        *,
+        session: Session,
+        run: Run,
+        messages: list[ConversationMessage],
+        update_reason: str,
+        summary_row_index: int | None = None,
+    ) -> None:
+        if self.conversation_store is None:
+            return
+        highest = self.conversation_store.get_projection(run.run_id).source_high_watermark
+        refs: list[dict[str, int]] = []
+        summary_ref_used = False
+        for message in messages:
+            if message.kind == "context_summary" and summary_row_index is not None:
+                refs.append({"index": summary_row_index})
+                summary_ref_used = True
+                continue
+            durable_index = _conversation_message_durable_index(message)
+            if durable_index is None:
+                raise RuntimeError(
+                    "retained projection message is missing durable_message_index"
+                )
+            if durable_index < 1 or durable_index > highest:
+                raise RuntimeError(
+                    "retained projection message durable_message_index is outside "
+                    "durable projection high watermark"
+                )
+            refs.append({"index": durable_index})
+        if summary_row_index is not None and not summary_ref_used:
+            refs.insert(0, {"index": summary_row_index})
+        self.conversation_store.overwrite_projection(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            message_refs=refs,
+            update_reason=update_reason,
         )
 
     def _latest_run(self, run: Run) -> Run:
@@ -1586,6 +1834,10 @@ def _conversation_messages(conversation: list[dict[str, Any]]) -> list[Conversat
     for index, message in enumerate(conversation):
         role = str(message.get("role") or "user")
         content = message.get("content", "")
+        metadata = dict(message.get("metadata", {}))
+        durable_index = message.get("durable_message_index")
+        if isinstance(durable_index, int):
+            metadata.setdefault("durable_message_index", durable_index)
         messages.append(
             ConversationMessage(
                 seq=int(message.get("seq", index + 1)),
@@ -1597,10 +1849,19 @@ def _conversation_messages(conversation: list[dict[str, Any]]) -> list[Conversat
                 content=content if isinstance(content, (str, dict)) else str(content),
                 artifact_refs=list(message.get("artifact_refs", [])),
                 estimated_tokens=message.get("estimated_tokens"),
-                metadata=dict(message.get("metadata", {})),
+                metadata=metadata,
             )
         )
     return messages
+
+
+def _conversation_message_durable_index(
+    message: ConversationMessage,
+) -> int | None:
+    value = message.metadata.get("durable_message_index")
+    if isinstance(value, int):
+        return value
+    return None
 
 
 def _provider_messages_to_conversation(
@@ -1688,6 +1949,132 @@ def _model_call_id_from_tool_call_id(tool_call_id: str) -> str | None:
         return None
     model_call_id, _tool_index = tool_call_id.rsplit(marker, 1)
     return model_call_id or None
+
+
+def _durable_append_from_conversation_message(
+    message: dict[str, Any],
+    *,
+    turn_id: str,
+    ordinal: int,
+) -> ConversationAppend | None:
+    role = str(message.get("role") or "")
+    raw_kind = str(message.get("kind") or "")
+    if role == "assistant" and raw_kind == "tool_call":
+        kind = "assistant_tool_call"
+    elif role == "tool" and raw_kind == "tool_result":
+        kind = "tool_result"
+    else:
+        return None
+    content = message.get("content", "")
+    tool_call_id = message.get("tool_call_id")
+    if not isinstance(tool_call_id, str) or not tool_call_id:
+        tool_call_id = _tool_call_id_from_content(content)
+    model_call_id = message.get("model_call_id")
+    if not isinstance(model_call_id, str) or not model_call_id:
+        model_call_id = (
+            _model_call_id_from_tool_call_id(tool_call_id)
+            if isinstance(tool_call_id, str)
+            else None
+        )
+    return ConversationAppend(
+        turn_id=turn_id,
+        message_group_id=f"{turn_id}:tool-loop:{ordinal}",
+        model_call_id=model_call_id,
+        group_position=0,
+        group_row_count=1,
+        role=role,
+        kind=kind,
+        content=content,
+        metadata=dict(message.get("metadata", {})),
+        tool_call_id=tool_call_id if isinstance(tool_call_id, str) else None,
+    )
+
+
+def _durable_message_indexes(conversation: list[dict[str, Any]]) -> list[int]:
+    indexes: list[int] = []
+    for message in conversation:
+        value = message.get("durable_message_index")
+        if isinstance(value, int):
+            indexes.append(value)
+            continue
+        metadata = message.get("metadata")
+        if isinstance(metadata, dict) and isinstance(
+            metadata.get("durable_message_index"),
+            int,
+        ):
+            indexes.append(metadata["durable_message_index"])
+    return indexes
+
+
+def _tool_call_id_from_content(content: object) -> str | None:
+    if not isinstance(content, dict):
+        return None
+    tool_call_id = content.get("tool_call_id")
+    if isinstance(tool_call_id, str) and tool_call_id:
+        return tool_call_id
+    tool_calls = content.get("tool_calls")
+    if not isinstance(tool_calls, list) or len(tool_calls) != 1:
+        return None
+    first = tool_calls[0]
+    if not isinstance(first, dict):
+        return None
+    value = first.get("id")
+    return value if isinstance(value, str) and value else None
+
+
+def _durable_failure_append(
+    *,
+    turn_id: str,
+    result: AgentRunResult,
+) -> ConversationAppend:
+    error = result.error if isinstance(result.error, dict) else {}
+    error_class = str(error.get("error_class") or result.status)
+    reason = str(error.get("reason") or error.get("error_class") or result.status)
+    artifact_ids = error.get("artifact_ids")
+    content = {
+        "error_class": error_class,
+        "reason": reason,
+        "message": str(error.get("message") or "Prompt execution failed."),
+        "artifact_ids": artifact_ids if isinstance(artifact_ids, list) else [],
+    }
+    kind = "cancellation_fact" if result.status == "cancelled" else "failure_fact"
+    return ConversationAppend(
+        turn_id=turn_id,
+        message_group_id=f"{turn_id}:runtime:{kind}",
+        model_call_id=None,
+        group_position=0,
+        group_row_count=1,
+        role="runtime",
+        kind=kind,
+        content=content,
+        metadata={
+            "error_class": error_class,
+            "reason": reason,
+        },
+    )
+
+
+def _with_group_position(
+    append: ConversationAppend,
+    *,
+    message_group_id: str,
+    group_position: int,
+    group_row_count: int,
+) -> ConversationAppend:
+    return ConversationAppend(
+        turn_id=append.turn_id,
+        message_group_id=message_group_id,
+        model_call_id=append.model_call_id,
+        group_position=group_position,
+        group_row_count=group_row_count,
+        role=append.role,
+        kind=append.kind,
+        content=append.content,
+        artifact_id=append.artifact_id,
+        metadata=append.metadata,
+        source_event_id=append.source_event_id,
+        tool_call_id=append.tool_call_id,
+    )
 
 
 def _with_context_metadata(

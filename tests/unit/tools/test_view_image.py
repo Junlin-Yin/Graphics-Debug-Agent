@@ -557,11 +557,10 @@ def test_large_raw_provider_text_is_artifacted_without_source_image_artifact(
     assert len(result.artifacts) == 1
     artifact = runtime["artifacts"].get(result.artifacts[0])
     assert artifact.artifact_type == "text"
-    assert artifact.metadata == {
-        "tool_name": "view_image",
-        "bytes": len(raw_provider_text.encode("utf-8")),
-        "source": "raw_provider_output",
-    }
+    assert artifact.metadata["tool_name"] == "view_image"
+    assert artifact.metadata["bytes"] == len(raw_provider_text.encode("utf-8"))
+    assert artifact.metadata["source"] == "raw_provider_output"
+    assert artifact.metadata["payload_sha256"].startswith("sha256:")
     assert runtime["artifacts"].resolve_path(artifact.artifact_id).read_text(
         encoding="utf-8"
     ) == raw_provider_text

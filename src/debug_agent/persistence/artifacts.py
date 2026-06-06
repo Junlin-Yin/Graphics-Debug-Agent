@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,13 +31,14 @@ class ArtifactStore:
         absolute_path = self._sessions_root() / relative_path
         absolute_path.parent.mkdir(parents=True, exist_ok=True)
         absolute_path.write_text(content, encoding="utf-8")
+        payload_sha256 = _payload_sha256(content.encode("utf-8"))
         return self._insert(
             artifact_id=artifact_id,
             session_id=session_id,
             run_id=run_id,
             relative_path=relative_path.as_posix(),
             artifact_type="text",
-            metadata=metadata,
+            metadata={**metadata, "payload_sha256": payload_sha256},
         )
 
     def register_existing_file(
@@ -61,13 +63,14 @@ class ArtifactStore:
                 message="Artifact path must be under the session root.",
                 recoverable=True,
             ) from exc
+        payload_sha256 = _payload_sha256(absolute_path.read_bytes())
         return self._insert(
             artifact_id=artifact_id,
             session_id=session_id,
             run_id=run_id,
             relative_path=relative_path.as_posix(),
             artifact_type=artifact_type,
-            metadata=metadata,
+            metadata={**metadata, "payload_sha256": payload_sha256},
         )
 
     def get(self, artifact_id: str) -> Artifact:
@@ -161,3 +164,7 @@ def _artifact_from_row(row: tuple) -> Artifact:
         created_at=row[6],
         version=row[7],
     )
+
+
+def _payload_sha256(payload: bytes) -> str:
+    return "sha256:" + hashlib.sha256(payload).hexdigest()

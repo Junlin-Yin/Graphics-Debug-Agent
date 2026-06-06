@@ -181,6 +181,64 @@ CREATE TABLE IF NOT EXISTS todo_plans (
   FOREIGN KEY(run_id) REFERENCES runs(run_id)
 );
 
+CREATE TABLE IF NOT EXISTS conversation_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  turn_id TEXT,
+  message_index INTEGER NOT NULL CHECK (message_index >= 1),
+  message_group_id TEXT NOT NULL,
+  model_call_id TEXT,
+  group_position INTEGER NOT NULL CHECK (group_position >= 0),
+  group_status TEXT NOT NULL CHECK (group_status IN ('open', 'closed')),
+  group_row_count INTEGER NOT NULL CHECK (group_row_count >= 1),
+  role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool', 'runtime')),
+  kind TEXT NOT NULL CHECK (
+    kind IN (
+      'user_input',
+      'assistant_output',
+      'assistant_tool_call',
+      'tool_result',
+      'failure_fact',
+      'cancellation_fact',
+      'context_summary'
+    )
+  ),
+  content_json TEXT,
+  artifact_id TEXT,
+  content_sha256 TEXT NOT NULL,
+  metadata_json TEXT NOT NULL,
+  tool_call_id TEXT,
+  source_event_id TEXT,
+  accepted_at TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  CHECK (
+    (content_json IS NOT NULL AND artifact_id IS NULL)
+    OR (content_json IS NULL AND artifact_id IS NOT NULL)
+  ),
+  UNIQUE(run_id, message_index),
+  FOREIGN KEY(session_id) REFERENCES sessions(session_id),
+  FOREIGN KEY(run_id) REFERENCES runs(run_id),
+  FOREIGN KEY(artifact_id) REFERENCES artifacts(artifact_id)
+);
+
+CREATE TABLE IF NOT EXISTS conversation_projection_state (
+  projection_state_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  run_id TEXT NOT NULL UNIQUE,
+  source_high_watermark INTEGER NOT NULL CHECK (source_high_watermark >= 0),
+  message_refs_json TEXT NOT NULL,
+  projection_sha256 TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  update_reason TEXT NOT NULL CHECK (
+    update_reason IN ('message_append', 'omission', 'compression')
+  ),
+  source_event_id TEXT,
+  version INTEGER NOT NULL,
+  FOREIGN KEY(session_id) REFERENCES sessions(session_id),
+  FOREIGN KEY(run_id) REFERENCES runs(run_id)
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_one_running_per_workspace
 ON sessions(workspace_root)
 WHERE status = 'running';

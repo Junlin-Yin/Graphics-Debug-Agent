@@ -214,23 +214,23 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 
 **Runnable state:** ordinary prompt execution in the gated path can append accepted durable messages and maintain current projection state; existing user-facing paths remain runnable or fail closed before accepting prompt work.
 
-- [ ] Add `conversation_messages` logical schema with required Phase 3 fields or equivalent normalized tables.
-- [ ] Add `conversation_projection_state` logical schema with one mutable current projection state per prompt run.
-- [ ] Implement canonical JSON byte serialization and checksum helpers shared by conversation, projection, checkpoints, Todo Plan, and approval grant cuts.
-- [ ] Enforce one canonical content source per row: inline `content_json` or artifact-backed `artifact_id`.
-- [ ] Enforce 1-based per-run `message_index`.
-- [ ] Enforce explicit `message_group_id`, `model_call_id`, 0-based `group_position`, `group_status = "closed"`, and deterministic group completeness source.
-- [ ] Ensure accepted durable truth never exposes `group_status = "open"`.
-- [ ] Implement atomic accepted-message append with per-run message index allocation, row insertion, content checksum, and projection-state update.
-- [ ] Ensure failed appends leave no message index gaps, half-inserted groups, or projection references to uncommitted rows.
-- [ ] Implement conversation fact-cut validation, including closed groups, contiguous positions, row counts, tool-call/tool-result pairing, checksums, and artifact references.
-- [ ] Implement projection snapshot validation using ordered refs and referenced `content_sha256` values.
-- [ ] Implement empty fact-cut and empty projection checksum support for allowed zero-message idle terminalization.
-- [ ] Append accepted `user_input`, final `assistant_output`, complete `assistant_tool_call`, accepted `tool_result`, runtime `failure_fact`, runtime `cancellation_fact`, and accepted `context_summary` only at documented boundaries.
-- [ ] Convert Phase 1 compression/omission continuity so resumable context summaries are durable conversation rows and current projection updates, not Phase 3 context checkpoints.
-- [ ] Make ordinary runtime drift between process-local conversation, projection state, and durable rows fail closed outside explicit resume.
-- [ ] Add unit tests for closed group append, invalid open group rejection, duplicate/truncated group rejection, tool-call pairing, artifact-backed checksum validation, append atomicity, empty checksums, projection validation, UTF-8 preservation, and drift fail-closed behavior.
-- [ ] Run canonical verification.
+- [x] Add `conversation_messages` logical schema with required Phase 3 fields or equivalent normalized tables.
+- [x] Add `conversation_projection_state` logical schema with one mutable current projection state per prompt run.
+- [x] Implement canonical JSON byte serialization and checksum helpers shared by conversation, projection, checkpoints, Todo Plan, and approval grant cuts.
+- [x] Enforce one canonical content source per row: inline `content_json` or artifact-backed `artifact_id`.
+- [x] Enforce 1-based per-run `message_index`.
+- [x] Enforce explicit `message_group_id`, `model_call_id`, 0-based `group_position`, `group_status = "closed"`, and deterministic group completeness source.
+- [x] Ensure accepted durable truth never exposes `group_status = "open"`.
+- [x] Implement atomic accepted-message append with per-run message index allocation, row insertion, content checksum, and projection-state update.
+- [x] Ensure failed appends leave no message index gaps, half-inserted groups, or projection references to uncommitted rows.
+- [x] Implement conversation fact-cut validation, including closed groups, contiguous positions, row counts, tool-call/tool-result pairing, checksums, and artifact references.
+- [x] Implement projection snapshot validation using ordered refs and referenced `content_sha256` values.
+- [x] Implement empty fact-cut and empty projection checksum support for allowed zero-message idle terminalization.
+- [x] Append accepted `user_input`, final `assistant_output`, complete `assistant_tool_call`, accepted `tool_result`, runtime `failure_fact`, runtime `cancellation_fact`, and accepted `context_summary` only at documented boundaries.
+- [x] Convert Phase 1 compression/omission continuity so resumable context summaries are durable conversation rows and current projection updates, not Phase 3 context checkpoints.
+- [x] Make ordinary runtime drift between process-local conversation, projection state, and durable rows fail closed outside explicit resume.
+- [x] Add unit tests for closed group append, invalid open group rejection, duplicate/truncated group rejection, tool-call pairing, artifact-backed checksum validation, append atomicity, empty checksums, projection validation, UTF-8 preservation, and drift fail-closed behavior.
+- [x] Run canonical verification.
 
 ## Milestone 3: Terminal Recovery Checkpoints And Terminalization Foundation
 

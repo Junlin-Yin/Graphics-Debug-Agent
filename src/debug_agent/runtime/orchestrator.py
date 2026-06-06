@@ -22,6 +22,7 @@ from debug_agent.observability.logging import write_runtime_log
 from debug_agent.observability.trace_writer import TraceWriter
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.checkpoints import CheckpointStore
+from debug_agent.persistence.conversation import ConversationStore
 from debug_agent.persistence.errors import StoreError
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
@@ -209,6 +210,7 @@ class ReplRuntime:
                     },
                 }
             )
+            self._sync_durable_message_indexes()
             return
         error = result.error if isinstance(result.error, dict) else {}
         self.conversation.append(
@@ -230,6 +232,18 @@ class ReplRuntime:
                 },
             }
         )
+        self._sync_durable_message_indexes()
+
+    def _sync_durable_message_indexes(self) -> None:
+        store = getattr(self.executor, "conversation_store", None)
+        if store is None:
+            return
+        projection = store.get_projection(self.run_id)
+        indexes = _projection_indexes(projection.message_refs)
+        if len(indexes) != len(self.conversation):
+            return
+        for message, durable_index in zip(self.conversation, indexes, strict=True):
+            message["durable_message_index"] = durable_index
 
     def set_approval_provider(self, approval_provider: object) -> None:
         with self._lock:
@@ -252,6 +266,7 @@ class ReplRuntime:
                 writeback = result.metadata.get("conversation_writeback")
                 if isinstance(writeback, list):
                     self.conversation = [dict(message) for message in writeback]
+                    self._sync_durable_message_indexes()
             return result
 
     def status_lines(self) -> list[str]:
@@ -557,6 +572,10 @@ class RuntimeOrchestrator:
                 system_prompt=config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
                 skill_snapshot_store=SkillSnapshotStore(db.connection),
                 todo_plan_store=TodoPlanStore(db.connection),
+                conversation_store=ConversationStore(
+                    db.connection,
+                    artifact_store=artifacts,
+                ),
                 run_store=runs,
                 compression_model=make_compression_model_callable(model_result.model),
             )
@@ -1028,6 +1047,10 @@ class RuntimeOrchestrator:
             system_prompt=config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
             skill_snapshot_store=SkillSnapshotStore(db.connection),
             todo_plan_store=TodoPlanStore(db.connection),
+            conversation_store=ConversationStore(
+                db.connection,
+                artifact_store=artifacts,
+            ),
             run_store=runs,
             compression_model=make_compression_model_callable(model_result.model),
         )
@@ -1606,6 +1629,17 @@ def _artifact_ids_from_error(error: dict[str, Any]) -> list[str]:
     ):
         return list(artifact_ids)
     return []
+
+
+def _projection_indexes(message_refs: list[dict[str, int]]) -> list[int]:
+    indexes: list[int] = []
+    for ref in message_refs:
+        if "index" in ref:
+            indexes.append(int(ref["index"]))
+            continue
+        if "start" in ref and "end" in ref:
+            indexes.extend(range(int(ref["start"]), int(ref["end"]) + 1))
+    return indexes
 
 
 def _is_normalized_error(value: object) -> bool:

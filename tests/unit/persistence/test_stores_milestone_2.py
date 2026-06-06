@@ -325,7 +325,8 @@ def test_artifact_store_registers_existing_session_file(tmp_path) -> None:
     )
 
     assert artifact.relative_path == "sess_1/artifacts/existing.txt"
-    assert artifact.metadata == {"registered": True}
+    assert artifact.metadata["registered"] is True
+    assert artifact.metadata["payload_sha256"].startswith("sha256:")
     assert artifacts.resolve_path("art_2") == existing
     db.close()
 
