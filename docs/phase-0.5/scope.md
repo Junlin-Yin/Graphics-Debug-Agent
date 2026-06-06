@@ -174,7 +174,7 @@ Phase 0.5 does not implement mid-call cancel propagation.
 
 During active execution, the TTY prompt input buffer is non-editable and does not dispatch ordinary prompts or slash commands. `/status` and `/exit` remain idle-state commands in Phase 0.5. They must not add a second command lane, modal, cancellation path, or controller-level runtime side effect while a turn is running.
 
-TTY `Ctrl+C` in Phase 0.5 does not provide immediate active-run interruption. If it is observed at a safe idle boundary, it may terminate the session using the existing runtime cancellation mapping. Mid-call cancellation, first-press interrupt returning to user input, and second-press session exit are future session-control behavior and remain Phase 2 scope unless a later phase document explicitly changes that boundary.
+TTY `Ctrl+C` in Phase 0.5 does not provide immediate active-run interruption. If it is observed at a safe idle boundary, it may terminate the session using the existing runtime cancellation mapping. Mid-call cancellation, first-press interrupt returning to user input, and second-press session exit are future session-control behavior and remain later-phase scope unless a later phase document explicitly changes that boundary.
 
 The TUI may display:
 

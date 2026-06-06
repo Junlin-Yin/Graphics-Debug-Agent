@@ -49,7 +49,8 @@ For Phase 3, narrow verification should prefer tests for:
 
 - schema-version fail-closed behavior.
 - normalized error payload and reason registry.
-- durable conversation append/projection/cut validation.
+- durable conversation append, projection state, fact cut, and checkpoint
+  projection snapshot validation.
 - terminal recovery checkpoint creation and validation.
 - startup/config/schema failure non-resumability.
 - running turn cancellation and idle terminalization.
@@ -143,4 +144,6 @@ Manual verification must record:
 - command sequence.
 - expected result.
 - observed result.
+- session id and run id.
+- relevant trace/status excerpts.
 - any known limitation.

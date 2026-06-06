@@ -94,7 +94,7 @@ Because Phase 0 has only read-only native tools, approval behavior is minimal. T
 
 ## Cancellation And Interruption In Phase 0
 
-Phase 0 does not persist long-lived `interrupted` sessions because `/resume` is not implemented until Phase 2.
+Phase 0 does not persist long-lived `interrupted` sessions because `/resume` is not implemented until a later phase.
 
 If the user exits through `/exit`, runtime should complete the active prompt run and release workspace ownership. If the process receives Ctrl+C or a mid-call cancellation is observed, runtime records the terminal state as `failed` with error class `cancelled`, writes an `error` checkpoint when a session exists, and releases workspace ownership.
 

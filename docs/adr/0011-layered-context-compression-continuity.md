@@ -181,16 +181,17 @@ result before an ordinary task model call has consumed it.
 ## Phase 3 Refinement
 
 [ADR 0014](0014-terminal-recovery-checkpoints-durable-conversation.md) refines
-the recovery role of context snapshots and compressed conversation state.
+the Phase 3 role of context snapshots and compressed conversation state.
 
-For Phase 3 resume, `context_snapshots` are provenance and continuity inspection
-records, not recovery truth. A context summary that must be model-visible after
-resume must be persisted as a durable `conversation_messages` row and referenced
-by a terminal recovery checkpoint's conversation cut. Runtime must not recover
-model context from natural-language compression summaries, trace text, UI state,
-or context snapshots.
+For Phase 3 prompt sessions/runs, runtime stops writing `context_snapshots` as
+provenance. A context summary that must be model-visible after resume must be
+persisted as a durable `conversation_messages` row and referenced by a terminal
+recovery checkpoint's conversation cut. Runtime must not recover model context
+from natural-language compression summaries, trace text, UI state, or legacy
+context snapshots.
 
 [ADR 0015](0015-normalized-error-taxonomy-narrow-runtime-retry.md) refines
 compression and context-limit failure taxonomy. Phase 3 uses normalized
-`model_error` reasons for compression and context failures while preserving the
-turn/session terminalization behavior specified by the active phase spec.
+model-related error classes and fixed reasons for compression and context
+failures while preserving the turn/session terminalization behavior specified by
+the active phase spec.

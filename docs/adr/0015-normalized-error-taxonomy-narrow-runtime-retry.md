@@ -39,10 +39,11 @@ the normalized error object. Existing event kinds such as `model_call_failed`,
 taxonomy.
 
 Model-visible error output is a narrow projection of the internal normalized
-error. It includes only `error_class`, `reason`, `message`, and optional
-non-empty artifact ids. It must not expose internal source, scope,
-recoverability, arbitrary metadata, retry policy, provider internals, or policy
-facts unless those details are summarized in the message.
+error. It includes only `error_class`, `reason`, `message`, and an
+`artifact_ids` list that is empty when no artifact-backed diagnostic is exposed.
+It must not expose internal scope, recoverability, arbitrary metadata, retry
+policy, provider internals, or policy facts unless those details are summarized
+in the message.
 
 Retry is controlled by a central opt-in retry rule registry. The retry system
 answers only whether a normalized error may be retried, which strategy applies,
@@ -95,7 +96,7 @@ messages drift into control-plane semantics.
 
 ### Expose full internal error payloads to the model
 
-This gives the model more details, but it leaks policy facts, source metadata,
+This gives the model more details, but it leaks policy facts, module metadata,
 provider internals, retry state, and other diagnostics that are better kept in
 events, trace, checkpoint manifests, or artifact records.
 

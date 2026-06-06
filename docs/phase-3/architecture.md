@@ -18,8 +18,8 @@ Responsibilities:
 - fail closed when stale evidence is insufficient or user confirmation is not
   available.
 
-`status` and `trace` remain read-only. They must not repair, migrate, revive, or
-terminalize sessions.
+`status` and `trace` remain read-only. They must not repair, migrate, delete,
+revive, or terminalize sessions.
 
 ### REPL And TUI Controllers
 
@@ -53,8 +53,11 @@ Responsibilities:
 - enforce that only `resume` can revive terminalized prompt sessions/runs.
 - keep same `session_id` and `run_id` during eligible resume.
 - reacquire active workspace ownership before revival.
-- reject resume when eligibility, ownership, schema, checkpoint, checksum, or
-  durable conversation cut validation fails.
+- generate and persist a fresh `owner_token` whenever active ownership is
+  claimed or reclaimed.
+- reject resume when eligibility, schema, checkpoint, checksum, durable
+  conversation fact cut, checkpoint-frozen projection snapshot, or ownership
+  validation fails.
 - write `session_resumed` and `run_resumed` audit events after successful
   revival.
 - coordinate user-confirmed stale fail-close only before creating or resuming
@@ -73,11 +76,13 @@ Responsibilities:
 
 - append accepted model-visible user, assistant, tool, failure, and cancellation
   message groups to `conversation_messages`.
-- build process-local conversation from durable messages plus runtime-owned
-  injections.
+- maintain process-local conversation and persisted projection state together
+  during ordinary execution.
+- rebuild process-local conversation from durable messages only during explicit
+  resume.
 - reject pending provider/tool/shell state as durable conversation truth.
-- construct `ModelContextFrame` from durable conversation, active skills,
-  compression state, Todo Plan, approval state, and current input.
+- construct `ModelContextFrame` from the current conversation projection, active
+  skills, compression state, Todo Plan, approval state, and current input.
 - emit failure/cancellation facts at recovery boundaries.
 - produce terminal checkpoint input from durable facts during terminalization.
 
@@ -85,25 +90,46 @@ Resume does not append a model-visible observation by itself. After resume, the
 next ordinary model call sees restored runtime context, not a synthetic
 assistant or tool message saying that resume occurred.
 
-### AgentLoopAdapter
+### Provider Execution
 
-The public `AgentLoopAdapter.run()` and `AgentLoopAdapter.stream()` contract is
-preserved.
+Main model calls and `view_image` provider calls must execute through
+runtime-owned cancellable workers.
 
 Responsibilities:
 
-- keep `run()` as the authoritative model result path.
+- preserve the public `AgentLoopAdapter.run()` / `stream()` contract for main
+  model calls.
+- keep `run()` as the authoritative main model result path.
 - keep `stream()` as UI observation path.
-- optionally use internal async provider tasks and runtime-owned cancellation
-  handles for best-effort cancellation.
+- execute main model calls through runtime-owned cancellable workers without
+  adding a public async adapter method.
+- remove the older placeholder `AgentLoopAdapter.cancel(run_id)` public API from
+  the adapter protocol and concrete adapter implementation. That API was a
+  Phase 0/0.5 future-control placeholder, not a real provider-cancellation
+  boundary.
+- keep cancellation handles owned by the runtime worker/task wrapping `run()`
+  or `stream()`.
+- execute `view_image` provider calls through an async vision provider path and
+  runtime-owned cancellable worker.
 - return normalized cancellation/failure results when local cancellation is
   observed.
 - expose enough provider stop/finish metadata for
   `output_token_limit_reached` detection.
 
-Adapters must not make stream observations runtime truth. Sync fallback or
-uncertain provider cancellation reports `cancelling` control state and must not
-claim the remote provider stopped execution or billing.
+Implementation planning must begin this area with a concrete adapter/provider
+capability audit. If the main-model adapter or `view_image` provider path can
+only run through a sync-only uncancellable call, implementation must stop for a
+contract or provider-path decision instead of weakening the Phase 3
+cancellation contract.
+
+Adapters must not make stream observations runtime truth. The existing
+streaming observation fallback to non-streaming provider invocation may remain,
+but the underlying provider invocation must still run through a runtime-owned
+cancellable worker. Sync-only uncancellable provider execution is not an
+accepted Phase 3 fallback. After local cancellation is accepted, late provider
+results are ignored and must not become durable conversation, accepted
+assistant output, accepted tool-call output, or accepted `view_image` tool
+result. Runtime must not claim the remote provider stopped execution or billing.
 
 ### ToolBroker
 
@@ -150,8 +176,13 @@ Responsibilities:
 - allow terminal-to-running lifecycle transition only when called by the
   explicit resume orchestration path.
 - reject all other terminal-to-running transitions.
-- record terminal reason and normalized terminal error/cancellation facts.
+- record terminal reason and normalized terminal error/cancellation facts, except
+  for administrative stale fail-close where the terminal reason is
+  `terminal_stale` and no normalized terminal error is written.
 - support active ownership release on eligible terminalization.
+- persist active ownership `pid`, `host_id`, and `owner_token`.
+- release or stale fail-close ownership only through owner-token fenced
+  conditional transitions.
 
 Phase 3 does not require a new lifecycle status for `idle` or `cancelling`.
 Those are runtime control/presentation states. Durable lifecycle status remains
@@ -171,14 +202,18 @@ replaying arbitrary events.
 ### ConversationStore
 
 ConversationStore is new in Phase 3 and persists append-only
-`conversation_messages`.
+`conversation_messages` plus current mutable conversation projection state.
 
 Responsibilities:
 
 - append accepted message groups in deterministic order.
 - store durable message role, kind, content/reference, metadata allowlist, and
   acceptance boundary facts.
-- expose verified cuts by high-watermark, message count, and checksum.
+- expose verified fact cuts by high-watermark, message count, and checksum.
+- maintain one mutable current projection state per prompt run, updated by
+  message append, omission, and compression.
+- provide checkpoint creation with a compact frozen projection snapshot copied
+  from the current projection state.
 - reject pending, speculative, partial, or stream-only messages.
 - provide projection reads for Prompt Agent Runtime and terminal checkpoint
   validation.
@@ -195,14 +230,20 @@ eligibility to terminal recovery checkpoints.
 Responsibilities:
 
 - write terminal recovery checkpoints during eligible terminalization only.
+- reject attempts to write ordinary turn, context, error, streaming, UI, trace,
+  or other non-terminal checkpoint/provenance records for Phase 3 prompt
+  sessions/runs.
 - store compact recovery manifests, not unbounded full conversation history.
-- verify manifest schema, terminal kind, conversation cut, checksums, Todo Plan
-  reference/snapshot, approval state, active skill snapshot references, frozen
-  config/policy references, artifact references, and terminal facts.
+- verify manifest schema, terminal kind, conversation fact cut,
+  checkpoint-frozen projection snapshot, checksums, Todo Plan
+  reference/snapshot, approval state, active skill runtime records and snapshot
+  references, frozen config/policy references, artifact references, and
+  terminal facts.
 - ensure `latest_checkpoint_id` points only to terminal recovery checkpoints.
 
-Non-terminal provenance records must not update `latest_checkpoint_id` and must
-not be accepted by resume.
+Non-terminal provenance records are not written for Phase 3 prompt sessions/runs
+and must not be accepted by resume if encountered in a corrupt or manually
+modified database.
 
 ### ArtifactStore
 
@@ -225,7 +266,7 @@ They should show:
 - cancellation facts.
 - retry attempts and exhaustion.
 - durable conversation high-watermark summaries.
-- stale fail-close decisions and confirmation outcomes.
+- stale fail-close terminalization outcome.
 
 They must not:
 
@@ -240,8 +281,9 @@ They must not:
 ### Accepted Turn
 
 1. Controller receives user input.
-2. Prompt Agent Runtime accepts the user message and appends it to
-   `conversation_messages`.
+2. Prompt Agent Runtime accepts the user message, appends it to
+   `conversation_messages`, and updates the persisted projection state in the
+   same append consistency boundary.
 3. Runtime builds `ModelContextFrame` from durable conversation projection and
    runtime-owned state.
 4. Adapter returns authoritative assistant/tool-call result through `run()`.
@@ -255,8 +297,8 @@ They must not:
 1. User sends `Ctrl+C` while a turn is running.
 2. Controller signals runtime interruption.
 3. Runtime marks the current turn as cancelling.
-4. Runtime requests best-effort provider cancellation and active shell process
-   termination where applicable.
+4. Runtime requests model/provider call cancellation through the runtime-owned
+   cancellable worker and active shell process termination where applicable.
 5. Runtime rejects partial provider output and pending tool/shell results as
    durable truth.
 6. Runtime writes a turn-scoped cancellation/failure fact when it reaches a
@@ -268,40 +310,59 @@ They must not:
 1. User sends idle `Ctrl+C`, `/exit`, or normal shutdown.
 2. Orchestrator verifies there is no active turn/tool/shell mid-flight state
    being treated as resumable truth.
-3. Prompt Agent Runtime supplies durable conversation cut and runtime-owned
-   state references.
-4. CheckpointStore writes a terminal recovery checkpoint manifest.
-5. SessionStore/RunStore write terminal facts and update
-   `latest_checkpoint_id`.
-6. Active ownership is released.
-7. Controller exits.
+3. Prompt Agent Runtime supplies durable conversation fact cut, current
+   projection state, and runtime-owned state references.
+4. Runtime commits terminal recovery checkpoint creation, terminal session/run
+   facts, and `latest_checkpoint_id` update in one resume-eligibility
+   consistency boundary.
+5. Active ownership is released only after that terminal state is consistent.
+6. Controller exits.
 
 ### Resume
 
 1. User runs `debug-agent resume <session_id>`.
 2. CLI validates Phase 3 schema before reading runtime truth.
-3. Orchestrator checks that session/run are terminalized prompt lineage and not
-   startup/config/schema failure.
+3. Orchestrator checks that session/run are prompt lineage and not
+   startup/config/schema failure. The ordinary path requires terminalized
+   session/run rows; the only non-terminal exception is when the explicit resume
+   target is itself the current proven-stale active owner and the user confirms
+   fail-close before ordinary resume validation continues.
 4. Orchestrator verifies terminal checkpoint kind, schema version, durable
-   conversation cut, checksums, and referenced runtime-owned state.
-5. Orchestrator reacquires active workspace ownership.
-6. Store transition revives the same session/run lineage to `running`.
-7. Resume events are written.
-8. REPL starts with runtime context restored from durable truth.
+   conversation fact cut, checkpoint-frozen projection snapshot, checksums, and
+   referenced runtime-owned state.
+5. Orchestrator checks active ownership and runs user-confirmed stale
+   fail-close when a proven-stale owner blocks resume.
+6. Orchestrator reacquires active workspace ownership.
+7. Store transition revives the same session/run lineage to `running` and
+   records current owner `pid`, `host_id`, and fresh `owner_token`.
+8. Resume events are written.
+9. REPL starts with runtime context restored from durable truth.
 
 ### Stale Fail-Close
 
 1. Startup or resume finds active ownership blockage.
-2. Runtime evaluates proven-stale evidence for the owner.
+2. Runtime evaluates proven-stale evidence for the owner using recorded
+   `host_id`, `pid`, and captured `owner_token`.
 3. If evidence is insufficient or the owner appears alive, startup/resume fails
    closed with active ownership conflict.
 4. If evidence proves stale and an interactive confirmation is available,
    runtime asks the user.
-5. On confirmation, runtime best-effort constructs a terminal checkpoint from
-   durable facts, terminalizes the stale session/run, and releases ownership.
-6. The original startup or resume then proceeds.
+5. On confirmation, runtime writes a terminal checkpoint only when durable facts
+   are sufficient and the stale session/run is checkpoint-eligible, then marks
+   the stale session/run `failed` with terminal reason `terminal_stale`, writes
+   one minimal administrative `stale_fail_closed` run event, and releases
+   ownership in one owner-token fenced SQLite transaction over the
+   authoritative ownership row.
+6. The original startup or resume then proceeds. Startup may only continue by
+   creating the new startup session. Explicit `debug-agent resume <session_id>`
+   may continue ordinary resume validation for the same stale target only when
+   that target was the explicit resume argument and fail-close produced a valid
+   terminal recovery checkpoint.
 
-Stale fail-close cannot attach to, resume, or continue the stale session.
+Stale fail-close cannot attach to, auto-resume, or continue the stale session
+outside the explicit resume-target exception above.
+It must not write a normalized error fact or durable conversation
+failure/cancellation fact for the stale session.
 
 ## Schema Impact
 
@@ -314,5 +375,7 @@ Phase 3 requires a SQLite schema-version bump because it changes:
 - terminal/resume audit events.
 - explicit same-lineage terminal-to-running resume transition.
 - shell timeout contract.
+- fresh Phase 3 databases omit legacy ordinary checkpoint and context snapshot
+  schema used by earlier phases.
 
 Detailed table and payload fields are specified in `specs/`.

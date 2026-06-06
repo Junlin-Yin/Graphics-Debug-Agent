@@ -47,6 +47,7 @@ Running interruption must not:
 - write a terminal recovery checkpoint.
 - terminalize session/run.
 - release active ownership.
+- print a session close/cancelled terminal summary.
 - accept partial assistant output.
 - execute incomplete tool calls.
 - mark shell or tool mid-flight state resumable.
@@ -57,9 +58,30 @@ The durable cancellation fact uses:
 - `reason = "user_cancel_running"`
 - `scope = "turn"`
 
-If provider cancellation is uncertain, runtime records
-`cancelled/provider_cancel_uncertain` or equivalent metadata and presents
-`cancelling` until the local control path reaches a safe boundary.
+Provider calls must run inside runtime-owned cancellable workers. Main model
+provider cancellation records `cancelled/model_call_cancelled` as an internal
+failure-class audit fact when the local cancellation boundary closes. It is not
+appended as a separate durable conversation `cancellation_fact` during running
+`Ctrl+C`; the model-visible durable conversation fact for the turn remains
+`cancelled/user_cancel_running`. Brokered `view_image` cancellation returns
+`cancelled/tool_call_cancelled` as the model-visible tool observation, with
+provider-layer cancellation details only in metadata. Late provider results are
+ignored and must not become durable conversation or accepted assistant/tool-call
+output. Runtime may record remote-stop or billing uncertainty only as metadata
+and must not claim the remote provider stopped.
+
+These provider/tool cancellation reasons are boundary facts for the active
+model or tool operation. They do not replace the turn-scoped running-interrupt
+fact. When running `Ctrl+C` cancels an active turn, runtime records
+`cancelled/user_cancel_running` at the turn recovery boundary; if an already
+accepted tool call was in flight, the cancelled tool observation is appended
+first with its original `tool_call_id`, followed by the turn-scoped runtime
+cancellation fact. If no complete assistant tool-call message had been accepted,
+runtime must not invent a tool result. When the current turn's user input has
+already been accepted but no assistant output or complete assistant tool-call
+message has been accepted, the durable conversation order is the accepted
+`user_input` followed by the runtime-authored `cancellation_fact` for
+`cancelled/user_cancel_running`.
 
 ## Idle Terminalization
 
@@ -75,10 +97,12 @@ Triggers:
 Required behavior:
 
 1. verify no active turn/tool/shell state is being treated as resumable truth.
-2. write terminal cancellation/completion fact.
+2. prepare the terminal fact, durable conversation cut, projection snapshot, and
+   runtime-owned state references.
 3. write terminal recovery checkpoint if session/run are eligible.
-4. terminalize session/run lifecycle.
-5. release active workspace ownership.
+4. terminalize session/run lifecycle and update `latest_checkpoint_id` in the
+   same resume-eligibility consistency boundary as checkpoint creation.
+5. release active workspace ownership after terminal state is consistent.
 6. exit the controller.
 
 Idle `Ctrl+C` uses:
@@ -90,18 +114,37 @@ Idle `Ctrl+C` uses:
 Idle terminalization may produce a resumable session only when terminal
 checkpoint creation succeeds and eligibility holds.
 
+Idle `Ctrl+C` terminalization must carry the session-scoped
+`cancelled/user_cancel_idle` fact into the terminal recovery manifest as the
+terminal cancellation fact.
+
+Other idle terminalization reasons:
+
+- `/exit` and normal graceful REPL shutdown use terminal reason `user_exit`.
+- one-shot prompt normal completion uses terminal reason
+  `terminal_completion`, terminal status `completed`, and no terminal error.
+- terminal prompt failure uses terminal reason `terminal_failure`.
+- user-confirmed stale fail-close uses terminal reason `terminal_stale`.
+
 ## Terminal Failures
 
-A terminal failure after accepted prompt runtime facts exist may write a
-terminal recovery checkpoint when:
+A terminal failure after a closed accepted durable conversation cut exists may
+write a terminal recovery checkpoint when:
 
 - session/run are prompt lineage.
 - failure is not startup/config/schema failure.
-- durable conversation cut validates.
+- durable conversation fact cut and current projection state validate.
 - active runtime-owned state can be captured or referenced.
 - checkpoint write and terminal transition can be made consistent.
 
 Terminal failure does not make mid-flight provider/tool/shell state resumable.
+
+A closed accepted durable conversation cut means at least one accepted
+`conversation_messages` group for the prompt run has reached a closed
+acceptance boundary and the current projection state validates against that
+cut. A startup/config/schema failure or any prompt failure before the first
+accepted durable conversation group is non-resumable and must not write a
+terminal recovery checkpoint.
 
 ## Startup Failure Sessions
 
@@ -126,7 +169,8 @@ Resume success:
 - preserves previous terminal facts and terminal checkpoint.
 - writes resume audit events.
 - reacquires active ownership.
-- transitions lifecycle status to `running`.
+- transitions lifecycle status to `running` after ownership is reacquired.
+- records current owner `pid`, `host_id`, and fresh `owner_token`.
 - starts REPL with restored runtime context.
 
 Resume must not:
@@ -174,20 +218,48 @@ Runtime releases active workspace ownership only after:
 - terminal checkpoint requirements have succeeded when resumability is expected.
 - cancellation/failure facts needed for audit have been persisted where
   persistence is available.
+- the release is fenced by the current owner's `owner_token`.
 
 Running turn cancellation does not release ownership.
 
+If ownership release fails after terminalization is durable, runtime must not
+roll back terminal session/run facts or terminal recovery checkpoints. It must
+record `runtime_error/ownership_release_failed` where persistence is available,
+leave active ownership blocked, and surface guidance that a later process may
+proceed only through user-confirmed stale fail-close or manual cleanup. An
+`owner_token` mismatch is an ownership release failure and must not release the
+new current owner.
+
 Abnormal process death may leave ownership stale. A later process may handle it
 only through user-confirmed stale fail-close.
+
+Active shell process handles used for cancellation are runtime-internal state
+created only after a `shell_exec` call has passed ToolBroker policy, approval,
+timeout, and audit setup and the command has started. The shell start audit
+fact and active process-handle registration must occur in the same command-start
+boundary so a started command is visible to cancellation control. They are not
+model-visible tool inputs or reusable execution handles.
 
 ## Double Interrupt
 
 If the user sends a second interrupt while runtime is already `cancelling`:
 
-- runtime should escalate local shutdown behavior only enough to return control
-  or exit safely.
+- runtime treats it as a process-level interruption request.
+- runtime must stop waiting for ordinary REPL recovery, attempt only the
+  minimum local cleanup needed to avoid accepting partial state, and exit or
+  abort the command path with `INTERRUPTED`.
+- runtime must not return REPL/TUI to prompt input from the same cancelling
+  state.
 - runtime must not write partial provider/tool/shell state as durable truth.
-- if process-level interruption exits the command, use `INTERRUPTED` exit code.
 - later stale fail-close can only use already durable facts.
 
 Double interrupt does not create a special resume source.
+
+## TTY Terminal Summary
+
+Phase 0.5 TTY summary behavior is narrowed by Phase 3 session control.
+Running-turn `Ctrl+C` returns the REPL/TUI to input after the cancellation
+boundary closes and must not print the post-TUI session close or cancelled
+summary. Idle `Ctrl+C`, `/exit`, normal graceful shutdown, and process-level
+interruption that exits the command may print the appropriate terminal summary
+after the TUI leaves the alternate screen.

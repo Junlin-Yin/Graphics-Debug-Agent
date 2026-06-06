@@ -161,10 +161,16 @@ continuity.
 Todo Plan behavior across terminalized prompt session resume.
 
 For Phase 3, resume restores the same session/run lineage. Terminal recovery
-checkpoints may snapshot or reference Todo Plan state for that same run. During
-resume, runtime restores the current Todo Plan row from the terminal checkpoint
-snapshot or reference, not from conversation history, compression summaries,
-trace output, or UI state.
+checkpoints snapshot Todo Plan state for that same run, including plan version,
+item order, content, status, and active form. During resume, runtime restores
+the current Todo Plan row from the terminal checkpoint snapshot, overwriting any
+drifted mutable current row after validation. Resume may overwrite only the
+mutable current Todo Plan row for the same run. If durable Todo Plan history,
+checkpoint snapshot, checksum facts, run ownership, plan version, item order,
+content, status, or active form fail validation, resume must fail closed instead
+of repairing or rewriting durable Todo Plan history. Runtime must not restore
+Todo Plan from conversation history, compression summaries, trace output, UI
+state, or the mutable current TodoPlanStore row alone.
 
 [ADR 0015](0015-normalized-error-taxonomy-narrow-runtime-retry.md) refines Todo
 failure classification. Todo schema and semantic validation failures, runtime

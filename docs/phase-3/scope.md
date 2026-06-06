@@ -30,13 +30,38 @@ retry.
 ## Must Implement
 
 - Compatibility:
-  - bump SQLite `PRAGMA user_version` for Phase 3.
-  - fail closed for missing, legacy, unknown, or non-Phase-3 schema versions
-    before startup, active ownership checks, `status`, `trace`, or `resume`
-    interpret runtime truth.
-  - do not migrate, delete, or rewrite old `.sessions/runtime.db`.
-  - classify schema-version failure as startup persistence/config failure with
-    normalized error payload and user-facing cleanup guidance.
+  - set `PHASE_3_SCHEMA_USER_VERSION = 3` and write SQLite
+    `PRAGMA user_version = 3` for fresh Phase 3 databases.
+  - before startup, active ownership checks, `status`, `trace`, or `resume`
+    interpret runtime truth, read SQLite `PRAGMA user_version` when
+    `.sessions/runtime.db` exists.
+  - for startup only, where startup means a REPL or one-shot command path that
+    will create a new session/run, delete an existing `.sessions/runtime.db`
+    whose `PRAGMA user_version` is missing/`0` or legacy Phase 0/0.5/1/2 before
+    interpreting any rows, then create a fresh Phase 3 database.
+  - startup legacy reset deletes only the legacy `.sessions/runtime.db`.
+    Orphaned legacy artifact, log, trace, checkpoint-payload, or session
+    subdirectories under `.sessions/` may remain on disk for manual cleanup, but
+    Phase 3 runtime must not interpret them as runtime truth and the fresh
+    Phase 3 database must not reference them.
+  - for `status`, `trace`, `resume`, an existing runtime database with missing
+    schema version/`0`, unknown future schema versions, or any non-startup schema
+    mismatch, fail closed before interpreting runtime truth.
+  - if `.sessions/runtime.db` does not exist, `status`, `trace`, and `resume`
+    must not create it. `status` returns a read-only no-session observation;
+    `trace <session_id>` and `resume <session_id>` return lookup-not-found.
+  - do not migrate, reinterpret, preserve, or rewrite legacy rows into Phase 3
+    shape.
+  - classify fail-closed schema-version failures internally as
+    `config_error/{legacy_schema_version,unknown_schema_version,schema_version_missing}`
+    while mapping the CLI boundary to `ERROR_STARTUP_PERSISTENCE`, with
+    user-facing guidance. Startup legacy reset is not a schema-version failure
+    session because runtime deletes the legacy DB before interpreting rows or
+    creating Phase 3 runtime truth.
+  - treat Phase 3 normalized tool argument validation as a tool-contract
+    breaking change from Phase 2: malformed or locally invalid model-visible
+    `view_image` and `todo` calls use `tool_error/tool_schema_invalid`, not the
+    earlier Phase 2 `user_error` expectation.
 - Normalized errors:
   - define centralized `error_class` and `reason` symbols.
   - persist normalized failure objects at `payload.error` for failure-class
@@ -44,31 +69,44 @@ retry.
   - use a narrow model-visible error projection.
   - introduce semantic CLI exit codes for Phase 3 runtime boundaries.
 - Durable conversation:
-  - add append-only `conversation_messages` as durable conversation truth.
-  - demote process-local in-memory conversation to a projection.
+  - add append-only `conversation_messages` as durable accepted conversation
+    fact truth.
+  - add mutable current conversation projection state for each prompt run.
+  - demote process-local in-memory conversation to a projection of durable facts
+    plus runtime-owned injections.
   - persist accepted user, assistant, tool, failure, and cancellation
     model-visible message groups at recovery boundaries.
   - forbid pending or speculative model/tool/provider state from becoming
     durable conversation truth.
 - Terminal recovery checkpoints:
   - make terminal recovery checkpoints the only resume entrypoints.
+  - make `terminal_recovery` the only checkpoint kind written for Phase 3
+    prompt sessions/runs.
   - narrow `latest_checkpoint_id` to the latest terminal recovery checkpoint id.
-  - forbid ordinary turn, context, error, trace, streaming, or UI provenance
-    from writing resume checkpoints.
+  - remove Phase 3 write paths and fresh-schema storage for ordinary turn,
+    context, error, trace, streaming, UI, or other non-terminal provenance
+    checkpoints/snapshots for Phase 3 prompt sessions/runs.
   - write terminal recovery checkpoints for eligible terminalization paths only
     after durable facts are self-consistent.
   - include a compact recovery manifest referencing a verified durable
-    conversation cut and runtime-owned state.
+    conversation fact cut, checkpoint-frozen projection snapshot, and
+    runtime-owned state.
 - Startup/config/schema failure handling:
   - startup/config/schema failures are non-resumable.
   - if such a failure occurs after session/run creation, write only normalized
     audit failure facts/events, terminalize session/run, and do not write a
     terminal recovery checkpoint.
+  - mark startup/config/schema failure sessions with a structured
+    non-resumable startup-failure lifecycle or terminal metadata marker before
+    releasing ownership or returning the startup error.
   - `debug-agent resume <session_id>` must fail closed for these sessions.
 - Session control:
   - distinguish running turn interruption from idle session terminalization.
   - running `Ctrl+C` cancels the current turn, persists a cancellation/failure
     fact when it reaches a recovery boundary, and returns REPL/TUI to input.
+  - define frozen `[execution].cancellation_timeout_seconds` as the local cleanup
+    envelope for accepted running interruptions; invalid values are startup
+    config failures.
   - idle `Ctrl+C` terminalizes session/run, writes a terminal recovery
     checkpoint, releases active ownership, and exits the interactive loop.
   - graceful `/exit` and normal shutdown terminalize eligible idle prompt
@@ -78,11 +116,13 @@ retry.
     terminalized session or run.
 - Provider cancellation:
   - preserve the public `AgentLoopAdapter.run()` / `stream()` contract.
-  - allow adapters to use internal async provider tasks and runtime-owned
-    cancellation handles.
-  - represent sync fallback or uncertain provider cancellation as
-    `cancelling`; do not promise remote execution stopped or provider billing
-    stopped.
+  - run main model calls and `view_image` provider calls through runtime-owned
+    cancellable workers.
+  - ignore late provider results after local cancellation is accepted.
+  - do not append late results to durable conversation or accepted assistant /
+    tool-call output, and do not accept late `view_image` provider results as
+    tool results.
+  - do not promise remote execution stopped or provider billing stopped.
 - Shell cancellation:
   - terminate active `shell_exec` subprocesses on running interruption using
     best-effort local process termination.
@@ -98,6 +138,20 @@ retry.
     fail-close when active ownership blocks progress.
   - require proven-stale evidence and explicit user confirmation before
     terminalizing the old session/run and releasing ownership.
+  - use `owner_token` fencing so fail-close and ownership release can affect only
+    the exact active owner record that was proven stale.
+  - write a terminal recovery checkpoint only when durable facts are sufficient
+    and the stale prompt session/run is checkpoint-eligible; otherwise
+    terminalize the old session/run as non-resumable without a checkpoint.
+  - terminalize the old session/run as `failed` with terminal reason
+    `terminal_stale`, and write one minimal administrative
+    `stale_fail_closed` run event.
+  - do not write a normalized error fact or durable conversation
+    failure/cancellation fact for stale fail-close.
+  - allow `debug-agent resume <session_id>` targeting the current stale active
+    owner to run a stale-target fail-close pre-step, then continue ordinary
+    terminal-checkpoint-backed resume only if that pre-step produced a valid
+    terminal recovery checkpoint and released ownership.
   - fail closed if the owner is still alive, stale evidence is insufficient, or
     confirmation cannot be obtained.
 - Retry and output-token continuation:
@@ -105,10 +159,16 @@ retry.
   - support only `repeat_call` for explicitly retry-safe runtime-owned
     transient failures and `continue_generation` for
     `output_token_limit_reached`.
+  - restrict Phase 3 `continue_generation` to text-only partial output.
+  - route partial output containing any complete or partial tool-call fragment
+    to ordinary failure handling instead of continuation.
   - do not accept partial output as final assistant output.
   - do not execute incomplete tool calls or incomplete tool arguments.
 - Shell timeout cleanup:
   - split default shell timeout from maximum shell timeout.
+  - freeze `default_shell_timeout_seconds`, `max_shell_timeout_seconds`, and
+    `cancellation_timeout_seconds` from `[execution]` into the session config
+    snapshot.
   - make explicit `shell_exec.timeout_seconds` mean the requested timeout,
     validated against the configured maximum, not a value silently capped by the
     default.
@@ -142,15 +202,20 @@ Phase 3 adds normalized error payloads and fixed reason symbols as runtime
 truth. Error classes and reasons are control-plane symbols, not presentation
 strings.
 
-Phase 3 adds append-only durable conversation rows. The runtime builds
-process-local conversation from durable rows and runtime-owned injections.
-Process-local conversation, stream observations, TUI state, trace rendering, and
-context snapshots are not recovery truth.
+Phase 3 adds append-only durable conversation rows. During ordinary execution,
+process-local conversation is the active projection maintained alongside
+durable appends and projection-state updates. Explicit resume is the only path
+that rebuilds process-local conversation from durable rows and the
+checkpoint-frozen projection snapshot. Process-local conversation, stream
+observations, TUI state, and trace rendering are not recovery truth. Phase 3
+prompt sessions/runs do not write context snapshots; if legacy or corrupt
+databases contain them, they must not be used as recovery truth.
 
 Phase 3 changes checkpoint semantics. A prompt session/run can be resumed only
-from a terminal recovery checkpoint. Ordinary turn, context, error, stream, UI,
-or trace records may remain useful for audit and inspection, but they are not
-resume checkpoints.
+from a terminal recovery checkpoint, and Phase 3 prompt sessions/runs do not
+write non-terminal checkpoint/provenance records. Ordinary turn, context, error,
+stream, UI, or trace facts remain audit/event or projection facts only; they are
+not checkpoint records.
 
 Phase 3 changes terminal state semantics for one explicit path. A terminalized
 eligible prompt session/run may return to `running` only through
@@ -162,6 +227,10 @@ Phase 3 does not make terminal state generally reversible. Store helpers,
 startup flows, status/trace reads, stale fail-close, and non-resume runtime
 paths must still treat terminal session/run rows as terminal.
 
+Phase 3 adds administrative audit event kind `stale_fail_closed` for
+user-confirmed stale fail-close of an old owner run. This event is not a
+failure-class event and must not carry `payload.error`.
+
 ## Compatibility
 
 Phase 3 is a schema, checkpoint, conversation, event payload, retry metadata,
@@ -169,19 +238,50 @@ and status/control semantics breaking change from Phase 2.
 
 Runtime initialization, `debug-agent status`, `debug-agent trace`,
 `debug-agent resume`, and active workspace ownership checks must read SQLite
-`PRAGMA user_version` before interpreting runtime truth rows. A missing (`0`),
-Phase 0, Phase 0.5, Phase 1, Phase 2, unknown, or otherwise mismatched version
-fails closed with a normalized startup persistence/config error.
+`PRAGMA user_version` before interpreting runtime truth rows.
 
-If `.sessions/runtime.db` does not exist, Phase 3 creates it with the Phase 3
-schema and writes the Phase 3 schema user version before interpreting runtime
-rows.
+Phase 3 identifies its SQLite schema with:
 
-The user-facing legacy-schema error must say that older runtime databases are
-unsupported by Phase 3 and instruct the user to move or remove `.sessions/` or
-use a fresh workspace.
+```text
+PHASE_3_SCHEMA_USER_VERSION = 3
+```
 
-Runtime must not automatically migrate, delete, or rewrite legacy databases.
+Fresh Phase 3 databases must write:
+
+```sql
+PRAGMA user_version = 3;
+```
+
+During startup only, where startup means a REPL or one-shot command path that
+will create a new session/run, a missing (`0`) or legacy Phase 0, Phase 0.5,
+Phase 1, or Phase 2 schema version is handled by deleting
+`.sessions/runtime.db` before interpreting any legacy rows, then creating a
+fresh Phase 3 database. This is a destructive Phase 3 schema reset, not
+migration. Runtime must not copy, reinterpret, or rewrite legacy rows into the
+fresh database.
+
+`debug-agent status`, `debug-agent trace`, and `debug-agent resume` remain
+non-destructive observation/recovery commands. When `.sessions/runtime.db`
+exists, they must fail closed for missing (`0`), legacy, unknown, or otherwise
+mismatched schema versions before interpreting runtime truth rows.
+
+Unknown future schema versions always fail closed; Phase 3 must not delete
+databases whose version is newer or not recognized as a legacy Phase 0/0.5/1/2
+schema.
+
+If `.sessions/runtime.db` does not exist, Phase 3 startup paths that create a new
+REPL or one-shot session create it with the Phase 3 schema and write the Phase 3
+schema user version before interpreting runtime rows. Read-only or recovery
+commands, including `status`, `trace`, and `resume`, must not create a missing
+database.
+
+The startup user-facing legacy-schema reset message must say that older runtime
+databases are unsupported by Phase 3, the old runtime database was deleted, a
+fresh Phase 3 database was created, and legacy artifact/log/trace files may
+remain on disk but are not interpreted by the fresh Phase 3 runtime. The
+`status`, `trace`, and `resume` legacy-schema error must say that older runtime
+databases are unsupported by Phase 3 and instruct the user to start a new
+session or use a fresh workspace.
 
 ## ADR Impact
 
@@ -195,9 +295,9 @@ Phase 3 refines:
 - ADR 0003 by restricting resume recovery to terminal recovery checkpoints.
 - ADR 0010 by making durable conversation rows the authoritative conversation
   source used to build model-visible context.
-- ADR 0011 by keeping context snapshots and compression summaries out of
-  recovery truth unless the model-visible summary is already persisted as a
-  durable conversation message.
+- ADR 0011 by stopping Phase 3 prompt-session context snapshot writes and by
+  requiring resumable context summaries to be persisted as durable conversation
+  messages.
 - ADR 0013 by restoring Todo Plan for the same resumed run lineage, not from
   conversation, summary, trace, or UI state.
 
@@ -212,9 +312,9 @@ Phase 3 refines:
 5. Idle `Ctrl+C` or `/exit` terminalizes the prompt session/run, writes a
    terminal recovery checkpoint, and releases active workspace ownership.
 6. `debug-agent resume <session_id>` validates eligibility, verifies the
-   terminal checkpoint and durable conversation cut, reacquires ownership,
-   revives the same session/run lineage to `running`, and starts REPL with
-   restored runtime context.
+   terminal checkpoint, durable conversation fact cut, and checkpoint-frozen
+   projection snapshot, reacquires ownership, revives the same session/run
+   lineage to `running`, and starts REPL with restored runtime context.
 7. Startup/config/schema failure after session/run creation writes normalized
    audit facts and terminalizes without a terminal recovery checkpoint; resume
    rejects it.
@@ -238,7 +338,9 @@ Phase 3 implementation is complete only when:
 
 - all Phase 3 acceptance criteria in `tests.md` pass.
 - `operations.md` canonical verification commands have been run as applicable.
-- legacy Phase 2 databases fail closed with the Phase 3 compatibility error.
+- legacy Phase 2 databases are deleted and replaced with a fresh Phase 3
+  database on startup, while `status`, `trace`, and `resume` fail closed before
+  interpreting legacy rows.
 - startup/config/schema failure sessions are proven non-resumable.
 - terminal-checkpoint-backed resume restores eligible REPL and one-shot prompt
   sessions into REPL using the same session/run lineage.

@@ -67,3 +67,11 @@ keeps runtime ownership simple.
   workspace directories.
 - Future `/resume` and interruption work must preserve or revise this ownership
   rule deliberately.
+
+## Phase 3 Refinement
+
+Phase 3 preserves the one-active-session-per-workspace rule and adds
+`owner_token` fencing for ownership release and user-confirmed stale fail-close.
+Active ownership blockage remains a user-facing startup/resume conflict, but the
+Phase 3 normalized error taxonomy records it as
+`policy_error/workspace_owner_active` rather than `user_error`.
