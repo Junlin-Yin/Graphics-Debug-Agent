@@ -16,7 +16,7 @@ The Phase 3 schema must include a `conversation_messages` table or equivalent
 append-only store with these logical fields:
 
 | Field | Meaning |
-|---|---|
+| --- | --- |
 | `id` | Monotonic durable row id. |
 | `session_id` | Owning session id. |
 | `run_id` | Owning run id. |
@@ -127,7 +127,7 @@ resume and to explain current projection in status/trace.
 Logical projection state fields:
 
 | Field | Meaning |
-|---|---|
+| --- | --- |
 | `projection_state_id` | Stable id for the current projection state row. |
 | `session_id` | Owning session id. |
 | `run_id` | Owning run id. |

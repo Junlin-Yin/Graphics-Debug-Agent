@@ -234,7 +234,7 @@ Allowed terminal reasons:
 Terminal reason/status/error matrix:
 
 | Terminal reason | Required terminal status | Required terminal error |
-|---|---|---|
+| --- | --- | --- |
 | `terminal_completion` | `completed` | absent or `null` |
 | `user_exit` | `completed` | absent or `null` |
 | `user_cancel_idle` | `failed` | normalized session-scoped cancellation fact `cancelled/user_cancel_idle` |

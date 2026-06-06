@@ -66,7 +66,7 @@ query source, such as `effective_query_source = "assistant"` or `"default"`.
 Phase 3 error classes are:
 
 | Class | Meaning |
-|---|---|
+| --- | --- |
 | `user_error` | Invalid user input, command shape, lookup target, or recoverable user action issue. |
 | `config_error` | Startup/runtime configuration, policy configuration, provider configuration, or schema compatibility failure. |
 | `policy_error` | Runtime policy, path policy, shell policy, or approval denial. |
@@ -332,7 +332,7 @@ after the runtime has accepted the failure fact at a recovery boundary.
 Phase 3 CLI code must use semantic exit codes, not scattered magic numbers.
 
 | Name | Code | Meaning |
-|---|---:|---|
+| --- | ---: | --- |
 | `OK` | 0 | Command completed successfully. |
 | `ERROR_EXECUTION_FAILED` | 1 | Runtime execution failed after entering a session/run path. |
 | `ERROR_USAGE` | 2 | CLI arguments or command shape are invalid. |
@@ -363,7 +363,7 @@ Phase 3 command boundaries must use this dispatch order when no more specific
 mapping is defined below:
 
 | Internal error | Default CLI exit code |
-|---|---|
+| --- | --- |
 | `user_error/invalid_cli_args` or `user_error/invalid_command` | `ERROR_USAGE` |
 | `user_error/lookup_not_found` | `ERROR_LOOKUP_NOT_FOUND` |
 | `config_error/invalid_policy_config` | `ERROR_STARTUP_POLICY` |
@@ -416,7 +416,7 @@ Every normalized error constructor must set `recoverability` deliberately. The
 default mapping is:
 
 | Error class / reason family | Default recoverability |
-|---|---|
+| --- | --- |
 | `config_error/*` during startup, schema validation, or provider construction | `terminal_non_resumable` |
 | `policy_error/workspace_owner_*` before session creation or resume revival | `non_recoverable` |
 | `policy_error/approval_denied` and `policy_error/approval_required_non_interactive` in long-lived REPL turns | `turn_recoverable` |
