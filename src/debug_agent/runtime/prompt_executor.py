@@ -10,7 +10,6 @@ from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.approval_grants import ApprovalGrantStore
 from debug_agent.persistence.checkpoints import CheckpointStore
 from debug_agent.persistence.conversation import ConversationAppend, ConversationStore
-from debug_agent.persistence.context_snapshots import ContextSnapshotStore
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.todo_plans import TodoPlanStore
 from debug_agent.persistence.runs import RunStore
@@ -464,46 +463,6 @@ class PromptAgentExecutor:
                 kind="assistant_message",
                 payload={"content": result.assistant_output},
             )
-            checkpoint = self._save_checkpoint(
-                session=session,
-                run=run,
-                kind="turn",
-                state={
-                    "session_status": session.status,
-                    "run_status": run.status,
-                    "prompt_turn_counter": prompt_turn_counter,
-                    "latest_model_response_metadata": _serializable_metadata(
-                        result.metadata
-                    ),
-                    "latest_artifact_ids": _artifact_ids(result),
-                    "latest_error_summary": None,
-                },
-                summary=result.assistant_output,
-            )
-        else:
-            error = result.error or {}
-            checkpoint = self._save_checkpoint(
-                session=session,
-                run=run,
-                kind="error",
-                state={
-                    "session_status": session.status,
-                    "run_status": run.status,
-                    "prompt_turn_counter": prompt_turn_counter - 1,
-                    "latest_model_response_metadata": _serializable_metadata(
-                        result.metadata
-                    ),
-                    "latest_artifact_ids": _artifact_ids(result),
-                    "latest_error_summary": error.get("message"),
-                },
-                summary=error.get("message"),
-            )
-        self._append_event(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            kind="checkpoint_written",
-            payload={"checkpoint_id": checkpoint.checkpoint_id, "kind": checkpoint.kind},
-        )
         return result
 
     def _append_durable_user_input(
@@ -1177,30 +1136,6 @@ class PromptAgentExecutor:
                 ),
             },
         )
-        checkpoint = self._save_checkpoint(
-            session=session,
-            run=run,
-            kind="context",
-            state={
-                "session_status": session.status,
-                "run_status": run.status,
-                "prompt_turn_counter": prompt_turn_counter,
-                "context_snapshot_id": run.context_snapshot_id,
-                "active_skill_records": run.active_skills,
-                "latest_artifact_ids": [],
-                "latest_error_summary": message,
-                "error_class": "compression_failed",
-                "reason": reason,
-                "token_estimate": token_estimate,
-            },
-            summary=message,
-        )
-        self._append_event(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            kind="checkpoint_written",
-            payload={"checkpoint_id": checkpoint.checkpoint_id, "kind": checkpoint.kind},
-        )
         return {
             "failed": True,
             "message": message,
@@ -1256,31 +1191,6 @@ class PromptAgentExecutor:
                 ),
             },
         )
-        checkpoint = self._save_checkpoint(
-            session=session,
-            run=run,
-            kind="context",
-            state={
-                "session_status": session.status,
-                "run_status": run.status,
-                "prompt_turn_counter": prompt_turn_counter,
-                "context_snapshot_id": run.context_snapshot_id,
-                "active_skill_records": run.active_skills,
-                "latest_artifact_ids": [],
-                "latest_error_summary": CONTEXT_LIMIT_EXCEEDED_MESSAGE,
-                "error_class": "context_limit_exceeded",
-                "estimated_tokens": estimated_tokens,
-                "window_tokens": window_tokens,
-                "token_estimate": dict(estimate),
-            },
-            summary=CONTEXT_LIMIT_EXCEEDED_MESSAGE,
-        )
-        self._append_event(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            kind="checkpoint_written",
-            payload={"checkpoint_id": checkpoint.checkpoint_id, "kind": checkpoint.kind},
-        )
         return AgentRunResult(
             status="failed",
             assistant_output=None,
@@ -1303,62 +1213,12 @@ class PromptAgentExecutor:
         prompt_turn_counter: int,
     ) -> None:
         metadata = optimization["metadata"]
-        snapshot_store = ContextSnapshotStore(
-            connection=self.artifact_store.connection,
-            artifact_store=self.artifact_store,
-        )
-        context_settings = session.config_snapshot.get("context", {})
-        snapshot = snapshot_store.save_omission_snapshot(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            source_checkpoint_id=run.latest_checkpoint_id,
-            active_skill_records=run.active_skills,
-            retained_messages=[
-                message.to_dict() for message in optimization["snapshot_messages"]
-            ],
-            omitted_tool_result_count=metadata["omitted_tool_result_count"],
-            artifact_refs=optimization["artifact_refs"],
-            token_estimate={
-                "before": dict(optimization["before_estimate"]),
-                "after": dict(after_estimate),
-                "window_tokens": int(context_settings.get("window_tokens", 200000)),
-                "omit_old_tool_results_at_ratio": float(
-                    context_settings.get("omit_old_tool_results_at_ratio", 0.60)
-                ),
-            },
-        )
-        if self.run_store is not None:
-            self.run_store.update_context_snapshot(
-                run.run_id,
-                context_snapshot_id=snapshot.context_snapshot_id,
-            )
-        checkpoint = self._save_checkpoint(
-            session=session,
-            run=run,
-            kind="context",
-            state={
-                "session_status": session.status,
-                "run_status": run.status,
-                "prompt_turn_counter": prompt_turn_counter,
-                "context_snapshot_id": snapshot.context_snapshot_id,
-                "active_skill_records": run.active_skills,
-                "latest_artifact_ids": optimization["artifact_refs"],
-                "latest_error_summary": None,
-                "token_estimate": {
-                    "before": dict(optimization["before_estimate"]),
-                    "after": dict(after_estimate),
-                },
-            },
-            summary="Old tool results omitted.",
-        )
         self._append_event(
             session_id=session.session_id,
             run_id=run.run_id,
             kind="context_optimized",
             payload={
                 "trigger": "omission",
-                "context_snapshot_id": snapshot.context_snapshot_id,
-                "checkpoint_id": checkpoint.checkpoint_id,
                 "omitted_tool_result_count": metadata["omitted_tool_result_count"],
                 "artifact_refs": optimization["artifact_refs"],
                 "reduced_from_tokens": metadata["reduced_from_tokens"],
@@ -1386,67 +1246,12 @@ class PromptAgentExecutor:
         prompt_turn_counter: int,
     ) -> None:
         metadata = optimization["metadata"]
-        snapshot_store = ContextSnapshotStore(
-            connection=self.artifact_store.connection,
-            artifact_store=self.artifact_store,
-        )
-        context_settings = session.config_snapshot.get("context", {})
-        snapshot = snapshot_store.save_compression_snapshot(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            trigger=metadata["trigger"],
-            source_checkpoint_id=run.latest_checkpoint_id,
-            active_skill_records=run.active_skills,
-            summary=optimization["summary"],
-            retained_messages=[
-                message.to_dict() for message in optimization["snapshot_messages"]
-            ],
-            omitted_tool_result_count=metadata["omitted_tool_result_count"],
-            evicted_message_count=metadata["evicted_message_count"],
-            evicted_model_call_group_count=metadata["evicted_model_call_group_count"],
-            artifact_refs=optimization["artifact_refs"],
-            token_estimate={
-                "before": dict(optimization["before_estimate"]),
-                "after": dict(after_estimate),
-                "compression_input": dict(optimization["compression_estimate"]),
-                "window_tokens": int(context_settings.get("window_tokens", 200000)),
-                "compress_history_at_ratio": float(
-                    context_settings.get("compress_history_at_ratio", 0.80)
-                ),
-            },
-        )
-        if self.run_store is not None:
-            self.run_store.update_context_snapshot(
-                run.run_id,
-                context_snapshot_id=snapshot.context_snapshot_id,
-            )
-        checkpoint = self._save_checkpoint(
-            session=session,
-            run=run,
-            kind="context",
-            state={
-                "session_status": session.status,
-                "run_status": run.status,
-                "prompt_turn_counter": prompt_turn_counter,
-                "context_snapshot_id": snapshot.context_snapshot_id,
-                "active_skill_records": run.active_skills,
-                "latest_artifact_ids": optimization["artifact_refs"],
-                "latest_error_summary": None,
-                "token_estimate": {
-                    "before": dict(optimization["before_estimate"]),
-                    "after": dict(after_estimate),
-                },
-            },
-            summary="Context compressed.",
-        )
         self._append_event(
             session_id=session.session_id,
             run_id=run.run_id,
             kind="context_optimized",
             payload={
                 "trigger": metadata["trigger"],
-                "context_snapshot_id": snapshot.context_snapshot_id,
-                "checkpoint_id": checkpoint.checkpoint_id,
                 "omitted_tool_result_count": metadata["omitted_tool_result_count"],
                 "evicted_message_count": metadata["evicted_message_count"],
                 "evicted_model_call_group_count": metadata[

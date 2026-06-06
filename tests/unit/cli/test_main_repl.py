@@ -111,7 +111,7 @@ def test_main_repl_accepts_two_turns_status_and_exit(
     )
     assert run_status == "completed"
     assert user_messages == 2
-    assert checkpoint_kinds == ["turn", "turn", "terminal"]
+    assert checkpoint_kinds == ["terminal_recovery"]
 
 
 def test_main_repl_phase3_development_gate_fails_before_creating_database(
@@ -319,8 +319,9 @@ def test_repl_ctrl_c_after_session_creation_marks_failed_and_releases_ownership(
     assert (session_status, active_run_id, run_status) == ("failed", None, "failed")
     assert session_error == "REPL interrupted by Ctrl+C."
     assert run_error == "REPL interrupted by Ctrl+C."
-    assert checkpoint_kind == "error"
-    assert '"latest_error_summary": "REPL interrupted by Ctrl+C."' in checkpoint_state
+    assert checkpoint_kind == "terminal_recovery"
+    assert '"terminal_reason": "user_cancel_idle"' in checkpoint_state
+    assert '"reason": "user_cancel_idle"' in checkpoint_state
     assert failed_error_class == "cancelled"
 
     second_exit = run_repl(

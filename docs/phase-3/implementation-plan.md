@@ -251,25 +251,25 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 
 **Runnable state:** eligible idle prompt sessions in the gated path can terminalize with terminal recovery checkpoints; non-resumable terminalization remains explicit and observable.
 
-- [ ] Restrict Phase 3 prompt checkpoint writes to `terminal_recovery`.
-- [ ] Reject or remove ordinary turn, context, error, stream, trace, UI, and non-terminal provenance checkpoint writes for Phase 3 prompt sessions/runs.
-- [ ] Stop Phase 3 prompt-session writes to `context_snapshots`; retain legacy table only as non-authoritative incompatible/unused schema surface if needed by existing code until removed.
-- [ ] Narrow `sessions.latest_checkpoint_id` and `runs.latest_checkpoint_id` semantics to terminal recovery checkpoint ids.
-- [ ] Add terminal recovery manifest creation with session/run identity, run type, terminal status/reason/error matrix, durable conversation fact cut, projection snapshot, Todo Plan snapshot, approval grant cut, active skill records, frozen snapshots, tool availability references, and artifact refs.
-- [ ] Add manifest and payload checksum validation.
-- [ ] Add minimal Phase 3 `[execution]` config parsing for `default_shell_timeout_seconds`, `max_shell_timeout_seconds`, and `cancellation_timeout_seconds` with documented defaults.
-- [ ] Validate Phase 3 execution timeout config as positive integers and `max_shell_timeout_seconds >= default_shell_timeout_seconds`; invalid values use `config_error/invalid_runtime_config`.
-- [ ] Freeze Phase 3 execution timeout values into the session config snapshot so terminal checkpoints can reference the original shell maximum.
-- [ ] Validate frozen tool availability references, including `view_image` availability and shell schema limit derived from frozen maximum timeout.
-- [ ] Limit Milestone 3 shell timeout work to frozen config/reference validation; do not change `shell_exec.timeout_seconds` runtime behavior, approval signatures, or timeout execution semantics until Milestone 9.
-- [ ] Add terminal reasons `terminal_completion`, `user_exit`, `user_cancel_idle`, `terminal_failure`, and `terminal_stale` exactly as specified.
-- [ ] Implement zero-message `/exit` and normal graceful shutdown checkpoint shape.
-- [ ] Reject zero-message checkpoint shape for idle `Ctrl+C` and terminal prompt failure.
-- [ ] Add structured non-resumable startup/config/schema failure marker on session/run lifecycle or terminal metadata.
-- [ ] Ensure startup/config/schema failure after session/run creation writes normalized audit facts/events, terminalizes, releases ownership if acquired, leaves `latest_checkpoint_id` unset, and writes no terminal checkpoint.
-- [ ] Treat terminal checkpoint creation failure as non-resumable: do not set `latest_checkpoint_id` or present terminal-recoverable status.
-- [ ] Add tests for successful terminal checkpoints, no non-terminal checkpoint writes, zero-message allowed/rejected paths, startup failure non-resumability, checksum validation, minimal frozen execution timeout config validation, frozen reference validation, latest checkpoint semantics, and checkpoint-write failure behavior.
-- [ ] Run canonical verification.
+- [x] Restrict Phase 3 prompt checkpoint writes to `terminal_recovery`.
+- [x] Reject or remove ordinary turn, context, error, stream, trace, UI, and non-terminal provenance checkpoint writes for Phase 3 prompt sessions/runs.
+- [x] Stop Phase 3 prompt-session writes to `context_snapshots`; retain legacy table only as non-authoritative incompatible/unused schema surface if needed by existing code until removed.
+- [x] Narrow `sessions.latest_checkpoint_id` and `runs.latest_checkpoint_id` semantics to terminal recovery checkpoint ids.
+- [x] Add terminal recovery manifest creation with session/run identity, run type, terminal status/reason/error matrix, durable conversation fact cut, projection snapshot, Todo Plan snapshot, approval grant cut, active skill records, frozen snapshots, tool availability references, and artifact refs.
+- [x] Add manifest and payload checksum validation.
+- [x] Add minimal Phase 3 `[execution]` config parsing for `default_shell_timeout_seconds`, `max_shell_timeout_seconds`, and `cancellation_timeout_seconds` with documented defaults.
+- [x] Validate Phase 3 execution timeout config as positive integers and `max_shell_timeout_seconds >= default_shell_timeout_seconds`; invalid values use `config_error/invalid_runtime_config`.
+- [x] Freeze Phase 3 execution timeout values into the session config snapshot so terminal checkpoints can reference the original shell maximum.
+- [x] Validate frozen tool availability references, including `view_image` availability and shell schema limit derived from frozen maximum timeout.
+- [x] Limit Milestone 3 shell timeout work to frozen config/reference validation; do not change `shell_exec.timeout_seconds` runtime behavior, approval signatures, or timeout execution semantics until Milestone 9.
+- [x] Add terminal reasons `terminal_completion`, `user_exit`, `user_cancel_idle`, `terminal_failure`, and `terminal_stale` exactly as specified.
+- [x] Implement zero-message `/exit` and normal graceful shutdown checkpoint shape.
+- [x] Reject zero-message checkpoint shape for idle `Ctrl+C` and terminal prompt failure.
+- [x] Add structured non-resumable startup/config/schema failure marker on session/run lifecycle or terminal metadata.
+- [x] Ensure startup/config/schema failure after session/run creation writes normalized audit facts/events, terminalizes, releases ownership if acquired, leaves `latest_checkpoint_id` unset, and writes no terminal checkpoint.
+- [x] Treat terminal checkpoint creation failure as non-resumable: do not set `latest_checkpoint_id` or present terminal-recoverable status.
+- [x] Add tests for successful terminal checkpoints, no non-terminal checkpoint writes, zero-message allowed/rejected paths, startup failure non-resumability, checksum validation, minimal frozen execution timeout config validation, frozen reference validation, latest checkpoint semantics, and checkpoint-write failure behavior.
+- [x] Run canonical verification.
 
 ## Milestone 4: One-Shot/REPL Lifecycle Unification And Development Gate Removal
 

@@ -70,6 +70,7 @@ def run_repl(
                 usage={},
                 error={
                     "error_class": "cancelled",
+                    "reason": "user_cancel_idle",
                     "message": "REPL interrupted by Ctrl+C.",
                     "source": "cli",
                     "recoverable": False,

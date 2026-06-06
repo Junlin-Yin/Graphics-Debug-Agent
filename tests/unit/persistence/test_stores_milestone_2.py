@@ -21,17 +21,33 @@ def _stores(tmp_path):
         SessionStore(db.connection),
         RunStore(db.connection),
         EventWriter(db.connection, db.path.parent),
-        CheckpointStore(db.connection),
         ArtifactStore(db.connection, db.path.parent),
     )
 
 
 def _create_session_and_run(tmp_path):
-    workspace, db, sessions, runs, events, checkpoints, artifacts = _stores(tmp_path)
+    workspace, db, sessions, runs, events, artifacts = _stores(tmp_path)
+    checkpoints = CheckpointStore(db.connection, artifact_store=artifacts)
     session = sessions.create(
         workspace_root=workspace,
         approval_mode="yolo",
-        config_snapshot={"provider": "anthropic"},
+        config_snapshot={
+            "provider": "anthropic",
+            "execution": {
+                "default_shell_timeout_seconds": 300,
+                "max_shell_timeout_seconds": 300,
+                "cancellation_timeout_seconds": 10,
+            },
+            "multimodal": {
+                "view_image_enabled": False,
+                "view_image_disabled_reason": "missing_multimodal_config",
+                "timeout_seconds": 60,
+                "max_tokens": 4096,
+                "max_query_chars": 8192,
+                "max_analysis_chars": 8192,
+            },
+            "policy": {},
+        },
         session_id="sess_1",
     )
     run = runs.create_prompt_run(session.session_id, run_id="run_1")
@@ -229,7 +245,7 @@ def test_event_writer_appends_events_and_exposes_no_update_or_delete(tmp_path) -
     db.close()
 
 
-def test_checkpoint_store_saves_loads_and_updates_latest_checkpoint(tmp_path) -> None:
+def test_checkpoint_store_rejects_non_terminal_checkpoint_without_latest_update(tmp_path) -> None:
     *_, db, sessions, runs, _events, checkpoints, _artifacts, session, run = (
         _create_session_and_run(tmp_path)
     )
@@ -250,17 +266,20 @@ def test_checkpoint_store_saves_loads_and_updates_latest_checkpoint(tmp_path) ->
         created_at="2026-05-11T00:00:02Z",
     )
 
-    saved = checkpoints.save(checkpoint)
+    try:
+        checkpoints.save(checkpoint)
+    except StoreError as exc:
+        assert "terminal_recovery" in exc.message
+    else:
+        raise AssertionError("Phase 3 must reject non-terminal checkpoint writes")
 
-    assert saved == checkpoint
-    assert checkpoints.get("chk_1") == checkpoint
-    assert checkpoints.latest_for_run(run.run_id) == checkpoint
-    assert sessions.get(session.session_id).latest_checkpoint_id == "chk_1"
-    assert runs.get(run.run_id).latest_checkpoint_id == "chk_1"
+    assert checkpoints.latest_for_run(run.run_id) is None
+    assert sessions.get(session.session_id).latest_checkpoint_id is None
+    assert runs.get(run.run_id).latest_checkpoint_id is None
     db.close()
 
 
-def test_checkpoint_store_accepts_phase_0_checkpoint_kinds(tmp_path) -> None:
+def test_checkpoint_store_rejects_phase_0_checkpoint_kinds(tmp_path) -> None:
     *_, db, _sessions, _runs, _events, checkpoints, _artifacts, session, run = (
         _create_session_and_run(tmp_path)
     )
@@ -275,11 +294,12 @@ def test_checkpoint_store_accepts_phase_0_checkpoint_kinds(tmp_path) -> None:
             summary=None,
             created_at="2026-05-11T00:00:00Z",
         )
-        checkpoints.save(checkpoint)
-
-    assert checkpoints.get("chk_turn").kind == "turn"
-    assert checkpoints.get("chk_terminal").kind == "terminal"
-    assert checkpoints.get("chk_error").kind == "error"
+        try:
+            checkpoints.save(checkpoint)
+        except StoreError as exc:
+            assert "terminal_recovery" in exc.message
+        else:
+            raise AssertionError(f"Phase 3 must reject {kind} checkpoints")
     db.close()
 
 
@@ -346,21 +366,17 @@ def test_fake_session_run_lifecycle_persists_without_model_calls(tmp_path) -> No
             payload={},
         )
     )
-    checkpoint = checkpoints.save(
-        Checkpoint(
-            checkpoint_id="chk_1",
-            session_id=session.session_id,
-            run_id=run.run_id,
-            kind="terminal",
-            state={"session_status": "completed", "run_status": "completed"},
-            summary="done",
-            created_at="2026-05-11T00:00:01Z",
-        )
+    checkpoint = checkpoints.create_terminal_recovery(
+        checkpoint_id="chk_1",
+        session_id=session.session_id,
+        run_id=run.run_id,
+        terminal_status="completed",
+        terminal_reason="user_exit",
+        terminal_error=None,
+        created_at="2026-05-11T00:00:01Z",
     )
-    run = runs.mark_completed(run.run_id, latest_checkpoint_id=checkpoint.checkpoint_id)
-    session = sessions.mark_completed(
-        session.session_id, latest_checkpoint_id=checkpoint.checkpoint_id
-    )
+    run = runs.get(run.run_id)
+    session = sessions.get(session.session_id)
 
     assert session.status == "completed"
     assert run.status == "completed"

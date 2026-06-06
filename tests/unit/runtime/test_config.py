@@ -117,6 +117,8 @@ base_url_env = "ANTHROPIC_BASE_URL"
         },
         "execution": {
             "default_shell_timeout_seconds": 300,
+            "max_shell_timeout_seconds": 3600,
+            "cancellation_timeout_seconds": 10,
         },
         "development": {
             "allow_incomplete_phase3_prompt_execution": False,
@@ -162,6 +164,8 @@ fake_response = "hello"
         },
         "execution": {
             "default_shell_timeout_seconds": 300,
+            "max_shell_timeout_seconds": 3600,
+            "cancellation_timeout_seconds": 10,
         },
         "development": {
             "allow_incomplete_phase3_prompt_execution": False,
@@ -206,6 +210,72 @@ fake_stream_chunks = ["stream", " answer"]
 
     assert result.error is None
     assert result.snapshot["fake_stream_chunks"] == ["stream", " answer"]
+
+
+def test_phase3_execution_timeout_config_freezes_defaults_and_validates_order(
+    tmp_path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    config_dir = home / ".debug-agent"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.toml").write_text(
+        """
+[defaults]
+provider = "fake"
+model = "fake-model"
+fake_response = "hello"
+
+[execution]
+default_shell_timeout_seconds = 120
+max_shell_timeout_seconds = 600
+cancellation_timeout_seconds = 7
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    result = load_config_snapshot()
+
+    assert result.error is None
+    assert result.snapshot["execution"] == {
+        "default_shell_timeout_seconds": 120,
+        "max_shell_timeout_seconds": 600,
+        "cancellation_timeout_seconds": 7,
+    }
+
+
+def test_phase3_execution_timeout_config_rejects_invalid_maximum(
+    tmp_path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    config_dir = home / ".debug-agent"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.toml").write_text(
+        """
+[defaults]
+provider = "fake"
+model = "fake-model"
+
+[execution]
+default_shell_timeout_seconds = 300
+max_shell_timeout_seconds = 299
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    result = load_config_snapshot()
+
+    assert result.snapshot is None
+    assert result.error == ConfigError(
+        error_class="config_error",
+        message=(
+            "execution.max_shell_timeout_seconds must be greater than or equal "
+            "to execution.default_shell_timeout_seconds."
+        ),
+        source="config",
+        recoverable=True,
+    )
 
 
 def test_unsupported_provider_returns_config_error(tmp_path, monkeypatch) -> None:

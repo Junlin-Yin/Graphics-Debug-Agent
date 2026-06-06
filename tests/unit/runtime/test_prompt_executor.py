@@ -269,7 +269,7 @@ def _provider_message_content(message: object) -> str:
     return str(getattr(message, "content", ""))
 
 
-def test_prompt_executor_writes_model_events_assistant_event_and_turn_checkpoint(
+def test_prompt_executor_writes_model_events_assistant_event_without_turn_checkpoint(
     tmp_path,
 ) -> None:
     (
@@ -300,26 +300,17 @@ def test_prompt_executor_writes_model_events_assistant_event_and_turn_checkpoint
         "model_call_started",
         "model_call_completed",
         "assistant_message",
-        "checkpoint_written",
     ]
     assert persisted_events[2].payload["duration"] >= 0
     assert persisted_events[2].payload["content"] == "assistant answer"
     assert persisted_events[2].payload["tool_calls"] == []
     assert persisted_events[2].payload["artifact_ids"] == []
     assert persisted_events[2].payload["redacted_output"] is None
-    assert latest_checkpoint.kind == "turn"
-    assert latest_checkpoint.state["session_status"] == "running"
-    assert latest_checkpoint.state["run_status"] == "running"
-    assert latest_checkpoint.state["prompt_turn_counter"] == 1
-    checkpoint_metadata = latest_checkpoint.state["latest_model_response_metadata"]
-    assert checkpoint_metadata["context_estimate"] == result.metadata["context_estimate"]
-    assert checkpoint_metadata["query_state"]["continuation_reason"] == (
-        "final_assistant_response"
-    )
+    assert latest_checkpoint is None
     assert sessions.get(session.session_id).status == "running"
     assert runs.get(run.run_id).status == "running"
-    assert sessions.get(session.session_id).latest_checkpoint_id == latest_checkpoint.checkpoint_id
-    assert runs.get(run.run_id).latest_checkpoint_id == latest_checkpoint.checkpoint_id
+    assert sessions.get(session.session_id).latest_checkpoint_id is None
+    assert runs.get(run.run_id).latest_checkpoint_id is None
     db.close()
 
 
@@ -385,7 +376,6 @@ def test_prompt_executor_records_model_completion_before_react_tool_events(
         "model_call_started",
         "model_call_completed",
         "assistant_message",
-        "checkpoint_written",
     ]
     first_model_completed = events.list_for_run(run.run_id)[2]
     assert first_model_completed.payload["content"] == ""
@@ -772,8 +762,8 @@ def test_tool_loop_followup_runs_omission_before_second_model_call(tmp_path) -> 
     assert "full old tool output" not in second_call_text
     assert result.metadata["context_optimization"]["trigger"] == "omission"
     assert result.metadata["conversation_writeback"][2]["content"] == marker
-    assert runs.get(run.run_id).context_snapshot_id is not None
-    assert any(checkpoint.kind == "context" for checkpoint in checkpoints.list_for_session(session.session_id))
+    assert runs.get(run.run_id).context_snapshot_id is None
+    assert checkpoints.list_for_session(session.session_id) == []
     assert [event.kind for event in events.list_for_run(run.run_id)].count(
         "context_optimized"
     ) == 1
@@ -1039,9 +1029,7 @@ def test_tool_loop_followup_compression_failure_preserves_boundary(tmp_path) -> 
     persisted = events.list_for_run(run.run_id)
     assert "compression_failed" in [event.kind for event in persisted]
     assert "assistant_message" not in [event.kind for event in persisted]
-    assert [checkpoint.kind for checkpoint in checkpoints.list_for_session(session.session_id)] == [
-        "context"
-    ]
+    assert checkpoints.list_for_session(session.session_id) == []
     assert runs.get(run.run_id).status == "running"
     assert db.connection.execute(
         "SELECT COUNT(*) FROM context_snapshots WHERE run_id = ?",
@@ -1170,9 +1158,7 @@ def test_tool_loop_followup_omission_then_compression_failure_does_not_write_bac
     ]
     assert marker not in writeback_contents
     assert long_tool_output in writeback_contents
-    assert [checkpoint.kind for checkpoint in checkpoints.list_for_session(session.session_id)] == [
-        "context"
-    ]
+    assert checkpoints.list_for_session(session.session_id) == []
     assert db.connection.execute(
         "SELECT COUNT(*) FROM context_snapshots WHERE run_id = ?",
         (run.run_id,),
@@ -1639,7 +1625,6 @@ def test_prompt_executor_uses_stream_path_when_callback_is_supplied(tmp_path) ->
     assert [event.kind for event in events.list_for_run(run.run_id)] == [
         "user_message",
         "assistant_message",
-        "checkpoint_written",
     ]
     db.close()
 
@@ -1791,12 +1776,11 @@ def test_prompt_executor_does_not_persist_agent_stream_events(tmp_path) -> None:
     assert persisted_kinds == [
         "user_message",
         "assistant_message",
-        "checkpoint_written",
     ]
     db.close()
 
 
-def test_prompt_executor_writes_failed_model_event_and_error_checkpoint(tmp_path) -> None:
+def test_prompt_executor_writes_failed_model_event_without_error_checkpoint(tmp_path) -> None:
     (
         workspace,
         db,
@@ -1824,7 +1808,6 @@ def test_prompt_executor_writes_failed_model_event_and_error_checkpoint(tmp_path
         "user_message",
         "model_call_started",
         "model_call_failed",
-        "checkpoint_written",
     ]
     failed_event = events.list_for_run(run.run_id)[2]
     assert failed_event.payload["error"] == {
@@ -1842,8 +1825,7 @@ def test_prompt_executor_writes_failed_model_event_and_error_checkpoint(tmp_path
     assert failed_event.payload["source"] == "model"
     assert failed_event.payload["recoverable"] is True
     assert failed_event.payload["duration"] >= 0
-    assert latest_checkpoint.kind == "error"
-    assert latest_checkpoint.state["latest_error_summary"] == "provider failed"
+    assert latest_checkpoint is None
     assert sessions.get(session.session_id).status == "running"
     assert runs.get(run.run_id).status == "running"
     db.close()
@@ -1978,47 +1960,16 @@ def test_prompt_executor_omits_old_tool_results_and_persists_context_snapshot(
         result.metadata["context_optimization"]["reduced_from_tokens"]
     )
 
-    row = db.connection.execute(
-        """
-        SELECT context_snapshot_id, trigger, summary, retained_messages_json,
-               omitted_tool_result_count, artifact_refs_json, token_estimate_json,
-               payload_artifact_id
-        FROM context_snapshots
-        WHERE run_id = ?
-        """,
+    assert db.connection.execute(
+        "SELECT COUNT(*) FROM context_snapshots WHERE run_id = ?",
         (run.run_id,),
-    ).fetchone()
-    assert row is not None
-    assert row[1] == "omission"
-    assert row[2] == ""
-    assert row[4] == 1
-    assert row[5] == '["art_full"]'
-    token_estimate = json.loads(row[6])
-    assert token_estimate["before"] == result.metadata["context_estimate_history"][0]
-    assert token_estimate["after"] == result.metadata["context_estimate"]
-    assert row[7] is None
-    assert runs.get(run.run_id).context_snapshot_id == row[0]
-
-    persisted_checkpoints = checkpoints.list_for_session(session.session_id)
-    context_checkpoint = next(
-        checkpoint for checkpoint in persisted_checkpoints if checkpoint.kind == "context"
-    )
-    assert context_checkpoint.state == {
-        "session_status": "running",
-        "run_status": "running",
-        "prompt_turn_counter": 1,
-        "context_snapshot_id": row[0],
-        "active_skill_records": [],
-        "latest_artifact_ids": ["art_full"],
-        "latest_error_summary": None,
-        "token_estimate": {
-            "before": result.metadata["context_estimate_history"][0],
-            "after": result.metadata["context_estimate"],
-        },
-    }
-    assert checkpoints.latest_for_run(run.run_id).kind == "turn"
+    ).fetchone()[0] == 0
+    assert runs.get(run.run_id).context_snapshot_id is None
+    assert checkpoints.list_for_session(session.session_id) == []
+    assert checkpoints.latest_for_run(run.run_id) is None
     context_events = [event for event in events.list_for_run(run.run_id) if event.kind == "context_optimized"]
-    assert context_events[0].payload["context_snapshot_id"] == row[0]
+    assert "context_snapshot_id" not in context_events[0].payload
+    assert "checkpoint_id" not in context_events[0].payload
     assert context_events[0].payload["reduced_to_tokens"] == (
         result.metadata["context_estimate"]["total_tokens"]
     )
@@ -2166,15 +2117,11 @@ def test_prompt_executor_automatically_compresses_before_initial_model_call(
     ]
     assert events.list_for_run(run.run_id)[1].payload["purpose"] == "compression"
     assert events.list_for_run(run.run_id)[1].payload["tool_schema_bindings"] == []
-    row = db.connection.execute(
-        "SELECT trigger, summary, evicted_message_count, evicted_model_call_group_count FROM context_snapshots WHERE run_id = ?",
+    assert db.connection.execute(
+        "SELECT COUNT(*) FROM context_snapshots WHERE run_id = ?",
         (run.run_id,),
-    ).fetchone()
-    assert row[0] == "compression"
-    assert '"visible_artifact_refs":["art_old"]' in row[1]
-    assert row[2] == 2
-    assert row[3] == 1
-    assert any(checkpoint.kind == "context" for checkpoint in checkpoints.list_for_session(session.session_id))
+    ).fetchone()[0] == 0
+    assert checkpoints.list_for_session(session.session_id) == []
     db.close()
 
 
@@ -2277,20 +2224,13 @@ def test_prompt_executor_compression_failure_aborts_without_conversation_mutatio
         "model_call_started",
         "model_call_completed",
         "compression_failed",
-        "checkpoint_written",
     ]
     assert persisted[1].payload["purpose"] == "compression"
     assert persisted[3].payload["error_class"] == "compression_failed"
     assert persisted[3].payload["error"]["error_class"] == "model_error"
     assert persisted[3].payload["error"]["reason"] == "compression_failed"
     assert persisted[3].payload["error"]["scope"] == "turn"
-    context_checkpoint = next(
-        checkpoint for checkpoint in checkpoints.list_for_session(session.session_id)
-        if checkpoint.kind == "context"
-    )
-    assert context_checkpoint.state["latest_error_summary"] == (
-        "Context compression failed. The current turn was aborted."
-    )
+    assert checkpoints.list_for_session(session.session_id) == []
     durable_rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
         run.run_id
     )
@@ -2374,18 +2314,13 @@ def test_prompt_executor_context_limit_exceeded_aborts_without_model_call(
     assert [event.kind for event in persisted] == [
         "user_message",
         "context_limit_exceeded",
-        "checkpoint_written",
     ]
     assert persisted[1].payload["message"] == expected_message
     assert persisted[1].payload["error_class"] == "context_limit_exceeded"
     assert persisted[1].payload["error"]["error_class"] == "model_error"
     assert persisted[1].payload["error"]["reason"] == "context_limit_exceeded"
     assert persisted[1].payload["error"]["scope"] == "turn"
-    context_checkpoint = checkpoints.latest_for_run(run.run_id)
-    assert context_checkpoint.kind == "context"
-    assert context_checkpoint.state["error_class"] == "context_limit_exceeded"
-    assert context_checkpoint.state["session_status"] == "running"
-    assert context_checkpoint.state["run_status"] == "running"
+    assert checkpoints.latest_for_run(run.run_id) is None
     durable_rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
         run.run_id
     )
@@ -2545,15 +2480,15 @@ def test_prompt_executor_manual_compress_success_writes_snapshot_and_message(
     assert result.metadata["context_optimization"]["trigger"] == "manual"
     assert result.metadata["conversation_writeback"][0]["kind"] == "context_summary"
     assert db.connection.execute(
-        "SELECT trigger FROM context_snapshots WHERE run_id = ?",
+        "SELECT COUNT(*) FROM context_snapshots WHERE run_id = ?",
         (run.run_id,),
-    ).fetchone()[0] == "manual"
+    ).fetchone()[0] == 0
     assert [event.kind for event in events.list_for_run(run.run_id)] == [
         "model_call_started",
         "model_call_completed",
         "context_optimized",
     ]
-    assert checkpoints.latest_for_run(run.run_id).kind == "context"
+    assert checkpoints.latest_for_run(run.run_id) is None
     durable_rows = ConversationStore(
         db.connection,
         artifact_store=artifacts,
@@ -2669,12 +2604,9 @@ def test_prompt_executor_manual_compress_oldest_group_failure_preserves_boundary
     persisted = events.list_for_run(run.run_id)
     assert [event.kind for event in persisted] == [
         "compression_failed",
-        "checkpoint_written",
     ]
     assert persisted[0].payload["message"] == expected_message
-    assert checkpoints.latest_for_run(run.run_id).state["latest_error_summary"] == (
-        expected_message
-    )
+    assert checkpoints.latest_for_run(run.run_id) is None
     assert runs.get(run.run_id).status == "running"
     db.close()
 
@@ -2787,16 +2719,16 @@ def test_omission_plus_compression_writes_only_final_snapshot(tmp_path) -> None:
         conversation=conversation,
     )
 
-    rows = db.connection.execute(
-        "SELECT trigger FROM context_snapshots WHERE run_id = ?",
+    snapshot_count = db.connection.execute(
+        "SELECT COUNT(*) FROM context_snapshots WHERE run_id = ?",
         (run.run_id,),
-    ).fetchall()
+    ).fetchone()[0]
     context_events = [
         event for event in events.list_for_run(run.run_id)
         if event.kind == "context_optimized"
     ]
     assert result.status == "completed"
-    assert rows == [("omission | compression",)]
+    assert snapshot_count == 0
     assert [event.payload["trigger"] for event in context_events] == [
         "omission | compression"
     ]

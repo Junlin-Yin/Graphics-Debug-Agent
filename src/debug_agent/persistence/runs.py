@@ -40,9 +40,10 @@ class RunStore:
             INSERT INTO runs (
                 run_id, session_id, parent_run_id, run_type, status,
                 active_skills_json, latest_checkpoint_id, context_snapshot_id,
-                created_at, updated_at, error_summary, version
+                created_at, updated_at, error_summary, terminal_reason,
+                terminal_error_json, non_resumable_startup_failure, version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run.run_id,
@@ -56,6 +57,9 @@ class RunStore:
                 run.created_at,
                 run.updated_at,
                 run.error_summary,
+                run.terminal_reason,
+                None,
+                1 if run.non_resumable_startup_failure else 0,
                 run.version,
             ),
         )
@@ -67,7 +71,8 @@ class RunStore:
             """
             SELECT run_id, session_id, parent_run_id, run_type, status,
                    active_skills_json, latest_checkpoint_id, context_snapshot_id,
-                   created_at, updated_at, error_summary, version
+                   created_at, updated_at, error_summary, terminal_reason,
+                   terminal_error_json, non_resumable_startup_failure, version
             FROM runs
             WHERE run_id = ?
             """,
@@ -86,7 +91,8 @@ class RunStore:
             """
             SELECT run_id, session_id, parent_run_id, run_type, status,
                    active_skills_json, latest_checkpoint_id, context_snapshot_id,
-                   created_at, updated_at, error_summary, version
+                   created_at, updated_at, error_summary, terminal_reason,
+                   terminal_error_json, non_resumable_startup_failure, version
             FROM runs
             WHERE session_id = ?
             ORDER BY created_at DESC, rowid DESC
@@ -101,7 +107,8 @@ class RunStore:
             """
             SELECT run_id, session_id, parent_run_id, run_type, status,
                    active_skills_json, latest_checkpoint_id, context_snapshot_id,
-                   created_at, updated_at, error_summary, version
+                   created_at, updated_at, error_summary, terminal_reason,
+                   terminal_error_json, non_resumable_startup_failure, version
             FROM runs
             WHERE session_id = ?
             ORDER BY created_at ASC, rowid ASC
@@ -118,6 +125,9 @@ class RunStore:
             status="completed",
             error_summary=None,
             latest_checkpoint_id=latest_checkpoint_id,
+            terminal_reason=None,
+            terminal_error=None,
+            non_resumable_startup_failure=False,
         )
 
     def mark_failed(
@@ -131,6 +141,20 @@ class RunStore:
             status="failed",
             error_summary=error_summary,
             latest_checkpoint_id=latest_checkpoint_id,
+            terminal_reason=None,
+            terminal_error=None,
+            non_resumable_startup_failure=False,
+        )
+
+    def mark_startup_failure(self, run_id: str, error_summary: str) -> Run:
+        return self._mark_terminal(
+            run_id,
+            status="failed",
+            error_summary=error_summary,
+            latest_checkpoint_id=None,
+            terminal_reason="startup_failure",
+            terminal_error=None,
+            non_resumable_startup_failure=True,
         )
 
     def activate_skill(
@@ -195,6 +219,9 @@ class RunStore:
         status: str,
         error_summary: str | None,
         latest_checkpoint_id: str | None,
+        terminal_reason: str | None,
+        terminal_error: dict | None,
+        non_resumable_startup_failure: bool,
     ) -> Run:
         current = self.get(run_id)
         if current.status != "running":
@@ -207,10 +234,22 @@ class RunStore:
             """
             UPDATE runs
             SET status = ?, latest_checkpoint_id = ?, error_summary = ?,
-                updated_at = ?
+                terminal_reason = ?, terminal_error_json = ?,
+                non_resumable_startup_failure = ?, updated_at = ?
             WHERE run_id = ?
             """,
-            (status, latest_checkpoint_id, error_summary, now, run_id),
+            (
+                status,
+                latest_checkpoint_id,
+                error_summary,
+                terminal_reason,
+                None
+                if terminal_error is None
+                else json.dumps(terminal_error, ensure_ascii=False, sort_keys=True),
+                1 if non_resumable_startup_failure else 0,
+                now,
+                run_id,
+            ),
         )
         self.connection.commit()
         return self.get(run_id)
@@ -229,5 +268,8 @@ def _run_from_row(row: tuple) -> Run:
         created_at=row[8],
         updated_at=row[9],
         error_summary=row[10],
-        version=row[11],
+        terminal_reason=row[11],
+        terminal_error=None if row[12] is None else json.loads(row[12]),
+        non_resumable_startup_failure=bool(row[13]),
+        version=row[14],
     )

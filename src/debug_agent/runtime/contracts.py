@@ -47,7 +47,7 @@ RUN_EVENT_KINDS = frozenset(
         "todo_updated",
     }
 )
-CHECKPOINT_KINDS = frozenset({"turn", "terminal", "error", "context"})
+CHECKPOINT_KINDS = frozenset({"turn", "terminal", "error", "context", "terminal_recovery"})
 ARTIFACT_TYPES = frozenset({"image", "rdc", "text"})
 TOOL_RESULT_STATUSES = frozenset({"ok", "error", "denied", "timeout", "cancelled"})
 AGENT_RUN_RESULT_STATUSES = frozenset(
@@ -92,6 +92,9 @@ class Session:
     created_at: str
     updated_at: str
     error_summary: str | None
+    terminal_reason: str | None = None
+    terminal_error: dict[str, Any] | None = None
+    non_resumable_startup_failure: bool = False
     version: int = CONTRACT_VERSION
 
     def __post_init__(self) -> None:
@@ -134,6 +137,9 @@ class Run:
     created_at: str
     updated_at: str
     error_summary: str | None
+    terminal_reason: str | None = None
+    terminal_error: dict[str, Any] | None = None
+    non_resumable_startup_failure: bool = False
     version: int = CONTRACT_VERSION
 
     def __post_init__(self) -> None:

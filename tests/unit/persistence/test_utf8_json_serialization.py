@@ -17,12 +17,33 @@ from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
 from debug_agent.persistence.todo_plans import TodoPlanStore
 from debug_agent.runtime.context_manager import ContextManager
-from debug_agent.runtime.contracts import Checkpoint, RunEvent, utc_now_iso
+from debug_agent.runtime.contracts import RunEvent, utc_now_iso
 from debug_agent.runtime.model_context import ConversationMessage
 from debug_agent.skills.registry import SkillSnapshot
 
 
 UNICODE_TEXT = "中文调试"
+
+
+def _phase3_config_snapshot() -> dict:
+    return {
+        "provider": "fake",
+        "model": "fake-model",
+        "note": UNICODE_TEXT,
+        "execution": {
+            "default_shell_timeout_seconds": 300,
+            "max_shell_timeout_seconds": 300,
+            "cancellation_timeout_seconds": 10,
+        },
+        "multimodal": {
+            "view_image_enabled": False,
+            "view_image_disabled_reason": "not_configured",
+            "timeout_seconds": 60,
+            "max_tokens": 4096,
+            "max_query_chars": 2000,
+            "max_analysis_chars": 4000,
+        },
+    }
 
 
 def _runtime(tmp_path):
@@ -34,7 +55,7 @@ def _runtime(tmp_path):
     session = sessions.create(
         workspace_root=workspace,
         approval_mode="yolo",
-        config_snapshot={"note": UNICODE_TEXT},
+        config_snapshot=_phase3_config_snapshot(),
         session_id="sess_utf8",
     )
     run = runs.create_prompt_run(session.session_id, run_id="run_utf8")
@@ -74,16 +95,14 @@ def test_runtime_json_columns_preserve_non_ascii_text(tmp_path) -> None:
             payload={"content": UNICODE_TEXT},
         )
     )
-    checkpoints.save(
-        Checkpoint(
-            checkpoint_id="chk_utf8",
-            session_id=session.session_id,
-            run_id=run.run_id,
-            kind="turn",
-            state={"latest_error_summary": UNICODE_TEXT},
-            summary=UNICODE_TEXT,
-            created_at=utc_now_iso(),
-        )
+    checkpoints.create_terminal_recovery(
+        checkpoint_id="chk_utf8",
+        session_id=session.session_id,
+        run_id=run.run_id,
+        terminal_status="completed",
+        terminal_reason="user_exit",
+        terminal_error=None,
+        created_at=utc_now_iso(),
     )
     artifacts.write_text(
         session_id=session.session_id,

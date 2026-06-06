@@ -22,7 +22,7 @@ from debug_agent.observability.logging import write_runtime_log
 from debug_agent.observability.trace_writer import TraceWriter
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.checkpoints import CheckpointStore
-from debug_agent.persistence.conversation import ConversationStore
+from debug_agent.persistence.conversation import ConversationAppend, ConversationStore
 from debug_agent.persistence.errors import StoreError
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
@@ -30,11 +30,14 @@ from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeBootstrapError, RuntimeDatabase
 from debug_agent.persistence.todo_plans import TodoPlanStore
-from debug_agent.runtime.config import PHASE_0_SYSTEM_PROMPT
+from debug_agent.runtime.config import (
+    EXECUTION_DEFAULTS,
+    MULTIMODAL_LIMIT_DEFAULTS,
+    PHASE_0_SYSTEM_PROMPT,
+)
 from debug_agent.runtime.contracts import (
     APPROVAL_MODES,
     AgentRunResult,
-    Checkpoint,
     RunEvent,
     utc_now_iso,
 )
@@ -340,23 +343,15 @@ class ReplRuntime:
                 return
             session = self.sessions.get(self.session_id)
             run = self.runs.get(self.run_id)
-            checkpoint = self.checkpoints.save(
-                Checkpoint(
-                    checkpoint_id=f"chk_{uuid4().hex}",
-                    session_id=session.session_id,
-                    run_id=run.run_id,
-                    kind="terminal",
-                    state={
-                        "session_status": "completed",
-                        "run_status": "completed",
-                        "prompt_turn_counter": self.turn_counter,
-                        "latest_model_response_metadata": {},
-                        "latest_artifact_ids": [],
-                        "latest_error_summary": None,
-                    },
-                    summary="REPL exited through /exit.",
-                    created_at=utc_now_iso(),
-                )
+            checkpoint = self.checkpoints.terminalize_with_recovery_checkpoint(
+                checkpoint_id=f"chk_{uuid4().hex}",
+                session_id=session.session_id,
+                run_id=run.run_id,
+                terminal_status="completed",
+                terminal_reason="user_exit",
+                terminal_error=None,
+                error_summary=None,
+                created_at=utc_now_iso(),
             )
             _append_event(
                 self.events,
@@ -365,12 +360,8 @@ class ReplRuntime:
                 "checkpoint_written",
                 {"checkpoint_id": checkpoint.checkpoint_id, "kind": checkpoint.kind},
             )
-            run = self.runs.mark_completed(
-                run.run_id, latest_checkpoint_id=checkpoint.checkpoint_id
-            )
-            session = self.sessions.mark_completed(
-                session.session_id, latest_checkpoint_id=checkpoint.checkpoint_id
-            )
+            run = self.runs.get(run.run_id)
+            session = self.sessions.get(session.session_id)
             _append_event(self.events, session.session_id, run.run_id, "run_completed", {})
             _append_event(
                 self.events, session.session_id, run.run_id, "session_completed", {}
@@ -437,7 +428,7 @@ class RuntimeOrchestrator:
         policy_result = self._freeze_policy(config_snapshot)
         if isinstance(policy_result, OneShotResult):
             return policy_result
-        config_snapshot = policy_result
+        config_snapshot = _ensure_phase3_frozen_runtime_defaults(policy_result)
         gate_error = _phase3_prompt_execution_gate_error(config_snapshot)
         if gate_error is not None:
             return OneShotResult(
@@ -456,8 +447,8 @@ class RuntimeOrchestrator:
         sessions = SessionStore(db.connection)
         runs = RunStore(db.connection)
         events = EventWriter(db.connection, sessions_root)
-        checkpoints = CheckpointStore(db.connection)
         artifacts = ArtifactStore(db.connection, sessions_root)
+        checkpoints = CheckpointStore(db.connection, artifact_store=artifacts)
         try:
             try:
                 session = sessions.create(
@@ -520,6 +511,7 @@ class RuntimeOrchestrator:
                         error=startup_error,
                         metadata={"prompt_turn_counter": 0},
                     ),
+                    startup_failure=True,
                 )
                 return OneShotResult(
                     exit_code=1,
@@ -548,6 +540,7 @@ class RuntimeOrchestrator:
                         error=model_result.error,
                         metadata={"prompt_turn_counter": 0},
                     ),
+                    startup_failure=True,
                 )
                 return OneShotResult(
                     exit_code=ERROR_STARTUP_CONFIG,
@@ -586,25 +579,16 @@ class RuntimeOrchestrator:
                 workspace_root=str(self.workspace_root),
             )
             if agent_result.status == "completed":
-                terminal_checkpoint = checkpoints.save(
-                    Checkpoint(
-                        checkpoint_id=f"chk_{uuid4().hex}",
-                        session_id=session.session_id,
-                        run_id=run.run_id,
-                        kind="terminal",
-                        state={
-                            "session_status": "completed",
-                            "run_status": "completed",
-                            "prompt_turn_counter": 1,
-                            "latest_model_response_metadata": _serializable_metadata(
-                                agent_result.metadata
-                            ),
-                            "latest_artifact_ids": _artifact_ids(agent_result),
-                            "latest_error_summary": None,
-                        },
-                        summary="One-shot completed successfully.",
-                        created_at=utc_now_iso(),
-                    )
+                terminal_checkpoint = checkpoints.terminalize_with_recovery_checkpoint(
+                    checkpoint_id=f"chk_{uuid4().hex}",
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    terminal_status="completed",
+                    terminal_reason="terminal_completion",
+                    terminal_error=None,
+                    error_summary=None,
+                    created_at=utc_now_iso(),
+                    artifact_ids=_artifact_ids(agent_result),
                 )
                 _append_event(
                     events,
@@ -616,14 +600,8 @@ class RuntimeOrchestrator:
                         "kind": terminal_checkpoint.kind,
                     },
                 )
-                run = runs.mark_completed(
-                    run.run_id,
-                    latest_checkpoint_id=terminal_checkpoint.checkpoint_id,
-                )
-                session = sessions.mark_completed(
-                    session.session_id,
-                    latest_checkpoint_id=terminal_checkpoint.checkpoint_id,
-                )
+                run = runs.get(run.run_id)
+                session = sessions.get(session.session_id)
                 _append_event(events, session.session_id, run.run_id, "run_completed", {})
                 _append_event(events, session.session_id, run.run_id, "session_completed", {})
                 TraceWriter(db.connection, sessions_root).refresh_if_stale(
@@ -816,7 +794,8 @@ class RuntimeOrchestrator:
         sessions = SessionStore(db.connection)
         runs = RunStore(db.connection)
         events = EventWriter(db.connection, sessions_root)
-        checkpoints = CheckpointStore(db.connection)
+        artifacts = ArtifactStore(db.connection, sessions_root)
+        checkpoints = CheckpointStore(db.connection, artifact_store=artifacts)
         try:
             session = sessions.find_active_for_workspace(self.workspace_root)
             error = {
@@ -895,7 +874,7 @@ class RuntimeOrchestrator:
                     error=policy_result.error,
                 ),
             )
-        config_snapshot = policy_result
+        config_snapshot = _ensure_phase3_frozen_runtime_defaults(policy_result)
         gate_error = _phase3_prompt_execution_gate_error(config_snapshot)
         if gate_error is not None:
             return ReplStartResult(
@@ -927,8 +906,8 @@ class RuntimeOrchestrator:
         sessions = SessionStore(db.connection)
         runs = RunStore(db.connection)
         events = EventWriter(db.connection, sessions_root)
-        checkpoints = CheckpointStore(db.connection)
         artifacts = ArtifactStore(db.connection, sessions_root)
+        checkpoints = CheckpointStore(db.connection, artifact_store=artifacts)
 
         try:
             session = sessions.create(
@@ -993,6 +972,7 @@ class RuntimeOrchestrator:
                     error=startup_error,
                     metadata={"prompt_turn_counter": 0},
                 ),
+                startup_failure=True,
             )
             db.close()
             return ReplStartResult(
@@ -1022,6 +1002,7 @@ class RuntimeOrchestrator:
                     error=model_result.error,
                     metadata={"prompt_turn_counter": 0},
                 ),
+                startup_failure=True,
             )
             db.close()
             return ReplStartResult(
@@ -1294,6 +1275,7 @@ def _mark_failed_terminal(
     session_id: str,
     run_id: str,
     agent_result: AgentRunResult,
+    startup_failure: bool = False,
 ) -> OneShotResult:
     error = agent_result.error or {
         "error_class": "internal_error",
@@ -1305,52 +1287,79 @@ def _mark_failed_terminal(
         error,
         result_metadata=agent_result.metadata,
     )
-    latest_run = runs.get(run_id)
-    latest_session = sessions.get(session_id)
-    latest_checkpoint_id = latest_run.latest_checkpoint_id
-    if checkpoints is not None:
-        latest_checkpoint = checkpoints.latest_for_run(run_id)
-        if latest_checkpoint is None or latest_checkpoint.kind != "error":
-            checkpoint = checkpoints.save(
-                Checkpoint(
+    latest_checkpoint_id = None
+    if startup_failure:
+        run = runs.mark_startup_failure(run_id, error["message"])
+        session = sessions.mark_startup_failure(session_id, error["message"])
+    else:
+        terminal_reason = "terminal_failure"
+        if terminal_error.get("error_class") == "cancelled" and terminal_error.get(
+            "reason"
+        ) == "user_cancel_idle":
+            terminal_reason = "user_cancel_idle"
+            ConversationStore(runs.connection).append_closed_group(
+                session_id=session_id,
+                run_id=run_id,
+                messages=[
+                    ConversationAppend(
+                        turn_id=None,
+                        message_group_id=f"{run_id}:user_cancel_idle",
+                        model_call_id=None,
+                        group_position=0,
+                        group_row_count=1,
+                        role="runtime",
+                        kind="cancellation_fact",
+                        content={
+                            "error_class": "cancelled",
+                            "reason": "user_cancel_idle",
+                            "message": terminal_error.get(
+                                "message", "REPL interrupted by Ctrl+C."
+                            ),
+                            "artifact_ids": terminal_error.get("artifact_ids", []),
+                        },
+                        metadata={
+                            "error_class": "cancelled",
+                            "reason": "user_cancel_idle",
+                        },
+                    )
+                ],
+            )
+        if checkpoints is not None:
+            try:
+                checkpoint = checkpoints.terminalize_with_recovery_checkpoint(
                     checkpoint_id=f"chk_{uuid4().hex}",
                     session_id=session_id,
                     run_id=run_id,
-                    kind="error",
-                    state={
-                        "session_status": latest_session.status,
-                        "run_status": latest_run.status,
-                        "prompt_turn_counter": agent_result.metadata.get(
-                            "prompt_turn_counter", 0
-                        ),
-                        "latest_model_response_metadata": _serializable_metadata(
-                            agent_result.metadata
-                        ),
-                        "latest_artifact_ids": [],
-                        "latest_error_summary": error["message"],
-                    },
-                    summary=error["message"],
+                    terminal_status="failed",
+                    terminal_reason=terminal_reason,
+                    terminal_error=terminal_error,
+                    error_summary=error["message"],
                     created_at=utc_now_iso(),
+                    artifact_ids=[],
                 )
-            )
-            _append_event(
-                events,
-                session_id,
+                _append_event(
+                    events,
+                    session_id,
+                    run_id,
+                    "checkpoint_written",
+                    {"checkpoint_id": checkpoint.checkpoint_id, "kind": checkpoint.kind},
+                )
+                latest_checkpoint_id = checkpoint.checkpoint_id
+                run = runs.get(run_id)
+                session = sessions.get(session_id)
+            except StoreError:
+                latest_checkpoint_id = None
+        if latest_checkpoint_id is None:
+            run = runs.mark_failed(
                 run_id,
-                "checkpoint_written",
-                {"checkpoint_id": checkpoint.checkpoint_id, "kind": checkpoint.kind},
+                error["message"],
+                latest_checkpoint_id=None,
             )
-            latest_checkpoint_id = checkpoint.checkpoint_id
-    run = runs.mark_failed(
-        run_id,
-        error["message"],
-        latest_checkpoint_id=latest_checkpoint_id,
-    )
-    session = sessions.mark_failed(
-        session_id,
-        error["message"],
-        latest_checkpoint_id=latest_checkpoint_id,
-    )
+            session = sessions.mark_failed(
+                session_id,
+                error["message"],
+                latest_checkpoint_id=None,
+            )
     _append_event(
         events,
         session.session_id,
@@ -1417,6 +1426,29 @@ def _phase3_prompt_execution_gate_error(
         "source": "orchestrator",
         "recoverable": True,
     }
+
+
+def _ensure_phase3_frozen_runtime_defaults(config_snapshot: dict[str, Any]) -> dict[str, Any]:
+    frozen = dict(config_snapshot)
+    execution = frozen.get("execution")
+    if not isinstance(execution, dict):
+        frozen["execution"] = dict(EXECUTION_DEFAULTS)
+    else:
+        frozen["execution"] = {**EXECUTION_DEFAULTS, **execution}
+    multimodal = frozen.get("multimodal")
+    if not isinstance(multimodal, dict):
+        frozen["multimodal"] = {
+            "provider": None,
+            "model": None,
+            **MULTIMODAL_LIMIT_DEFAULTS,
+            "api_key_env": None,
+            "api_key_present": False,
+            "base_url_env": None,
+            "base_url_present": False,
+            "view_image_enabled": False,
+            "view_image_disabled_reason": "missing_multimodal_config",
+        }
+    return frozen
 
 
 def _startup_success_message(db: RuntimeDatabase, message: str) -> str:

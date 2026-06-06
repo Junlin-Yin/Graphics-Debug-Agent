@@ -51,7 +51,7 @@ allow_incomplete_phase3_prompt_execution = true
         checkpoint_kinds = [
             row[0] for row in conn.execute("SELECT kind FROM checkpoints ORDER BY rowid")
         ]
-        assert checkpoint_kinds == ["turn", "terminal"]
+        assert checkpoint_kinds == ["terminal_recovery"]
 
 
 def test_debug_agent_one_shot_semi_auto_skill_activation_is_audit_only(
@@ -216,7 +216,7 @@ allow_incomplete_phase3_prompt_execution = true
         assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "failed"
         assert conn.execute("SELECT status FROM runs").fetchone()[0] == "failed"
         assert conn.execute("SELECT active_run_id FROM sessions").fetchone()[0] is None
-        assert conn.execute("SELECT kind FROM checkpoints").fetchone()[0] == "error"
+        assert conn.execute("SELECT kind FROM checkpoints").fetchone()[0] == "terminal_recovery"
 
 
 def test_debug_agent_one_shot_model_timeout_records_terminal_failure(tmp_path) -> None:
@@ -254,4 +254,4 @@ allow_incomplete_phase3_prompt_execution = true
         assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "failed"
         assert conn.execute("SELECT status FROM runs").fetchone()[0] == "failed"
         assert conn.execute("SELECT active_run_id FROM sessions").fetchone()[0] is None
-        assert conn.execute("SELECT kind FROM checkpoints").fetchone()[0] == "error"
+        assert conn.execute("SELECT kind FROM checkpoints").fetchone()[0] == "terminal_recovery"

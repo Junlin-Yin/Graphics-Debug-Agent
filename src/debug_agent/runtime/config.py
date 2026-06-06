@@ -29,6 +29,8 @@ CONTEXT_DEFAULTS: dict[str, Any] = {
 
 EXECUTION_DEFAULTS: dict[str, Any] = {
     "default_shell_timeout_seconds": 300,
+    "max_shell_timeout_seconds": 3600,
+    "cancellation_timeout_seconds": 10,
 }
 
 MULTIMODAL_LIMIT_DEFAULTS: dict[str, int] = {
@@ -247,7 +249,26 @@ def _resolve_execution_settings(raw_execution: Any) -> dict[str, Any] | ConfigEr
         return _config_error(
             "execution.default_shell_timeout_seconds must be a positive integer."
         )
-    return {"default_shell_timeout_seconds": timeout}
+    max_timeout = settings.get("max_shell_timeout_seconds")
+    if not isinstance(max_timeout, int) or max_timeout <= 0:
+        return _config_error(
+            "execution.max_shell_timeout_seconds must be a positive integer."
+        )
+    if max_timeout < timeout:
+        return _config_error(
+            "execution.max_shell_timeout_seconds must be greater than or equal "
+            "to execution.default_shell_timeout_seconds."
+        )
+    cancellation_timeout = settings.get("cancellation_timeout_seconds")
+    if not isinstance(cancellation_timeout, int) or cancellation_timeout <= 0:
+        return _config_error(
+            "execution.cancellation_timeout_seconds must be a positive integer."
+        )
+    return {
+        "default_shell_timeout_seconds": timeout,
+        "max_shell_timeout_seconds": max_timeout,
+        "cancellation_timeout_seconds": cancellation_timeout,
+    }
 
 
 def _resolve_development_settings(raw_development: Any) -> dict[str, Any] | ConfigError:

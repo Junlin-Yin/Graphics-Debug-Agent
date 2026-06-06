@@ -39,6 +39,9 @@ def test_session_serializes_required_contract_fields() -> None:
         "created_at": "2026-05-11T00:00:00Z",
         "updated_at": "2026-05-11T00:00:01Z",
         "error_summary": None,
+        "terminal_reason": None,
+        "terminal_error": None,
+        "non_resumable_startup_failure": False,
         "version": 1,
     }
 

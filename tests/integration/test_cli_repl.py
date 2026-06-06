@@ -151,7 +151,7 @@ def test_debug_agent_repl_accepts_two_turns_status_and_exit(tmp_path) -> None:
         checkpoint_kinds = [
             row[0] for row in conn.execute("SELECT kind FROM checkpoints ORDER BY rowid")
         ]
-    assert checkpoint_kinds == ["turn", "turn", "terminal"]
+    assert checkpoint_kinds == ["terminal_recovery"]
 
 
 def test_non_streaming_repl_controller_completes_fake_model_turn(tmp_path) -> None:

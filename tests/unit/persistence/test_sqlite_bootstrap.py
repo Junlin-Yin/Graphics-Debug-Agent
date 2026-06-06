@@ -81,6 +81,9 @@ def test_runtime_database_schema_matches_contract_columns(tmp_path) -> None:
         "created_at",
         "updated_at",
         "error_summary",
+        "terminal_reason",
+        "terminal_error_json",
+        "non_resumable_startup_failure",
         "version",
     ]
     assert columns["runs"] == [
@@ -95,6 +98,9 @@ def test_runtime_database_schema_matches_contract_columns(tmp_path) -> None:
         "created_at",
         "updated_at",
         "error_summary",
+        "terminal_reason",
+        "terminal_error_json",
+        "non_resumable_startup_failure",
         "version",
     ]
     assert columns["run_events"] == [

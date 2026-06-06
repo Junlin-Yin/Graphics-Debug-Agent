@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   error_summary TEXT,
+  terminal_reason TEXT,
+  terminal_error_json TEXT,
+  non_resumable_startup_failure INTEGER NOT NULL DEFAULT 0,
   version INTEGER NOT NULL
 );
 
@@ -52,6 +55,9 @@ CREATE TABLE IF NOT EXISTS runs (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   error_summary TEXT,
+  terminal_reason TEXT,
+  terminal_error_json TEXT,
+  non_resumable_startup_failure INTEGER NOT NULL DEFAULT 0,
   version INTEGER NOT NULL,
   FOREIGN KEY(session_id) REFERENCES sessions(session_id),
   FOREIGN KEY(context_snapshot_id) REFERENCES context_snapshots(context_snapshot_id)

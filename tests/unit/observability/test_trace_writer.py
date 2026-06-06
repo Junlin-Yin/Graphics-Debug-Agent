@@ -8,7 +8,27 @@ from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
-from debug_agent.runtime.contracts import Checkpoint, RunEvent, utc_now_iso
+from debug_agent.runtime.contracts import RunEvent, utc_now_iso
+
+
+def _phase3_config_snapshot() -> dict:
+    return {
+        "provider": "fake",
+        "model": "fake-model",
+        "execution": {
+            "default_shell_timeout_seconds": 300,
+            "max_shell_timeout_seconds": 300,
+            "cancellation_timeout_seconds": 10,
+        },
+        "multimodal": {
+            "view_image_enabled": False,
+            "view_image_disabled_reason": "not_configured",
+            "timeout_seconds": 60,
+            "max_tokens": 4096,
+            "max_query_chars": 2000,
+            "max_analysis_chars": 4000,
+        },
+    }
 
 
 def _persist_session_with_events(tmp_path):
@@ -18,11 +38,10 @@ def _persist_session_with_events(tmp_path):
     sessions = SessionStore(db.connection)
     runs = RunStore(db.connection)
     events = EventWriter(db.connection, db.path.parent)
-    checkpoints = CheckpointStore(db.connection)
     session = sessions.create(
         workspace_root=workspace,
         approval_mode="yolo",
-        config_snapshot={"provider": "fake", "model": "fake-model"},
+        config_snapshot=_phase3_config_snapshot(),
         session_id="sess_trace",
     )
     run = runs.create_prompt_run(session.session_id, run_id="run_trace")
@@ -287,16 +306,18 @@ def _persist_session_with_events(tmp_path):
         grant_scope="session",
         approval_request="=== Approval Request ===",
     )
-    checkpoint = checkpoints.save(
-        Checkpoint(
-            checkpoint_id="chk_trace",
-            session_id=session.session_id,
-            run_id=run.run_id,
-            kind="turn",
-            state={"session_status": "running", "run_status": "running"},
-            summary="answer",
-            created_at=utc_now_iso(),
-        )
+    checkpoint = CheckpointStore(
+        db.connection,
+        artifact_store=ArtifactStore(db.connection, db.path.parent),
+    ).create_terminal_recovery(
+        checkpoint_id="chk_trace",
+        session_id=session.session_id,
+        run_id=run.run_id,
+        terminal_status="completed",
+        terminal_reason="user_exit",
+        terminal_error=None,
+        created_at=utc_now_iso(),
+        artifact_ids=["art_trace"],
     )
     events.append(
         RunEvent(

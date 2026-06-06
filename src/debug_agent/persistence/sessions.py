@@ -47,9 +47,10 @@ class SessionStore:
                     session_id, workspace_root, status, approval_mode,
                     active_run_id, artifact_root, config_snapshot_json,
                     latest_checkpoint_id, created_at, updated_at,
-                    error_summary, version
+                    error_summary, terminal_reason, terminal_error_json,
+                    non_resumable_startup_failure, version
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session.session_id,
@@ -63,6 +64,9 @@ class SessionStore:
                     session.created_at,
                     session.updated_at,
                     session.error_summary,
+                    session.terminal_reason,
+                    None,
+                    1 if session.non_resumable_startup_failure else 0,
                     session.version,
                 ),
             )
@@ -81,7 +85,8 @@ class SessionStore:
             SELECT session_id, workspace_root, status, approval_mode,
                    active_run_id, artifact_root, config_snapshot_json,
                    latest_checkpoint_id, created_at, updated_at,
-                   error_summary, version
+                   error_summary, terminal_reason, terminal_error_json,
+                   non_resumable_startup_failure, version
             FROM sessions
             WHERE session_id = ?
             """,
@@ -101,7 +106,8 @@ class SessionStore:
             SELECT session_id, workspace_root, status, approval_mode,
                    active_run_id, artifact_root, config_snapshot_json,
                    latest_checkpoint_id, created_at, updated_at,
-                   error_summary, version
+                   error_summary, terminal_reason, terminal_error_json,
+                   non_resumable_startup_failure, version
             FROM sessions
             WHERE workspace_root = ? AND status = 'running'
             ORDER BY created_at DESC
@@ -145,6 +151,9 @@ class SessionStore:
             status="completed",
             error_summary=None,
             latest_checkpoint_id=latest_checkpoint_id,
+            terminal_reason=None,
+            terminal_error=None,
+            non_resumable_startup_failure=False,
         )
 
     def mark_failed(
@@ -158,6 +167,20 @@ class SessionStore:
             status="failed",
             error_summary=error_summary,
             latest_checkpoint_id=latest_checkpoint_id,
+            terminal_reason=None,
+            terminal_error=None,
+            non_resumable_startup_failure=False,
+        )
+
+    def mark_startup_failure(self, session_id: str, error_summary: str) -> Session:
+        return self._mark_terminal(
+            session_id,
+            status="failed",
+            error_summary=error_summary,
+            latest_checkpoint_id=None,
+            terminal_reason="startup_failure",
+            terminal_error=None,
+            non_resumable_startup_failure=True,
         )
 
     def _mark_terminal(
@@ -167,6 +190,9 @@ class SessionStore:
         status: str,
         error_summary: str | None,
         latest_checkpoint_id: str | None,
+        terminal_reason: str | None,
+        terminal_error: dict | None,
+        non_resumable_startup_failure: bool,
     ) -> Session:
         current = self.get(session_id)
         if current.status != "running":
@@ -179,10 +205,22 @@ class SessionStore:
             """
             UPDATE sessions
             SET status = ?, active_run_id = NULL, latest_checkpoint_id = ?,
-                error_summary = ?, updated_at = ?
+                error_summary = ?, terminal_reason = ?, terminal_error_json = ?,
+                non_resumable_startup_failure = ?, updated_at = ?
             WHERE session_id = ? AND status = 'running'
             """,
-            (status, latest_checkpoint_id, error_summary, now, session_id),
+            (
+                status,
+                latest_checkpoint_id,
+                error_summary,
+                terminal_reason,
+                None
+                if terminal_error is None
+                else json.dumps(terminal_error, ensure_ascii=False, sort_keys=True),
+                1 if non_resumable_startup_failure else 0,
+                now,
+                session_id,
+            ),
         )
         self.connection.commit()
         return self.get(session_id)
@@ -201,7 +239,10 @@ def _session_from_row(row: tuple) -> Session:
         created_at=row[8],
         updated_at=row[9],
         error_summary=row[10],
-        version=row[11],
+        terminal_reason=row[11],
+        terminal_error=None if row[12] is None else json.loads(row[12]),
+        non_resumable_startup_failure=bool(row[13]),
+        version=row[14],
     )
 
 

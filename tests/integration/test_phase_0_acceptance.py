@@ -313,7 +313,13 @@ def test_phase_0_model_config_failure_after_session_records_config_error(
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "failed"
         assert conn.execute("SELECT status FROM runs").fetchone()[0] == "failed"
-        assert conn.execute("SELECT kind FROM checkpoints").fetchone()[0] == "error"
+        assert conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT latest_checkpoint_id, non_resumable_startup_failure FROM sessions"
+        ).fetchone() == (None, 1)
+        assert conn.execute(
+            "SELECT latest_checkpoint_id, non_resumable_startup_failure FROM runs"
+        ).fetchone() == (None, 1)
         payloads = [
             json.loads(row[0])
             for row in conn.execute(

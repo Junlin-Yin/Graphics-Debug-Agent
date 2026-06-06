@@ -69,21 +69,14 @@ def test_one_shot_todo_call_persists_and_next_model_call_sees_plan(
         ]
         checkpoint = CheckpointStore(db.connection).latest_for_run(result.run_id)
         assert checkpoint is not None
-        frame = checkpoint.state["latest_model_response_metadata"]["query_state"][
-            "latest_model_context_frame"
+        assert checkpoint.kind == "terminal_recovery"
+        assert checkpoint.state["todo_plan"]["plan_version"] == 1
+        assert [
+            item["content"] for item in checkpoint.state["todo_plan"]["items"]
+        ] == [
+            "Inspect exported image",
+            "Run verification",
         ]
-        tool_names = [binding["name"] for binding in frame["tool_schema_bindings"]]
-        assert "todo" in tool_names
-        assert "read_file" in tool_names
-        assert "view_image" not in tool_names
-        todo_segments = [
-            segment
-            for segment in frame["message_segments"]
-            if segment["kind"] == "runtime_todo_plan"
-        ]
-        assert len(todo_segments) == 1
-        assert "Inspect exported image" in todo_segments[0]["content"]
-        assert "Current Todo Plan is empty." not in todo_segments[0]["content"]
         status = RuntimeOrchestrator(workspace_root=workspace).status(result.session_id)
         assert status.fields["todo_plan"] == {
             "plan_version": 1,

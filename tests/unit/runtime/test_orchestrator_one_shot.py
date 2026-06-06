@@ -111,11 +111,10 @@ def test_one_shot_success_persists_lifecycle_and_completes_session(
         "model_call_completed",
         "assistant_message",
         "checkpoint_written",
-        "checkpoint_written",
         "run_completed",
         "session_completed",
     ]
-    assert [row[1] for row in checkpoint_rows] == ["turn", "terminal"]
+    assert [row[1] for row in checkpoint_rows] == ["terminal_recovery"]
     terminal_checkpoint_id = checkpoint_rows[-1][0]
     assert session_latest_checkpoint_id == terminal_checkpoint_id
     assert run_latest_checkpoint_id == terminal_checkpoint_id
@@ -340,7 +339,7 @@ def test_one_shot_context_limit_exceeded_records_context_fact_before_terminal_fa
         ]
     assert "context_limit_exceeded" in event_kinds
     assert event_kinds.index("context_limit_exceeded") < event_kinds.index("run_failed")
-    assert checkpoint_kinds[:2] == ["context", "error"]
+    assert checkpoint_kinds == ["terminal_recovery"]
     _assert_normalized_terminal_errors(
         workspace,
         error_class="model_error",
@@ -414,7 +413,7 @@ def test_one_shot_compression_failed_records_context_fact_before_terminal_failur
         ]
     assert "compression_failed" in event_kinds
     assert event_kinds.index("compression_failed") < event_kinds.index("run_failed")
-    assert checkpoint_kinds[:2] == ["context", "error"]
+    assert checkpoint_kinds == []
     _assert_normalized_terminal_errors(
         workspace,
         error_class="model_error",
@@ -446,24 +445,33 @@ def test_one_shot_invalid_skill_fails_before_model_call_and_releases_ownership(
     assert result.error["error_class"] == "config_error"
     assert "Only prompt skills" in result.message
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
-        session_status, active_run_id = conn.execute(
-            "SELECT status, active_run_id FROM sessions"
+        session_status, active_run_id, session_latest, session_startup_marker = conn.execute(
+            """
+            SELECT status, active_run_id, latest_checkpoint_id,
+                   non_resumable_startup_failure
+            FROM sessions
+            """
         ).fetchone()
-        run_status = conn.execute("SELECT status FROM runs").fetchone()[0]
+        run_status, run_latest, run_startup_marker = conn.execute(
+            """
+            SELECT status, latest_checkpoint_id, non_resumable_startup_failure
+            FROM runs
+            """
+        ).fetchone()
         event_kinds = [
             row[0] for row in conn.execute("SELECT kind FROM run_events ORDER BY rowid")
         ]
-        checkpoint_kind, checkpoint_summary = conn.execute(
-            "SELECT kind, summary FROM checkpoints ORDER BY rowid DESC LIMIT 1"
-        ).fetchone()
+        checkpoint_count = conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0]
 
     assert (session_status, active_run_id, run_status) == ("failed", None, "failed")
-    assert checkpoint_kind == "error"
-    assert "Only prompt skills" in checkpoint_summary
+    assert session_latest is None
+    assert run_latest is None
+    assert session_startup_marker == 1
+    assert run_startup_marker == 1
+    assert checkpoint_count == 0
     assert event_kinds == [
         "session_started",
         "run_started",
-        "checkpoint_written",
         "run_failed",
         "session_failed",
     ]
@@ -596,8 +604,9 @@ def test_one_shot_model_cancellation_marks_failed_and_releases_ownership(
     assert (session_status, active_run_id, run_status) == ("failed", None, "failed")
     assert session_error == "fake model cancelled"
     assert run_error == "fake model cancelled"
-    assert checkpoint_kind == "error"
-    assert '"latest_error_summary": "fake model cancelled"' in checkpoint_state
+    checkpoint_payload = json.loads(checkpoint_state)
+    assert checkpoint_kind == "terminal_recovery"
+    assert checkpoint_payload["terminal_error"]["message"] == "fake model cancelled"
     assert failed_error_class == "cancelled"
 
     second = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
@@ -640,8 +649,9 @@ def test_one_shot_model_timeout_marks_failed_and_releases_ownership(tmp_path) ->
     assert (session_status, active_run_id, run_status) == ("failed", None, "failed")
     assert session_error == "fake model timeout"
     assert run_error == "fake model timeout"
-    assert checkpoint_kind == "error"
-    assert '"latest_error_summary": "fake model timeout"' in checkpoint_state
+    checkpoint_payload = json.loads(checkpoint_state)
+    assert checkpoint_kind == "terminal_recovery"
+    assert checkpoint_payload["terminal_error"]["message"] == "fake model timeout"
     assert failed_error_class == "timeout"
 
     second = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(

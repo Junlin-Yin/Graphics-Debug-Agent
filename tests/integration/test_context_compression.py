@@ -114,7 +114,11 @@ def test_automatic_compression_runs_before_initial_model_call(tmp_path) -> None:
     assert result.status == "completed"
     assert "compressed initial history" in sent_text
     assert "old output old output" not in sent_text
-    assert runtime["runs"].get(runtime["run"].run_id).context_snapshot_id is not None
+    assert runtime["runs"].get(runtime["run"].run_id).context_snapshot_id is None
+    assert runtime["db"].connection.execute(
+        "SELECT COUNT(*) FROM context_snapshots WHERE run_id = ?",
+        (runtime["run"].run_id,),
+    ).fetchone()[0] == 0
     runtime["db"].close()
 
 
@@ -254,11 +258,11 @@ def test_manual_compress_success_updates_repl_runtime_conversation(tmp_path) -> 
     assert result.assistant_output.startswith("Context compressed: reduced from ")
     assert repl_runtime.conversation[0]["kind"] == "context_summary"
     assert "manual compression" in repl_runtime.conversation[0]["content"]
-    assert runtime["runs"].get(runtime["run"].run_id).context_snapshot_id is not None
+    assert runtime["runs"].get(runtime["run"].run_id).context_snapshot_id is None
     assert runtime["db"].connection.execute(
-        "SELECT trigger FROM context_snapshots WHERE run_id = ?",
+        "SELECT COUNT(*) FROM context_snapshots WHERE run_id = ?",
         (runtime["run"].run_id,),
-    ).fetchone()[0] == "manual"
+    ).fetchone()[0] == 0
     runtime["db"].close()
 
 

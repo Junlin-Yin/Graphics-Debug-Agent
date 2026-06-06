@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from debug_agent.persistence.events import EventWriter
+from debug_agent.persistence.conversation import canonical_json_bytes, sha256_hex
 from debug_agent.runtime.contracts import RunEvent, utc_now_iso
 
 
@@ -134,6 +135,24 @@ class TodoPlanStore:
             ),
             event=event,
         )
+
+    def checkpoint_snapshot(self, run_id: str) -> dict[str, Any]:
+        plan = self.get_current(run_id)
+        payload = {
+            "run_id": run_id,
+            "plan_version": plan.version,
+            "items": plan.items,
+        }
+        return {
+            "plan_version": plan.version,
+            "items": plan.items,
+            "checksum": sha256_hex(canonical_json_bytes(payload)),
+        }
+
+    def validate_checkpoint_snapshot(self, run_id: str, snapshot: dict[str, Any]) -> None:
+        expected = self.checkpoint_snapshot(run_id)
+        if snapshot != expected:
+            raise ValueError("Todo Plan checkpoint checksum is invalid.")
 
 
 def _indexed_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
