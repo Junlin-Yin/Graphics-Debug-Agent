@@ -125,11 +125,12 @@ terminal recovery checkpoint writer/validator + ownership release fencing
   -> stale fail-close
     -> stale-target resume pre-step
 
+schema/config foundation + minimal frozen execution timeout config
+  -> terminal checkpoint frozen references
+    -> shell timeout behavior cleanup + frozen tool schema rendering
+
 normalized errors + durable conversation + provider stop metadata
   -> retry controller + output-token continuation
-
-schema/config foundation + terminal checkpoint frozen references
-  -> shell timeout config cleanup + frozen tool schema rendering
 
 all completed branches
   -> status/trace observability + integration acceptance + manual verification
@@ -236,9 +237,9 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 
 **Objective:** make terminal recovery checkpoints the only Phase 3 prompt-session resume entrypoints.
 
-**Deliverables:** terminal recovery checkpoint manifest writer/validator, rejection of non-terminal checkpoint writes, `latest_checkpoint_id` narrowed to terminal recovery, terminalization consistency boundary, zero-message checkpoint paths, non-resumable startup/config/schema failure marker, and removal/disablement of Phase 3 prompt context snapshot/checkpoint write paths.
+**Deliverables:** terminal recovery checkpoint manifest writer/validator, rejection of non-terminal checkpoint writes, `latest_checkpoint_id` narrowed to terminal recovery, terminalization consistency boundary, zero-message checkpoint paths, non-resumable startup/config/schema failure marker, minimal frozen execution timeout config needed by checkpoint tool-availability references, and removal/disablement of Phase 3 prompt context snapshot/checkpoint write paths.
 
-**Modified boundaries:** CheckpointStore, SessionStore/RunStore terminal transitions, context snapshot write callers, TodoPlanStore snapshot read/validation, approval grant cut validation, active skill/runtime snapshot references, frozen config/policy/tool availability references, artifact validation.
+**Modified boundaries:** CheckpointStore, SessionStore/RunStore terminal transitions, context snapshot write callers, TodoPlanStore snapshot read/validation, approval grant cut validation, active skill/runtime snapshot references, frozen config/policy/tool availability references, execution config parsing/snapshot defaults needed for frozen references, artifact validation.
 
 **Invariants:** Phase 3 prompt sessions/runs write only `terminal_recovery`; startup/config/schema failures never get terminal recovery checkpoints; `latest_checkpoint_id` is unset when no valid terminal recovery checkpoint exists; terminal checkpoint creation, terminal status, and latest checkpoint update are one consistency boundary.
 
@@ -256,14 +257,18 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 - [ ] Narrow `sessions.latest_checkpoint_id` and `runs.latest_checkpoint_id` semantics to terminal recovery checkpoint ids.
 - [ ] Add terminal recovery manifest creation with session/run identity, run type, terminal status/reason/error matrix, durable conversation fact cut, projection snapshot, Todo Plan snapshot, approval grant cut, active skill records, frozen snapshots, tool availability references, and artifact refs.
 - [ ] Add manifest and payload checksum validation.
+- [ ] Add minimal Phase 3 `[execution]` config parsing for `default_shell_timeout_seconds`, `max_shell_timeout_seconds`, and `cancellation_timeout_seconds` with documented defaults.
+- [ ] Validate Phase 3 execution timeout config as positive integers and `max_shell_timeout_seconds >= default_shell_timeout_seconds`; invalid values use `config_error/invalid_runtime_config`.
+- [ ] Freeze Phase 3 execution timeout values into the session config snapshot so terminal checkpoints can reference the original shell maximum.
 - [ ] Validate frozen tool availability references, including `view_image` availability and shell schema limit derived from frozen maximum timeout.
+- [ ] Limit Milestone 3 shell timeout work to frozen config/reference validation; do not change `shell_exec.timeout_seconds` runtime behavior, approval signatures, or timeout execution semantics until Milestone 9.
 - [ ] Add terminal reasons `terminal_completion`, `user_exit`, `user_cancel_idle`, `terminal_failure`, and `terminal_stale` exactly as specified.
 - [ ] Implement zero-message `/exit` and normal graceful shutdown checkpoint shape.
 - [ ] Reject zero-message checkpoint shape for idle `Ctrl+C` and terminal prompt failure.
 - [ ] Add structured non-resumable startup/config/schema failure marker on session/run lifecycle or terminal metadata.
 - [ ] Ensure startup/config/schema failure after session/run creation writes normalized audit facts/events, terminalizes, releases ownership if acquired, leaves `latest_checkpoint_id` unset, and writes no terminal checkpoint.
 - [ ] Treat terminal checkpoint creation failure as non-resumable: do not set `latest_checkpoint_id` or present terminal-recoverable status.
-- [ ] Add tests for successful terminal checkpoints, no non-terminal checkpoint writes, zero-message allowed/rejected paths, startup failure non-resumability, checksum validation, frozen reference validation, latest checkpoint semantics, and checkpoint-write failure behavior.
+- [ ] Add tests for successful terminal checkpoints, no non-terminal checkpoint writes, zero-message allowed/rejected paths, startup failure non-resumability, checksum validation, minimal frozen execution timeout config validation, frozen reference validation, latest checkpoint semantics, and checkpoint-write failure behavior.
 - [ ] Run canonical verification.
 
 ## Milestone 4: One-Shot/REPL Lifecycle Unification And Development Gate Removal
@@ -448,9 +453,9 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 
 **Objective:** add narrow runtime retry and replace Phase 1 shell timeout silent capping with Phase 3 frozen default/maximum behavior.
 
-**Deliverables:** central retry registry, `RetryController`, retry attempt/exhaustion audit, `repeat_call` for registered runtime-owned transient failures, text-only `output_token_limit_reached` continuation, late retry result ignoring, shell timeout config split, frozen shell schema maximum, explicit timeout validation, and resume restoration of original shell limits.
+**Deliverables:** central retry registry, `RetryController`, retry attempt/exhaustion audit, `repeat_call` for registered runtime-owned transient failures, text-only `output_token_limit_reached` continuation, late retry result ignoring, shell timeout runtime behavior cleanup, frozen shell schema rendering, explicit timeout validation, and resume restoration of original shell limits.
 
-**Modified boundaries:** new retry policy/runtime module, model adapter/provider result handling, compression model invocation, persistence transaction retry boundaries, Prompt Agent Runtime assistant acceptance, ToolBroker schema rendering, shell execution config parsing, shell handler timeout validation, approval scope signatures, status/trace retry rendering.
+**Modified boundaries:** new retry policy/runtime module, model adapter/provider result handling, compression model invocation, persistence transaction retry boundaries, Prompt Agent Runtime assistant acceptance, ToolBroker schema rendering, shell handler timeout validation, approval scope signatures, status/trace retry rendering.
 
 **Invariants:** call sites do not duplicate retry budgets or predicates; retry does not own terminalization/checkpoint/ownership decisions; ordinary tools, shell commands, file writes, approvals, accepted model results, and completed tool results are not automatically retried; partial output is not durable conversation until continuation succeeds.
 
@@ -472,16 +477,13 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 - [ ] Ensure partial output is transient/audit input only until successful continuation.
 - [ ] Reject continuation when partial or continuation response contains complete or partial tool-use fragments.
 - [ ] On successful continuation, append exactly one accepted final `assistant_output` from deterministic `partial_text + continuation_text`.
-- [ ] Split `[execution]` config into `default_shell_timeout_seconds`, `max_shell_timeout_seconds`, and `cancellation_timeout_seconds`.
-- [ ] Validate `max_shell_timeout_seconds >= default_shell_timeout_seconds`; invalid values use `config_error/invalid_runtime_config`.
-- [ ] Freeze all execution timeout values into the session config snapshot.
 - [ ] Make omitted `shell_exec.timeout_seconds` use the frozen default.
 - [ ] Make explicit `shell_exec.timeout_seconds` honored exactly when positive and less than or equal to frozen maximum.
 - [ ] Reject explicit timeout above maximum with `tool_error/tool_schema_invalid`; do not silently cap.
 - [ ] Render frozen maximum in model-visible `shell_exec` schema.
 - [ ] Ensure approval grant scope signatures use Phase 3 effective timeout calculation.
 - [ ] Ensure resume uses original frozen timeout values and schema limit, not current config.
-- [ ] Add tests for retry registry values, invalid specs, no duplicated budgets, repeat-call safety, late result ignoring, output-token continuation success/failure, tool-fragment rejection, shell timeout defaults/maximums, explicit timeout validation, no silent cap, approval signatures, and resumed schema limits.
+- [ ] Add tests for retry registry values, invalid specs, no duplicated budgets, repeat-call safety, late result ignoring, output-token continuation success/failure, tool-fragment rejection, shell timeout defaults/maximum runtime behavior, explicit timeout validation, no silent cap, approval signatures, and resumed schema limits.
 - [ ] Run canonical verification.
 
 ## Milestone 10: Status, Trace, Integration Acceptance, And Manual Verification
