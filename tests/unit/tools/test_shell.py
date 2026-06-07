@@ -19,6 +19,7 @@ from debug_agent.runtime.policy import (
     build_builtin_policy,
 )
 from debug_agent.tools.broker import FakeApprovalProvider, ToolBroker
+from debug_agent.tools.native import gated_user_facing_tool_definitions
 from debug_agent.tools.shell import FakeShellRunner, ShellCancelled, ShellTimeout, tool_definitions
 
 
@@ -27,6 +28,7 @@ def _runtime(
     *,
     approval_mode: str = "semi-auto",
     default_timeout: int | None = 300,
+    max_timeout: int | None = 3600,
     policy_facts=None,
     runner: FakeShellRunner | None = None,
 ):
@@ -55,9 +57,10 @@ def _runtime(
         "shell_runner": runner or FakeShellRunner(),
     }
     if default_timeout is not None:
-        context["frozen_config"] = {
-            "execution": {"default_shell_timeout_seconds": default_timeout}
-        }
+        execution = {"default_shell_timeout_seconds": default_timeout}
+        if max_timeout is not None:
+            execution["max_shell_timeout_seconds"] = max_timeout
+        context["frozen_config"] = {"execution": execution}
     return {
         "workspace": workspace,
         "db": db,
@@ -100,11 +103,23 @@ def test_shell_tool_definition_schema_is_structured_argv_only() -> None:
                 "minItems": 1,
             },
             "cwd": {"type": "string"},
-            "timeout_seconds": {"type": "integer", "minimum": 1},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
         },
         "required": ["argv"],
         "additionalProperties": False,
     }
+
+
+def test_user_facing_shell_schema_uses_frozen_maximum_timeout() -> None:
+    definitions = {
+        definition.name: definition
+        for definition in gated_user_facing_tool_definitions(
+            {"execution": {"max_shell_timeout_seconds": 42}}
+        )
+    }
+
+    shell_schema = definitions["shell_exec"].input_schema
+    assert shell_schema["properties"]["timeout_seconds"]["maximum"] == 42
 
 
 @pytest.mark.parametrize(
@@ -135,18 +150,18 @@ def test_shell_schema_rejects_raw_strings_empty_argv_and_unknown_fields(
 
 def test_shell_nonzero_exit_code_is_tool_failure_with_concrete_message(tmp_path) -> None:
     runner = FakeShellRunner(stdout="out", stderr="err", returncode=7)
-    runtime = _runtime(tmp_path, default_timeout=10, runner=runner)
+    runtime = _runtime(tmp_path, default_timeout=10, max_timeout=100, runner=runner)
 
     result = _invoke(runtime, {"argv": ["echo", "ok"], "timeout_seconds": 99})
 
     assert result.status == "error"
     assert result.error["message"] == "err (exit code 7)"
-    assert result.metadata["effective_timeout_seconds"] == 10
+    assert result.metadata["effective_timeout_seconds"] == 99
     assert runner.calls == [
         {
             "argv": ["echo", "ok"],
             "cwd": runtime["workspace"],
-            "timeout_seconds": 10,
+            "timeout_seconds": 99,
             "register_process_handle": None,
         }
     ]
@@ -196,6 +211,37 @@ def test_shell_preserves_windows_cwd_for_runner_while_using_policy_facts(
         assert policy_marker not in scope_signature
     else:
         assert policy_marker in scope_signature
+    runtime["db"].close()
+
+
+def test_shell_explicit_timeout_above_frozen_maximum_is_schema_denied(tmp_path) -> None:
+    runner = FakeShellRunner(stdout="ok")
+    runtime = _runtime(tmp_path, default_timeout=10, max_timeout=20, runner=runner)
+
+    result = _invoke(runtime, {"argv": ["echo", "ok"], "timeout_seconds": 21})
+
+    assert result.status == "denied"
+    assert result.error["error_class"] == "tool_error"
+    assert result.error["reason"] == "tool_schema_invalid"
+    assert "maximum" in result.error["message"]
+    assert runner.calls == []
+    assert _event_kinds(runtime) == ["tool_call_denied"]
+    runtime["db"].close()
+
+
+def test_shell_scope_signature_uses_requested_timeout_not_default_cap(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal", default_timeout=10, max_timeout=30)
+    approval_provider = FakeApprovalProvider("approved_once")
+
+    result = _invoke(
+        runtime,
+        {"argv": ["echo", "ok"], "timeout_seconds": 25},
+        approval_provider=approval_provider,
+    )
+
+    assert result.status == "ok"
+    assert approval_provider.requests
+    assert "timeout:25" in approval_provider.requests[0][1]["scope_signature"]
     runtime["db"].close()
 
 

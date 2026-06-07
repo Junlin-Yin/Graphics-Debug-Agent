@@ -1822,7 +1822,7 @@ def format_tool_listing(
 
 
 def visible_tool_definitions(config_snapshot: dict[str, Any]) -> list[Any]:
-    definitions = list(gated_user_facing_tool_definitions())
+    definitions = list(gated_user_facing_tool_definitions(config_snapshot))
     if _view_image_enabled(config_snapshot):
         definitions.append(view_image_tool_definition())
     return definitions

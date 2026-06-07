@@ -494,24 +494,24 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 
 **Runnable state:** runtime retry is bounded, auditable, and narrow; shell timeout behavior matches the frozen Phase 3 config contract.
 
-- [ ] Add central `RetrySpec` registry with the exact Phase 3 default rules.
-- [ ] Validate retry specs and reject invalid enabled/backoff/precondition/strategy combinations.
-- [ ] Implement `RetryController` precondition evaluation for `none`, `metadata_transient_true`, `text_only_no_tool_fragment`, and `sqlite_no_partial_commit`.
-- [ ] Implement `repeat_call` only for registered retry-safe runtime-owned transient failures before any response/result/downstream tool execution is accepted.
-- [ ] Implement late retry-abandoned result ignoring.
-- [ ] Implement audited attempt and exhaustion metadata.
-- [ ] Implement `continue_generation` for `model_error/output_token_limit_reached` only when partial output is `text_only_no_tool_fragment`.
-- [ ] Ensure partial output is transient/audit input only until successful continuation.
-- [ ] Reject continuation when partial or continuation response contains complete or partial tool-use fragments.
-- [ ] On successful continuation, append exactly one accepted final `assistant_output` from deterministic `partial_text + continuation_text`.
-- [ ] Make omitted `shell_exec.timeout_seconds` use the frozen default.
-- [ ] Make explicit `shell_exec.timeout_seconds` honored exactly when positive and less than or equal to frozen maximum.
-- [ ] Reject explicit timeout above maximum with `tool_error/tool_schema_invalid`; do not silently cap.
-- [ ] Render frozen maximum in model-visible `shell_exec` schema.
-- [ ] Ensure approval grant scope signatures use Phase 3 effective timeout calculation.
-- [ ] Ensure resume uses original frozen timeout values and schema limit, not current config.
-- [ ] Add tests for retry registry values, invalid specs, no duplicated budgets, repeat-call safety, late result ignoring, output-token continuation success/failure, tool-fragment rejection, shell timeout defaults/maximum runtime behavior, explicit timeout validation, no silent cap, approval signatures, and resumed schema limits.
-- [ ] Run canonical verification.
+- [x] Add central `RetrySpec` registry with the exact Phase 3 default rules.
+- [x] Validate retry specs and reject invalid enabled/backoff/precondition/strategy combinations.
+- [x] Implement `RetryController` precondition evaluation for `none`, `metadata_transient_true`, `text_only_no_tool_fragment`, and `sqlite_no_partial_commit`.
+- [x] Implement `repeat_call` only for registered retry-safe runtime-owned transient failures before any response/result/downstream tool execution is accepted.
+- [x] Implement late retry-abandoned result ignoring.
+- [x] Implement audited attempt and exhaustion metadata.
+- [x] Implement `continue_generation` for `model_error/output_token_limit_reached` only when partial output is `text_only_no_tool_fragment`.
+- [x] Ensure partial output is transient/audit input only until successful continuation.
+- [x] Reject continuation when partial or continuation response contains complete or partial tool-use fragments.
+- [x] On successful continuation, append exactly one accepted final `assistant_output` from deterministic `partial_text + continuation_text`.
+- [x] Make omitted `shell_exec.timeout_seconds` use the frozen default.
+- [x] Make explicit `shell_exec.timeout_seconds` honored exactly when positive and less than or equal to frozen maximum.
+- [x] Reject explicit timeout above maximum with `tool_error/tool_schema_invalid`; do not silently cap.
+- [x] Render frozen maximum in model-visible `shell_exec` schema.
+- [x] Ensure approval grant scope signatures use Phase 3 effective timeout calculation.
+- [x] Ensure resume uses original frozen timeout values and schema limit, not current config.
+- [x] Add tests for retry registry values, invalid specs, no duplicated budgets, repeat-call safety, late result ignoring, output-token continuation success/failure, tool-fragment rejection, shell timeout defaults/maximum runtime behavior, explicit timeout validation, no silent cap, approval signatures, and resumed schema limits.
+- [x] Run canonical verification.
 
 ## Milestone 10: Status, Trace, Integration Acceptance, And Manual Verification
 

@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
-from time import monotonic
+from time import monotonic, sleep
 
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.approval_grants import ApprovalGrantStore
@@ -33,6 +33,7 @@ from debug_agent.runtime.model_context import CompressionContextFrame, Conversat
 from debug_agent.runtime.policy import PermissionEvaluator, policy_facts_from_snapshot
 from debug_agent.runtime.prompt_composer import PromptComposer, PromptCompositionRequest
 from debug_agent.runtime.query_control import QueryControlPlane
+from debug_agent.runtime.retry import RetryBoundaryFacts, RetryController
 from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
@@ -409,10 +410,11 @@ class PromptAgentExecutor:
                 payload=dict(payload),
             ),
         )
-        if agent_stream_callback is None:
-            result = self.adapter.run(request, context)
-        else:
-            result = self.adapter.stream(request, context, stream_callback)
+        result = self._run_adapter_with_retry(
+            request=request,
+            context=context,
+            stream_callback=None if agent_stream_callback is None else stream_callback,
+        )
         continuation_reason = (
             "approval_denied_abort"
             if result.metadata.get("approval_denied_abort") is True
@@ -474,6 +476,127 @@ class PromptAgentExecutor:
                 payload={"content": result.assistant_output},
             )
         return result
+
+    def _run_adapter_with_retry(
+        self,
+        *,
+        request: AgentRunRequest,
+        context: RunContext,
+        stream_callback: Callable[[AgentStreamEvent], None] | None,
+    ) -> AgentRunResult:
+        controller = RetryController()
+        retry_attempts: list[dict[str, Any]] = []
+
+        def invoke(adapter_request: AgentRunRequest) -> AgentRunResult:
+            if stream_callback is None:
+                return self.adapter.run(adapter_request, context)
+            return self.adapter.stream(adapter_request, context, stream_callback)
+
+        result = invoke(request)
+        while True:
+            retry_source = _retry_source(result)
+            if retry_source is None:
+                return _with_retry_metadata(result, retry_attempts)
+            error_class, reason, metadata, strategy_facts = retry_source
+            decision = controller.decision(
+                error_class=error_class,
+                reason=reason,
+                metadata=metadata,
+                facts=strategy_facts,
+            )
+            if not decision.enabled:
+                if reason == "output_token_limit_reached":
+                    return _with_retry_metadata(
+                        _output_token_limit_failure(result),
+                        retry_attempts,
+                        exhausted=True,
+                        resulting_error_class="model_error",
+                        resulting_reason="output_token_limit_reached",
+                    )
+                return _with_retry_metadata(result, retry_attempts)
+            if decision.strategy == "repeat_call":
+                exhausted = False
+                changed_retry_source = False
+                for attempt_number in range(1, decision.max_attempts + 1):
+                    retry_attempts.append(
+                        _retry_attempt_metadata(
+                            decision=decision,
+                            attempt_number=attempt_number,
+                            source_error_class=error_class,
+                            source_reason=reason,
+                        )
+                    )
+                    if decision.backoff == "fixed" and decision.backoff_seconds:
+                        sleep(decision.backoff_seconds)
+                    result = invoke(request)
+                    retry_source = _retry_source(result)
+                    if retry_source is None:
+                        return _with_retry_metadata(result, retry_attempts)
+                    error_class, reason, metadata, strategy_facts = retry_source
+                    next_decision = controller.decision(
+                        error_class=error_class,
+                        reason=reason,
+                        metadata=metadata,
+                        facts=strategy_facts,
+                    )
+                    if (
+                        not next_decision.enabled
+                        or next_decision.strategy != "repeat_call"
+                        or next_decision.rule_key != decision.rule_key
+                    ):
+                        changed_retry_source = (
+                            next_decision.enabled
+                            and next_decision.strategy != "repeat_call"
+                        )
+                        break
+                if changed_retry_source:
+                    continue
+                if retry_source is not None:
+                    exhausted = True
+                    return _with_retry_metadata(
+                        result,
+                        retry_attempts,
+                        exhausted=exhausted,
+                        resulting_error_class=error_class,
+                        resulting_reason=reason,
+                    )
+                return _with_retry_metadata(result, retry_attempts)
+            if decision.strategy == "continue_generation":
+                partial_text = result.assistant_output or ""
+                for attempt_number in range(1, decision.max_attempts + 1):
+                    retry_attempts.append(
+                        _retry_attempt_metadata(
+                            decision=decision,
+                            attempt_number=attempt_number,
+                            source_error_class=error_class,
+                            source_reason=reason,
+                            partial_output_kind=str(metadata.get("partial_output_kind")),
+                        )
+                    )
+                    continuation_result = invoke(
+                        _continuation_request(request, partial_text=partial_text)
+                    )
+                    if _continuation_result_is_text_only(continuation_result):
+                        return _with_retry_metadata(
+                            AgentRunResult(
+                                status="completed",
+                                assistant_output=partial_text
+                                + (continuation_result.assistant_output or ""),
+                                tool_results=[],
+                                usage=dict(continuation_result.usage),
+                                error=None,
+                                metadata=dict(continuation_result.metadata),
+                            ),
+                            retry_attempts,
+                        )
+                return _with_retry_metadata(
+                    _output_token_limit_failure(result),
+                    retry_attempts,
+                    exhausted=True,
+                    resulting_error_class="model_error",
+                    resulting_reason="output_token_limit_reached",
+                )
+            return _with_retry_metadata(result, retry_attempts)
 
     def _append_durable_user_input(
         self,
@@ -1015,56 +1138,20 @@ class PromptAgentExecutor:
         )
         if not should_compress:
             return None
-        self._append_model_event(
+        output, retry_metadata = self._run_compression_model_with_retry(
             session=session,
             run=run,
-            kind="model_call_started",
-            payload={
-                "provider": session.config_snapshot.get("provider"),
-                "model": session.config_snapshot.get("model"),
-                "purpose": "compression",
-                "tool_schema_bindings": [],
-            },
+            frame=plan.frame,
         )
-        started_at = monotonic()
-        try:
-            output = self.compression_model(plan.frame)
-        except Exception as exc:
-            self._append_model_event(
-                session=session,
-                run=run,
-                kind="model_call_failed",
-                payload={
-                    "error_class": "model_error",
-                    "message": str(exc),
-                    "source": "model",
-                    "recoverable": True,
-                    "duration": monotonic() - started_at,
-                    "purpose": "compression",
-                },
-            )
+        if output is None:
             return self._record_compression_failed(
                 session=session,
                 run=run,
                 reason="model_failure",
                 prompt_turn_counter=prompt_turn_counter,
                 token_estimate={"before": dict(initial_estimate)},
+                retry=retry_metadata,
             )
-        self._append_model_event(
-            session=session,
-            run=run,
-            kind="model_call_completed",
-            payload={
-                "usage": {},
-                "metadata": {"purpose": "compression"},
-                "duration": monotonic() - started_at,
-                "content": output,
-                "tool_calls": [],
-                "artifact_ids": [],
-                "redacted_output": None,
-                "purpose": "compression",
-            },
-        )
         try:
             summary = manager.parse_continuity_summary(output)
         except CompressionError as exc:
@@ -1104,6 +1191,7 @@ class PromptAgentExecutor:
             "compression_estimate": plan.estimate.to_dict(),
             "metadata": {
                 "trigger": trigger,
+                **({"retry": retry_metadata} if retry_metadata is not None else {}),
                 "omitted_tool_result_count": omitted_count,
                 "evicted_message_count": len(plan.evicted_messages),
                 "evicted_model_call_group_count": len(plan.selected_model_call_group_ids),
@@ -1115,6 +1203,99 @@ class PromptAgentExecutor:
             },
         }
 
+    def _run_compression_model_with_retry(
+        self,
+        *,
+        session: Session,
+        run: Run,
+        frame: Any,
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        controller = RetryController()
+        retry_attempts: list[dict[str, Any]] = []
+        attempt_number = 0
+        while True:
+            attempt_number += 1
+            self._append_model_event(
+                session=session,
+                run=run,
+                kind="model_call_started",
+                payload={
+                    "provider": session.config_snapshot.get("provider"),
+                    "model": session.config_snapshot.get("model"),
+                    "purpose": "compression",
+                    "tool_schema_bindings": [],
+                    "retry_attempt_number": attempt_number if attempt_number > 1 else None,
+                },
+            )
+            started_at = monotonic()
+            try:
+                output = self.compression_model(frame)
+            except Exception as exc:
+                transient = _is_transient_compression_model_failure(exc)
+                self._append_model_event(
+                    session=session,
+                    run=run,
+                    kind="model_call_failed",
+                    payload={
+                        "error_class": "model_error",
+                        "reason": "compression_model_failed",
+                        "message": str(exc),
+                        "source": "model",
+                        "recoverable": transient,
+                        "duration": monotonic() - started_at,
+                        "purpose": "compression",
+                        "metadata": {"transient": transient},
+                    },
+                )
+                decision = controller.decision(
+                    error_class="model_error",
+                    reason="compression_model_failed",
+                    metadata={"transient": transient},
+                    facts=RetryBoundaryFacts(
+                        response_accepted=False,
+                        downstream_tool_executed=False,
+                    ),
+                )
+                if decision.enabled and len(retry_attempts) < decision.max_attempts:
+                    retry_attempts.append(
+                        _retry_attempt_metadata(
+                            decision=decision,
+                            attempt_number=len(retry_attempts) + 1,
+                            source_error_class="model_error",
+                            source_reason="compression_model_failed",
+                        )
+                    )
+                    if decision.backoff == "fixed" and decision.backoff_seconds:
+                        sleep(decision.backoff_seconds)
+                    continue
+                return None, _retry_metadata_dict(
+                    retry_attempts,
+                    exhausted=bool(retry_attempts),
+                    resulting_error_class="model_error"
+                    if retry_attempts
+                    else None,
+                    resulting_reason="compression_model_failed"
+                    if retry_attempts
+                    else None,
+                )
+            self._append_model_event(
+                session=session,
+                run=run,
+                kind="model_call_completed",
+                payload={
+                    "usage": {},
+                    "metadata": {"purpose": "compression"},
+                    "duration": monotonic() - started_at,
+                    "content": output,
+                    "tool_calls": [],
+                    "artifact_ids": [],
+                    "redacted_output": None,
+                    "purpose": "compression",
+                    "retry_attempt_number": attempt_number if attempt_number > 1 else None,
+                },
+            )
+            return output, _retry_metadata_dict(retry_attempts)
+
     def _record_compression_failed(
         self,
         *,
@@ -1123,6 +1304,7 @@ class PromptAgentExecutor:
         reason: str,
         prompt_turn_counter: int,
         token_estimate: dict[str, Any],
+        retry: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         message = _compression_failure_message(reason)
         self._append_event(
@@ -1154,6 +1336,7 @@ class PromptAgentExecutor:
                 "failed": True,
                 "reason": reason,
                 "message": message,
+                **({"retry": retry} if retry is not None else {}),
             },
         }
 
@@ -2079,6 +2262,233 @@ def _with_context_metadata(
         error=result.error,
         metadata=metadata,
     )
+
+
+def _retry_source(
+    result: AgentRunResult,
+) -> tuple[str, str, dict[str, Any], RetryBoundaryFacts] | None:
+    if result.status == "failed" and isinstance(result.error, dict):
+        error_class = result.error.get("error_class")
+        reason = result.error.get("reason") or error_class
+        if isinstance(error_class, str) and isinstance(reason, str):
+            return (
+                error_class,
+                reason,
+                _retry_error_metadata(result),
+                RetryBoundaryFacts(
+                    response_accepted=False,
+                    downstream_tool_executed=bool(result.tool_results),
+                ),
+            )
+    if _output_token_limit_reached(result):
+        metadata = _retry_error_metadata(result)
+        metadata["partial_output_kind"] = _partial_output_kind(result)
+        return (
+            "model_error",
+            "output_token_limit_reached",
+            metadata,
+            RetryBoundaryFacts(
+                response_accepted=False,
+                downstream_tool_executed=bool(result.tool_results),
+            ),
+        )
+    return None
+
+
+def _retry_error_metadata(result: AgentRunResult) -> dict[str, Any]:
+    metadata = dict(result.metadata)
+    if isinstance(result.error, dict) and isinstance(result.error.get("metadata"), dict):
+        metadata.update(result.error["metadata"])
+    return metadata
+
+
+def _output_token_limit_reached(result: AgentRunResult) -> bool:
+    provider_finish = result.metadata.get("provider_finish")
+    return (
+        result.status == "completed"
+        and isinstance(provider_finish, dict)
+        and provider_finish.get("output_token_limit_reached") is True
+    )
+
+
+def _partial_output_kind(result: AgentRunResult) -> str:
+    if _result_has_tool_fragment(result):
+        return "tool_fragment"
+    if isinstance(result.assistant_output, str):
+        return "text_only_no_tool_fragment"
+    return "none"
+
+
+def _result_has_tool_fragment(result: AgentRunResult) -> bool:
+    if result.tool_results:
+        return True
+    metadata = result.metadata
+    for key in (
+        "tool_calls",
+        "partial_tool_calls",
+        "provider_tool_calls",
+        "provider_tool_fragments",
+    ):
+        value = metadata.get(key)
+        if value:
+            return True
+    return False
+
+
+def _continuation_result_is_text_only(result: AgentRunResult) -> bool:
+    return (
+        result.status == "completed"
+        and isinstance(result.assistant_output, str)
+        and not _output_token_limit_reached(result)
+        and not _result_has_tool_fragment(result)
+    )
+
+
+def _continuation_request(
+    request: AgentRunRequest,
+    *,
+    partial_text: str,
+) -> AgentRunRequest:
+    if request.model_context_frame is None:
+        return AgentRunRequest(
+            session_id=request.session_id,
+            run_id=request.run_id,
+            model_config=request.model_config,
+            timeout_seconds=request.timeout_seconds,
+            model_context_frame=None,
+            user_input=(
+                "Continue directly from the exact partial assistant text below. "
+                "Do not restart, summarize, or repeat already produced text.\n\n"
+                f"Partial assistant text:\n{partial_text}"
+            ),
+            system_prompt=request.system_prompt,
+            conversation=list(request.conversation or []),
+            tools=list(request.tools or []),
+        )
+    segments = request.model_context_frame.ordered_message_segments()
+    next_seq = max((segment.seq for segment in segments), default=0) + 1
+    continuation_segment = ConversationMessage(
+        seq=next_seq,
+        role="runtime",
+        kind="retry_continuation_instruction",
+        turn_id=None,
+        model_call_id=None,
+        tool_call_id=None,
+        content=(
+            "Continue directly from the exact partial assistant text below. "
+            "Do not restart, summarize, or repeat already produced text.\n\n"
+            f"Partial assistant text:\n{partial_text}"
+        ),
+    )
+    return AgentRunRequest(
+        session_id=request.session_id,
+        run_id=request.run_id,
+        model_config=request.model_config,
+        timeout_seconds=request.timeout_seconds,
+        model_context_frame=type(request.model_context_frame)(
+            message_segments=[*segments, continuation_segment],
+            tool_schema_bindings=list(request.model_context_frame.tool_schema_bindings),
+        ),
+        user_input=request.user_input,
+        system_prompt=request.system_prompt,
+        conversation=list(request.conversation or []),
+        tools=list(request.tools or []),
+    )
+
+
+def _output_token_limit_failure(result: AgentRunResult) -> AgentRunResult:
+    metadata = dict(result.metadata)
+    metadata["partial_output_kind"] = _partial_output_kind(result)
+    return AgentRunResult(
+        status="failed",
+        assistant_output=None,
+        tool_results=[],
+        usage=dict(result.usage),
+        error={
+            "error_class": "model_error",
+            "reason": "output_token_limit_reached",
+            "message": "Model output reached the configured output token limit.",
+        },
+        metadata=metadata,
+    )
+
+
+def _retry_attempt_metadata(
+    *,
+    decision: Any,
+    attempt_number: int,
+    source_error_class: str,
+    source_reason: str,
+    partial_output_kind: str | None = None,
+) -> dict[str, Any]:
+    metadata = {
+        "strategy": decision.strategy,
+        "attempt_number": attempt_number,
+        "max_attempts": decision.max_attempts,
+        "source_error_class": source_error_class,
+        "reason": source_reason,
+        "precondition": decision.precondition,
+        "backoff": decision.backoff,
+        "backoff_seconds": decision.backoff_seconds,
+    }
+    if partial_output_kind is not None:
+        metadata["partial_output_kind"] = partial_output_kind
+    return metadata
+
+
+def _retry_metadata_dict(
+    retry_attempts: list[dict[str, Any]],
+    *,
+    exhausted: bool = False,
+    resulting_error_class: str | None = None,
+    resulting_reason: str | None = None,
+) -> dict[str, Any] | None:
+    if not retry_attempts and not exhausted:
+        return None
+    retry_metadata = {"attempts": list(retry_attempts)}
+    if exhausted:
+        retry_metadata["exhausted"] = True
+        if resulting_error_class is not None:
+            retry_metadata["resulting_error_class"] = resulting_error_class
+        if resulting_reason is not None:
+            retry_metadata["resulting_reason"] = resulting_reason
+    return retry_metadata
+
+
+def _with_retry_metadata(
+    result: AgentRunResult,
+    retry_attempts: list[dict[str, Any]],
+    *,
+    exhausted: bool = False,
+    resulting_error_class: str | None = None,
+    resulting_reason: str | None = None,
+) -> AgentRunResult:
+    if not retry_attempts and not exhausted:
+        return result
+    retry_metadata = _retry_metadata_dict(
+        retry_attempts,
+        exhausted=exhausted,
+        resulting_error_class=resulting_error_class,
+        resulting_reason=resulting_reason,
+    )
+    if retry_metadata is None:
+        return result
+    metadata = dict(result.metadata)
+    metadata["retry"] = retry_metadata
+    return AgentRunResult(
+        status=result.status,
+        assistant_output=result.assistant_output,
+        tool_results=result.tool_results,
+        usage=result.usage,
+        error=result.error,
+        metadata=metadata,
+    )
+
+
+def _is_transient_compression_model_failure(exc: Exception) -> bool:
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    return getattr(exc, "transient", False) is True
 
 
 def _serializable_metadata(metadata: dict[str, Any]) -> dict[str, Any]:

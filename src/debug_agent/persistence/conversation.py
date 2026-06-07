@@ -5,12 +5,14 @@ import json
 import math
 import sqlite3
 from dataclasses import dataclass
+from time import sleep
 from typing import Any
 from uuid import uuid4
 
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.errors import StoreError
 from debug_agent.runtime.contracts import utc_now_iso
+from debug_agent.runtime.retry import RetryBoundaryFacts, RetryController
 
 
 ALLOWED_ROLES = frozenset({"user", "assistant", "tool", "runtime"})
@@ -124,63 +126,82 @@ class ConversationStore:
         prepared = [self._prepare_append(message) for message in messages]
         self._validate_closed_group(prepared)
 
-        try:
-            with self.connection:
-                row = self.connection.execute(
-                    "SELECT COALESCE(MAX(message_index), 0) FROM conversation_messages WHERE run_id = ?",
-                    (run_id,),
-                ).fetchone()
-                next_index = int(row[0]) + 1
-                accepted_at = utc_now_iso()
-                inserted: list[ConversationMessageRow] = []
-                for offset, item in enumerate(prepared):
-                    message_index = next_index + offset
-                    self.connection.execute(
-                        """
-                        INSERT INTO conversation_messages (
-                            session_id, run_id, turn_id, message_index,
-                            message_group_id, model_call_id, group_position,
-                            group_status, group_row_count, role, kind,
-                            content_json, artifact_id, content_sha256,
-                            metadata_json, tool_call_id, source_event_id,
-                            accepted_at, version
+        controller = RetryController()
+        retry_attempts = 0
+        while True:
+            partial_commit_possible = False
+            try:
+                with self.connection:
+                    row = self.connection.execute(
+                        "SELECT COALESCE(MAX(message_index), 0) FROM conversation_messages WHERE run_id = ?",
+                        (run_id,),
+                    ).fetchone()
+                    next_index = int(row[0]) + 1
+                    accepted_at = utc_now_iso()
+                    inserted: list[ConversationMessageRow] = []
+                    for offset, item in enumerate(prepared):
+                        message_index = next_index + offset
+                        partial_commit_possible = True
+                        self.connection.execute(
+                            """
+                            INSERT INTO conversation_messages (
+                                session_id, run_id, turn_id, message_index,
+                                message_group_id, model_call_id, group_position,
+                                group_status, group_row_count, role, kind,
+                                content_json, artifact_id, content_sha256,
+                                metadata_json, tool_call_id, source_event_id,
+                                accepted_at, version
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 'closed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                            """,
+                            (
+                                session_id,
+                                run_id,
+                                item["append"].turn_id,
+                                message_index,
+                                item["append"].message_group_id,
+                                item["append"].model_call_id,
+                                item["append"].group_position,
+                                item["append"].group_row_count,
+                                item["append"].role,
+                                item["append"].kind,
+                                item["content_json"],
+                                item["append"].artifact_id,
+                                item["content_sha256"],
+                                item["metadata_json"],
+                                item["append"].tool_call_id,
+                                item["append"].source_event_id,
+                                accepted_at,
+                            ),
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 'closed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                        """,
-                        (
-                            session_id,
-                            run_id,
-                            item["append"].turn_id,
-                            message_index,
-                            item["append"].message_group_id,
-                            item["append"].model_call_id,
-                            item["append"].group_position,
-                            item["append"].group_row_count,
-                            item["append"].role,
-                            item["append"].kind,
-                            item["content_json"],
-                            item["append"].artifact_id,
-                            item["content_sha256"],
-                            item["metadata_json"],
-                            item["append"].tool_call_id,
-                            item["append"].source_event_id,
-                            accepted_at,
+                        inserted.append(
+                            self._row_by_index(run_id=run_id, message_index=message_index)
+                        )
+                    projection = self._projection_for_append_locked(
+                        session_id=session_id,
+                        run_id=run_id,
+                        source_high_watermark=inserted[-1].message_index,
+                        update_reason=update_reason,
+                        source_event_id=inserted[-1].source_event_id,
+                    )
+                    self._upsert_projection_locked(projection)
+            except sqlite3.DatabaseError as exc:
+                if _is_sqlite_busy_timeout(exc):
+                    decision = controller.decision(
+                        error_class="persistence_error",
+                        reason="sqlite_busy_timeout",
+                        metadata={},
+                        facts=RetryBoundaryFacts(
+                            sqlite_partial_commit=partial_commit_possible
                         ),
                     )
-                    inserted.append(
-                        self._row_by_index(run_id=run_id, message_index=message_index)
-                    )
-                projection = self._projection_for_append_locked(
-                    session_id=session_id,
-                    run_id=run_id,
-                    source_high_watermark=inserted[-1].message_index,
-                    update_reason=update_reason,
-                    source_event_id=inserted[-1].source_event_id,
-                )
-                self._upsert_projection_locked(projection)
-        except sqlite3.DatabaseError as exc:
-            raise _store_error(f"Conversation append failed: {exc}") from exc
-        return inserted
+                    if decision.enabled and retry_attempts < decision.max_attempts:
+                        retry_attempts += 1
+                        if decision.backoff == "fixed" and decision.backoff_seconds:
+                            sleep(decision.backoff_seconds)
+                        continue
+                raise _store_error(f"Conversation append failed: {exc}") from exc
+            return inserted
 
     def list_messages(self, run_id: str) -> list[ConversationMessageRow]:
         rows = self.connection.execute(
@@ -720,3 +741,8 @@ def _store_error(message: str) -> StoreError:
         message=message,
         recoverable=False,
     )
+
+
+def _is_sqlite_busy_timeout(exc: sqlite3.DatabaseError) -> bool:
+    message = str(exc).lower()
+    return "database is locked" in message or "database is busy" in message

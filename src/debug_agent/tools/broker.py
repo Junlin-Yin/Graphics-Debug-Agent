@@ -284,6 +284,33 @@ class ToolBroker:
                     target="",
                     approval_wait_duration_ms=0,
                 ),
+                )
+            return result
+        shell_timeout_error = _validate_shell_timeout_semantics(
+            definition=definition,
+            arguments=normalized_arguments,
+            frozen_config=context.get("frozen_config", {}),
+        )
+        if shell_timeout_error is not None:
+            result = _denied_result(
+                shell_timeout_error,
+                error_class="tool_error",
+                reason="tool_schema_invalid",
+                metadata={"tool_name": tool_name},
+            )
+            self._write_event(
+                session_id=session_id,
+                run_id=run_id,
+                kind="tool_call_denied",
+                audit_recorder=tool_audit_recorder,
+                payload=_audit_payload(
+                    tool_name=tool_name,
+                    arguments=normalized_arguments,
+                    result=result,
+                    duration_seconds=monotonic() - start,
+                    target="",
+                    approval_wait_duration_ms=0,
+                ),
             )
             return result
         view_image_denial = _view_image_availability_denial(
@@ -990,6 +1017,24 @@ def _validate_object_array_items(
     return None
 
 
+def _validate_shell_timeout_semantics(
+    *,
+    definition: ToolDefinition,
+    arguments: dict[str, Any],
+    frozen_config: dict[str, Any],
+) -> str | None:
+    if definition.name != "shell_exec" or "timeout_seconds" not in arguments:
+        return None
+    requested = arguments["timeout_seconds"]
+    max_timeout = _shell_timeout_limits(frozen_config)[1]
+    if requested > max_timeout:
+        return (
+            "timeout_seconds must be less than or equal to the configured "
+            f"maximum of {max_timeout}."
+        )
+    return None
+
+
 def _validate_view_image_semantics(
     *,
     definition: ToolDefinition,
@@ -1324,13 +1369,37 @@ def _is_windows_absolute_or_unc(path: str) -> bool:
 def _effective_shell_timeout(
     *, requested: int | None, frozen_config: dict[str, Any]
 ) -> int:
-    configured = (
-        frozen_config.get("execution", {}).get("default_shell_timeout_seconds")
-        if isinstance(frozen_config, dict)
+    default, _max_timeout = _shell_timeout_limits(frozen_config)
+    return requested if requested is not None else default
+
+
+def _shell_timeout_limits(frozen_config: dict[str, Any]) -> tuple[int, int]:
+    execution = frozen_config.get("execution") if isinstance(frozen_config, dict) else None
+    default_value = (
+        execution.get("default_shell_timeout_seconds")
+        if isinstance(execution, dict)
         else None
     )
-    default = configured if isinstance(configured, int) and configured > 0 else 300
-    return min(requested, default) if requested is not None else default
+    max_value = (
+        execution.get("max_shell_timeout_seconds")
+        if isinstance(execution, dict)
+        else None
+    )
+    default = (
+        default_value
+        if isinstance(default_value, int)
+        and not isinstance(default_value, bool)
+        and default_value > 0
+        else 300
+    )
+    max_timeout = (
+        max_value
+        if isinstance(max_value, int)
+        and not isinstance(max_value, bool)
+        and max_value >= default
+        else 3600
+    )
+    return default, max_timeout
 
 
 def _effective_view_image_timeout(

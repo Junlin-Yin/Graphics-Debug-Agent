@@ -4,6 +4,7 @@ import sqlite3
 import pytest
 
 from debug_agent.persistence.artifacts import ArtifactStore
+from debug_agent.persistence import conversation as conversation_module
 from debug_agent.persistence.conversation import (
     ConversationAppend,
     ConversationStore,
@@ -83,6 +84,80 @@ def test_closed_group_append_updates_projection_and_fact_cut(tmp_path) -> None:
     assert projection.message_refs == [{"index": 1}]
     assert fact_cut.highest_message_index == 1
     assert fact_cut.message_count == 1
+    db.close()
+
+
+def test_closed_group_append_retries_sqlite_busy_before_partial_commit(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(conversation_module, "sleep", lambda _seconds: None)
+    db, _store, _artifacts, session, run = _conversation_store(tmp_path)
+    db_path = db.path
+    db.close()
+
+    class BusyThenSuccessConnection(sqlite3.Connection):
+        busy_failures = 0
+
+        def execute(self, sql, parameters=(), /):
+            if (
+                "SELECT COALESCE(MAX(message_index), 0)" in sql
+                and type(self).busy_failures < 2
+            ):
+                type(self).busy_failures += 1
+                raise sqlite3.OperationalError("database is locked")
+            return super().execute(sql, parameters)
+
+    connection = sqlite3.connect(db_path, factory=BusyThenSuccessConnection)
+    try:
+        store = ConversationStore(connection)
+        rows = store.append_closed_group(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            messages=[
+                _append(
+                    content={"text": "after busy"},
+                    message_group_id="grp_user",
+                    model_call_id=None,
+                )
+            ],
+        )
+
+        assert BusyThenSuccessConnection.busy_failures == 2
+        assert rows[0].message_index == 1
+        assert [row.content for row in store.list_messages(run.run_id)] == [
+            {"text": "after busy"}
+        ]
+    finally:
+        connection.close()
+
+
+def test_closed_group_append_does_not_retry_sqlite_busy_after_partial_commit(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(conversation_module, "sleep", lambda _seconds: None)
+    db, store, _artifacts, session, run = _conversation_store(tmp_path)
+
+    original_upsert = store._upsert_projection_locked
+    calls = 0
+
+    def fail_after_insert_once(projection):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return original_upsert(projection)
+
+    object.__setattr__(store, "_upsert_projection_locked", fail_after_insert_once)
+
+    with pytest.raises(StoreError):
+        store.append_closed_group(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            messages=[_append(content={"text": "partial risk"}, model_call_id=None)],
+        )
+
+    assert calls == 1
+    assert store.list_messages(run.run_id) == []
     db.close()
 
 

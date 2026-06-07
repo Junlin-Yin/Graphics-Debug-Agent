@@ -129,7 +129,7 @@ class ActiveShellProcessHandle:
             self.process.terminate()
 
 
-def tool_definitions() -> list[ToolDefinition]:
+def tool_definitions(*, max_timeout_seconds: int = 3600) -> list[ToolDefinition]:
     return [
         ToolDefinition(
             name="shell_exec",
@@ -143,7 +143,11 @@ def tool_definitions() -> list[ToolDefinition]:
                         "minItems": 1,
                     },
                     "cwd": {"type": "string"},
-                    "timeout_seconds": {"type": "integer", "minimum": 1},
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": max_timeout_seconds,
+                    },
                 },
                 "required": ["argv"],
                 "additionalProperties": False,

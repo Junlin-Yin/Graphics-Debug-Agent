@@ -112,12 +112,20 @@ def tool_definitions() -> list[ToolDefinition]:
     ]
 
 
-def gated_user_facing_tool_definitions() -> list[ToolDefinition]:
+def gated_user_facing_tool_definitions(
+    config_snapshot: dict[str, Any] | None = None,
+) -> list[ToolDefinition]:
     from debug_agent.tools import runtime_control, shell
 
+    max_timeout_seconds = 3600
+    execution = (config_snapshot or {}).get("execution")
+    if isinstance(execution, dict) and isinstance(
+        execution.get("max_shell_timeout_seconds"), int
+    ):
+        max_timeout_seconds = execution["max_shell_timeout_seconds"]
     return [
         *tool_definitions(),
-        *shell.tool_definitions(),
+        *shell.tool_definitions(max_timeout_seconds=max_timeout_seconds),
         *runtime_control.tool_definitions(),
     ]
 

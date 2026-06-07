@@ -111,6 +111,48 @@ def _with_durable_history(
     return durable_conversation
 
 
+def _compression_session(session):
+    return type(session)(
+        **{
+            **session.to_dict(),
+            "config_snapshot": {
+                **session.config_snapshot,
+                "context": {
+                    "window_tokens": 420,
+                    "omit_old_tool_results_at_ratio": 1.0,
+                    "compress_history_at_ratio": 0.1,
+                    "retain_recent_model_calls": 1,
+                    "compression_reserved_output_tokens": 40,
+                },
+            },
+        }
+    )
+
+
+def _compression_conversation() -> list[dict]:
+    return [
+        {
+            "seq": 1,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-1",
+            "model_call_id": "call-1",
+            "content": "old output " * 40,
+            "estimated_tokens": 120,
+        },
+        {
+            "seq": 2,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "turn_id": "turn-2",
+            "model_call_id": "call-2",
+            "content": "consumed old",
+            "estimated_tokens": 8,
+            "metadata": {"consumed_model_call_ids": ["call-1"]},
+        },
+    ]
+
+
 def test_prompt_executor_appends_accepted_user_and_assistant_durable_messages(
     tmp_path,
 ) -> None:
@@ -145,6 +187,407 @@ def test_prompt_executor_appends_accepted_user_and_assistant_durable_messages(
     assert ConversationStore(db.connection, artifact_store=artifacts).get_projection(
         run.run_id
     ).source_high_watermark == 2
+    db.close()
+
+
+def test_prompt_executor_retries_provider_timeout_before_accepting_result(
+    tmp_path,
+) -> None:
+    class RetryableAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, request, context):
+            self.calls += 1
+            if self.calls == 1:
+                return AgentRunResult(
+                    status="failed",
+                    assistant_output=None,
+                    tool_results=[],
+                    usage={},
+                    error={
+                        "error_class": "model_error",
+                        "reason": "provider_timeout",
+                        "message": "provider timed out",
+                    },
+                    metadata={},
+                )
+            return AgentRunResult(
+                status="completed",
+                assistant_output="retried answer",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+    (
+        workspace,
+        db,
+        _sessions,
+        _runs,
+        _events,
+        _checkpoints,
+        artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    adapter = RetryableAdapter()
+    executor = type(executor)(
+        **{**executor.__dict__, "adapter": adapter}
+    )
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="hello",
+        workspace_root=str(workspace),
+    )
+    rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
+        run.run_id
+    )
+
+    assert adapter.calls == 2
+    assert result.status == "completed"
+    assert result.assistant_output == "retried answer"
+    assert [(row.role, row.kind, row.content) for row in rows] == [
+        ("user", "user_input", {"content": "hello"}),
+        ("assistant", "assistant_output", {"content": "retried answer"}),
+    ]
+    assert result.metadata["retry"]["attempts"][0]["strategy"] == "repeat_call"
+    assert result.metadata["retry"]["attempts"][0]["reason"] == "provider_timeout"
+    db.close()
+
+
+def test_prompt_executor_repeat_call_exhaustion_records_resulting_error(tmp_path) -> None:
+    class ExhaustingAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, request, context):
+            self.calls += 1
+            return AgentRunResult(
+                status="failed",
+                assistant_output=None,
+                tool_results=[],
+                usage={},
+                error={
+                    "error_class": "model_error",
+                    "reason": "provider_timeout",
+                    "message": "provider timed out",
+                },
+                metadata={},
+            )
+
+    (
+        workspace,
+        db,
+        _sessions,
+        _runs,
+        _events,
+        _checkpoints,
+        _artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    adapter = ExhaustingAdapter()
+    executor = type(executor)(**{**executor.__dict__, "adapter": adapter})
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="hello",
+        workspace_root=str(workspace),
+    )
+
+    assert adapter.calls == 3
+    assert result.status == "failed"
+    assert result.metadata["retry"]["exhausted"] is True
+    assert result.metadata["retry"]["resulting_error_class"] == "model_error"
+    assert result.metadata["retry"]["resulting_reason"] == "provider_timeout"
+    db.close()
+
+
+def test_prompt_executor_continues_text_only_output_token_limit_before_durable_append(
+    tmp_path,
+) -> None:
+    class ContinuationAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, request, context):
+            self.calls += 1
+            if self.calls == 1:
+                return AgentRunResult(
+                    status="completed",
+                    assistant_output="partial ",
+                    tool_results=[],
+                    usage={},
+                    error=None,
+                    metadata={
+                        "provider_finish": {
+                            "finish_reason": "max_tokens",
+                            "output_token_limit_reached": True,
+                        }
+                    },
+                )
+            return AgentRunResult(
+                status="completed",
+                assistant_output="continued",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+    (
+        workspace,
+        db,
+        _sessions,
+        _runs,
+        _events,
+        _checkpoints,
+        artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    adapter = ContinuationAdapter()
+    executor = type(executor)(
+        **{**executor.__dict__, "adapter": adapter}
+    )
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="continue",
+        workspace_root=str(workspace),
+    )
+    rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
+        run.run_id
+    )
+
+    assert adapter.calls == 2
+    assert result.status == "completed"
+    assert result.assistant_output == "partial continued"
+    assert [(row.role, row.kind, row.content) for row in rows] == [
+        ("user", "user_input", {"content": "continue"}),
+        ("assistant", "assistant_output", {"content": "partial continued"}),
+    ]
+    assert result.metadata["retry"]["attempts"][0]["strategy"] == "continue_generation"
+    assert result.metadata["retry"]["attempts"][0]["partial_output_kind"] == (
+        "text_only_no_tool_fragment"
+    )
+    db.close()
+
+
+def test_prompt_executor_rejects_output_token_limit_partial_tool_fragment(
+    tmp_path,
+) -> None:
+    class ToolFragmentAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, request, context):
+            self.calls += 1
+            return AgentRunResult(
+                status="completed",
+                assistant_output="partial",
+                tool_results=[{"status": "ok"}],
+                usage={},
+                error=None,
+                metadata={
+                    "provider_finish": {
+                        "finish_reason": "max_tokens",
+                        "output_token_limit_reached": True,
+                    }
+                },
+            )
+
+    (
+        workspace,
+        db,
+        _sessions,
+        _runs,
+        _events,
+        _checkpoints,
+        artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    adapter = ToolFragmentAdapter()
+    executor = type(executor)(**{**executor.__dict__, "adapter": adapter})
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="continue",
+        workspace_root=str(workspace),
+    )
+    rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
+        run.run_id
+    )
+
+    assert adapter.calls == 1
+    assert result.status == "failed"
+    assert result.error["reason"] == "output_token_limit_reached"
+    assert result.metadata["retry"]["exhausted"] is True
+    assert result.metadata["partial_output_kind"] == "tool_fragment"
+    assert [row.kind for row in rows] == ["user_input", "failure_fact"]
+    db.close()
+
+
+def test_prompt_executor_rejects_continuation_tool_fragment_without_accepting_partial(
+    tmp_path,
+) -> None:
+    class ContinuationToolFragmentAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, request, context):
+            self.calls += 1
+            if self.calls == 1:
+                return AgentRunResult(
+                    status="completed",
+                    assistant_output="partial ",
+                    tool_results=[],
+                    usage={},
+                    error=None,
+                    metadata={
+                        "provider_finish": {
+                            "finish_reason": "max_tokens",
+                            "output_token_limit_reached": True,
+                        }
+                    },
+                )
+            return AgentRunResult(
+                status="completed",
+                assistant_output="tool-ish",
+                tool_results=[{"status": "ok"}],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+    (
+        workspace,
+        db,
+        _sessions,
+        _runs,
+        _events,
+        _checkpoints,
+        artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    adapter = ContinuationToolFragmentAdapter()
+    executor = type(executor)(**{**executor.__dict__, "adapter": adapter})
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="continue",
+        workspace_root=str(workspace),
+    )
+    rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
+        run.run_id
+    )
+
+    assert adapter.calls == 2
+    assert result.status == "failed"
+    assert result.error["reason"] == "output_token_limit_reached"
+    assert result.metadata["retry"]["exhausted"] is True
+    assert result.metadata["retry"]["resulting_error_class"] == "model_error"
+    assert result.metadata["retry"]["resulting_reason"] == "output_token_limit_reached"
+    assert [row.kind for row in rows] == ["user_input", "failure_fact"]
+    db.close()
+
+
+def test_prompt_executor_routes_retry_result_token_limit_through_continuation(
+    tmp_path,
+) -> None:
+    class TimeoutThenContinuationAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, request, context):
+            self.calls += 1
+            if self.calls == 1:
+                return AgentRunResult(
+                    status="failed",
+                    assistant_output=None,
+                    tool_results=[],
+                    usage={},
+                    error={
+                        "error_class": "model_error",
+                        "reason": "provider_timeout",
+                        "message": "provider timed out",
+                    },
+                    metadata={},
+                )
+            if self.calls == 2:
+                return AgentRunResult(
+                    status="completed",
+                    assistant_output="partial ",
+                    tool_results=[],
+                    usage={},
+                    error=None,
+                    metadata={
+                        "provider_finish": {
+                            "finish_reason": "max_tokens",
+                            "output_token_limit_reached": True,
+                        }
+                    },
+                )
+            return AgentRunResult(
+                status="completed",
+                assistant_output="continued",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+    (
+        workspace,
+        db,
+        _sessions,
+        _runs,
+        _events,
+        _checkpoints,
+        artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    adapter = TimeoutThenContinuationAdapter()
+    executor = type(executor)(**{**executor.__dict__, "adapter": adapter})
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="continue",
+        workspace_root=str(workspace),
+    )
+    rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
+        run.run_id
+    )
+
+    assert adapter.calls == 3
+    assert result.status == "completed"
+    assert result.assistant_output == "partial continued"
+    assert [(row.role, row.kind, row.content) for row in rows] == [
+        ("user", "user_input", {"content": "continue"}),
+        ("assistant", "assistant_output", {"content": "partial continued"}),
+    ]
+    assert [attempt["strategy"] for attempt in result.metadata["retry"]["attempts"]] == [
+        "repeat_call",
+        "continue_generation",
+    ]
     db.close()
 
 
@@ -2185,6 +2628,209 @@ def test_prompt_executor_automatically_compresses_before_initial_model_call(
         (run.run_id,),
     ).fetchone()[0] == 0
     assert checkpoints.list_for_session(session.session_id) == []
+    db.close()
+
+
+def test_prompt_executor_retries_transient_compression_model_failure(tmp_path) -> None:
+    class RecordingAdapter:
+        def run(self, request, context):
+            return AgentRunResult(
+                status="completed",
+                assistant_output="answer",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+    attempts = 0
+
+    def compression_model(_frame):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TimeoutError("temporary compression transport failure")
+        return json.dumps(
+            {
+                "task_goal": "continue debugging",
+                "completed_work": ["read old output"],
+                "inspected_or_modified_files": ["old.py"],
+                "remaining_work": ["finish fix"],
+                "next_plan": ["run unit tests"],
+                "key_decisions": ["keep snapshots non-authoritative"],
+                "constraints": ["no manual compression"],
+                "visible_artifact_refs": [],
+            }
+        )
+
+    (
+        workspace,
+        db,
+        _sessions,
+        runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=artifacts,
+        adapter=RecordingAdapter(),
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
+        run_store=runs,
+        compression_model=compression_model,
+    )
+    session = _compression_session(session)
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="continue",
+        workspace_root=str(workspace),
+        conversation=_compression_conversation(),
+    )
+
+    assert attempts == 2
+    assert result.status == "completed"
+    assert result.metadata["context_optimization"]["retry"]["attempts"][0]["strategy"] == (
+        "repeat_call"
+    )
+    assert result.metadata["context_optimization"]["retry"]["attempts"][0]["reason"] == (
+        "compression_model_failed"
+    )
+    assert [event.kind for event in events.list_for_run(run.run_id)].count(
+        "model_call_failed"
+    ) == 1
+    db.close()
+
+
+def test_prompt_executor_exhausts_transient_compression_model_failure_retry(
+    tmp_path,
+) -> None:
+    class FailingAdapter:
+        def run(self, request, context):
+            raise AssertionError("ordinary model call should not run after compression failure")
+
+    attempts = 0
+
+    def compression_model(_frame):
+        nonlocal attempts
+        attempts += 1
+        raise TimeoutError("temporary compression transport failure")
+
+    (
+        workspace,
+        db,
+        _sessions,
+        runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=artifacts,
+        conversation_store=ConversationStore(db.connection, artifact_store=artifacts),
+        adapter=FailingAdapter(),
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
+        run_store=runs,
+        compression_model=compression_model,
+    )
+    session = _compression_session(session)
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="continue",
+        workspace_root=str(workspace),
+        conversation=_compression_conversation(),
+    )
+
+    assert attempts == 2
+    assert result.status == "failed"
+    assert result.metadata["context_optimization"]["retry"]["exhausted"] is True
+    assert (
+        result.metadata["context_optimization"]["retry"]["resulting_error_class"]
+        == "model_error"
+    )
+    assert (
+        result.metadata["context_optimization"]["retry"]["resulting_reason"]
+        == "compression_model_failed"
+    )
+    durable_rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
+        run.run_id
+    )
+    assert durable_rows[-1].kind == "failure_fact"
+    assert durable_rows[-1].content["reason"] == "compression_failed"
+    db.close()
+
+
+def test_prompt_executor_does_not_retry_deterministic_compression_output_failure(
+    tmp_path,
+) -> None:
+    class FailingAdapter:
+        def run(self, request, context):
+            raise AssertionError("ordinary model call should not run after compression failure")
+
+    attempts = 0
+
+    def compression_model(_frame):
+        nonlocal attempts
+        attempts += 1
+        return ""
+
+    (
+        workspace,
+        db,
+        _sessions,
+        runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        _executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    executor = PromptAgentExecutor(
+        event_writer=events,
+        checkpoint_store=checkpoints,
+        artifact_store=artifacts,
+        conversation_store=ConversationStore(db.connection, artifact_store=artifacts),
+        adapter=FailingAdapter(),
+        tool_definitions=[],
+        system_prompt="system",
+        skill_snapshot_store=SkillSnapshotStore(db.connection),
+        todo_plan_store=TodoPlanStore(db.connection),
+        run_store=runs,
+        compression_model=compression_model,
+    )
+    session = _compression_session(session)
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="continue",
+        workspace_root=str(workspace),
+        conversation=_compression_conversation(),
+    )
+
+    assert attempts == 1
+    assert result.status == "failed"
+    assert "retry" not in result.metadata["context_optimization"]
     db.close()
 
 

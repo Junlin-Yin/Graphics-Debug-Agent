@@ -14,7 +14,7 @@ from debug_agent.adapters.model_factory import ModelFactoryResult
 from debug_agent.persistence.conversation import ConversationAppend, ConversationStore
 from debug_agent.persistence.errors import StoreError
 from debug_agent.runtime import orchestrator as orchestrator_module
-from debug_agent.runtime.orchestrator import RuntimeOrchestrator
+from debug_agent.runtime.orchestrator import RuntimeOrchestrator, visible_tool_definitions
 
 
 def _config(response: str = "fake answer") -> dict:
@@ -598,6 +598,10 @@ def test_resume_preserves_approval_grants_active_skills_and_frozen_tools(
         encoding="utf-8",
     )
     config = _config("skill activated")
+    config["execution"] = {
+        "default_shell_timeout_seconds": 11,
+        "max_shell_timeout_seconds": 22,
+    }
     config["fake_tool_calls"] = [
         {"name": "activate_skill", "args": {"name": "alpha"}, "id": "call_alpha"}
     ]
@@ -621,6 +625,10 @@ def test_resume_preserves_approval_grants_active_skills_and_frozen_tools(
             ).fetchone()[0]
         )["approval_state"]
         tools = resumed.runtime.tool_lines()
+        tool_definitions = {
+            definition.name: definition
+            for definition in visible_tool_definitions(session.config_snapshot)
+        }
         skills = resumed.runtime.skill_lines()
     finally:
         resumed.runtime.close()
@@ -631,6 +639,11 @@ def test_resume_preserves_approval_grants_active_skills_and_frozen_tools(
     assert run.active_skills[0]["name"] == "alpha"
     assert any("alpha" in line for line in skills)
     assert any("shell_exec" in line for line in tools)
+    assert (
+        tool_definitions["shell_exec"]
+        .input_schema["properties"]["timeout_seconds"]["maximum"]
+        == 22
+    )
     assert any("view_image" in line and "disabled" in line for line in tools)
 
 
