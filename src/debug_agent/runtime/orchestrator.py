@@ -4,7 +4,8 @@ from collections.abc import Callable
 import hashlib
 import os
 import json
-import socket
+import platform
+import subprocess
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -568,8 +569,80 @@ class ReplStartResult:
 
 
 class RuntimeOrchestrator:
-    def __init__(self, *, workspace_root: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        workspace_root: str | Path | None = None,
+        stale_confirmation: Callable[[dict[str, Any]], bool] | None = None,
+        host_identity_provider: Any | None = None,
+        process_liveness: Any | None = None,
+    ) -> None:
         self.workspace_root = resolve_workspace_root(workspace_root)
+        self._stale_confirmation = stale_confirmation
+        self._host_identity_provider = host_identity_provider or _HostIdentityProvider()
+        self._process_liveness = process_liveness or _ProcessLiveness()
+
+    def _try_fail_close_stale_owner(
+        self,
+        *,
+        db: RuntimeDatabase,
+        sessions: SessionStore,
+        checkpoints: CheckpointStore,
+        active: Any | None,
+    ) -> OneShotResult | None:
+        if active is None:
+            return None
+        proof = _capture_stale_proof(
+            db.connection,
+            workspace_root=self.workspace_root,
+            session_id=active.session_id,
+            host_identity_provider=self._host_identity_provider,
+            process_liveness=self._process_liveness,
+        )
+        if proof.error_reason is not None:
+            return _ownership_conflict_one_shot(
+                active,
+                reason=proof.error_reason,
+                message=_active_conflict_message(active.session_id),
+            )
+        if self._stale_confirmation is None:
+            return _ownership_conflict_one_shot(
+                active,
+                reason="workspace_owner_confirmation_unavailable",
+                message=_stale_confirmation_unavailable_message(active.session_id),
+            )
+        if not self._stale_confirmation(_stale_confirmation_request(proof)):
+            return _ownership_conflict_one_shot(
+                active,
+                reason="workspace_owner_active",
+                message=_active_conflict_message(active.session_id),
+            )
+        checkpoint = _prepare_stale_terminal_checkpoint(checkpoints, proof)
+        closed = sessions.fail_close_stale_owner(
+            workspace_root=self.workspace_root,
+            session_id=proof.session_id,
+            run_id=proof.run_id,
+            owner_pid=proof.owner_pid,
+            owner_host_id=proof.owner_host_id,
+            owner_token=proof.owner_token,
+            checkpoint_id=checkpoint.checkpoint_id if checkpoint is not None else None,
+            checkpoint=checkpoint,
+        )
+        if not closed:
+            return _ownership_conflict_one_shot(
+                active,
+                reason="workspace_owner_active",
+                message=_active_conflict_message(active.session_id),
+            )
+        TraceWriter(db.connection, db.path.parent).refresh_if_stale(active.session_id)
+        return OneShotResult(
+            exit_code=0,
+            assistant_output=None,
+            error=None,
+            message="Stale owner failed closed.",
+            session_id=active.session_id,
+            run_id=proof.run_id,
+        )
 
     def run_one_shot(
         self,
@@ -615,30 +688,47 @@ class RuntimeOrchestrator:
                 )
             except StoreError as exc:
                 active = sessions.find_active_for_workspace(self.workspace_root)
-                message = _active_conflict_message(active.session_id if active else "unknown")
-                if active is not None:
-                    write_runtime_log(
-                        sessions_root,
-                        session_id=active.session_id,
-                        run_id=active.active_run_id,
-                        level="ERROR",
-                        event="ownership_conflict",
-                        message=message,
-                        metadata={"workspace_root": str(self.workspace_root)},
-                    )
-                return OneShotResult(
-                    exit_code=ERROR_ACTIVE_SESSION_CONFLICT,
-                    assistant_output=None,
-                    error={
-                        "error_class": exc.error_class,
-                        "message": message,
-                        "source": exc.source,
-                        "recoverable": exc.recoverable,
-                    },
-                    message=message,
-                    session_id=active.session_id if active else None,
-                    run_id=None,
+                stale_result = self._try_fail_close_stale_owner(
+                    db=db,
+                    sessions=sessions,
+                    checkpoints=checkpoints,
+                    active=active,
                 )
+                if stale_result is not None:
+                    if stale_result.exit_code != 0:
+                        return stale_result
+                    session = sessions.create(
+                        workspace_root=self.workspace_root,
+                        approval_mode=approval_mode,
+                        config_snapshot=config_snapshot,
+                    )
+                else:
+                    message = _active_conflict_message(
+                        active.session_id if active else "unknown"
+                    )
+                    if active is not None:
+                        write_runtime_log(
+                            sessions_root,
+                            session_id=active.session_id,
+                            run_id=active.active_run_id,
+                            level="ERROR",
+                            event="ownership_conflict",
+                            message=message,
+                            metadata={"workspace_root": str(self.workspace_root)},
+                        )
+                    return OneShotResult(
+                        exit_code=ERROR_ACTIVE_SESSION_CONFLICT,
+                        assistant_output=None,
+                        error={
+                            "error_class": exc.error_class,
+                            "message": message,
+                            "source": exc.source,
+                            "recoverable": exc.recoverable,
+                        },
+                        message=message,
+                        session_id=active.session_id if active else None,
+                        run_id=None,
+                    )
             run = runs.create_prompt_run(session.session_id)
             session = sessions.set_active_run(session.session_id, run.run_id)
             owner_facts = _current_owner_facts()
@@ -941,9 +1031,6 @@ class RuntimeOrchestrator:
         )
 
     def start_resumed_repl(self, session_id: str) -> ReplStartResult:
-        preflight = self._preflight_resumed_repl(session_id)
-        if preflight is not None:
-            return preflight
         resume = self._resume_lineage(session_id)
         if resume.exit_code != 0:
             return ReplStartResult(
@@ -1116,13 +1203,40 @@ class RuntimeOrchestrator:
                     error_class="runtime_error",
                     reason="resume_not_eligible",
                 )
+            stale_target_closed = False
             if session.status == "running" or run.status == "running":
-                return _resume_error(
-                    session_id=session.session_id,
-                    message=f"Session is not eligible for resume: {session.session_id}",
-                    error_class="runtime_error",
-                    reason="resume_not_eligible",
+                active = sessions.find_active_for_workspace(self.workspace_root)
+                if active is None or active.session_id != session.session_id:
+                    return _resume_error(
+                        session_id=session.session_id,
+                        message=f"Session is not eligible for resume: {session.session_id}",
+                        error_class="runtime_error",
+                        reason="resume_not_eligible",
+                    )
+                stale_result = self._try_fail_close_stale_owner(
+                    db=db,
+                    sessions=sessions,
+                    checkpoints=checkpoints,
+                    active=active,
                 )
+                if stale_result is None:
+                    return _resume_error(
+                        session_id=session.session_id,
+                        message=f"Session is not eligible for resume: {session.session_id}",
+                        error_class="runtime_error",
+                        reason="resume_not_eligible",
+                    )
+                if stale_result.exit_code != 0:
+                    error = stale_result.error or {}
+                    return _resume_error(
+                        session_id=session.session_id,
+                        message=stale_result.message,
+                        error_class=str(error.get("error_class") or "policy_error"),
+                        reason=str(error.get("reason") or "workspace_owner_active"),
+                    )
+                stale_target_closed = True
+                session = sessions.get(session.session_id)
+                run = runs.get(run.run_id)
             if session.status not in {"completed", "failed"} or run.status not in {
                 "completed",
                 "failed",
@@ -1135,9 +1249,14 @@ class RuntimeOrchestrator:
                 )
             checkpoint_id = session.latest_checkpoint_id
             if not checkpoint_id or checkpoint_id != run.latest_checkpoint_id:
+                message = (
+                    f"Target session cannot be recovered after stale fail-close: {session.session_id}"
+                    if stale_target_closed
+                    else f"Session requires a terminal recovery checkpoint: {session.session_id}"
+                )
                 return _resume_error(
                     session_id=session.session_id,
-                    message=f"Session requires a terminal recovery checkpoint: {session.session_id}",
+                    message=message,
                     error_class="runtime_error",
                     reason="resume_checkpoint_required",
                 )
@@ -1187,12 +1306,29 @@ class RuntimeOrchestrator:
                 )
             active = sessions.find_active_for_workspace(self.workspace_root)
             if active is not None:
-                return _resume_error(
-                    session_id=session.session_id,
-                    message=_active_conflict_message(active.session_id),
-                    error_class="policy_error",
-                    reason="workspace_owner_active",
+                stale_result = self._try_fail_close_stale_owner(
+                    db=db,
+                    sessions=sessions,
+                    checkpoints=checkpoints,
+                    active=active,
                 )
+                if stale_result is None:
+                    return _resume_error(
+                        session_id=session.session_id,
+                        message=_active_conflict_message(active.session_id),
+                        error_class="policy_error",
+                        reason="workspace_owner_active",
+                    )
+                if stale_result.exit_code != 0:
+                    error = stale_result.error or {}
+                    return _resume_error(
+                        session_id=session.session_id,
+                        message=stale_result.message,
+                        error_class=str(error.get("error_class") or "policy_error"),
+                        reason=str(error.get("reason") or "workspace_owner_active"),
+                    )
+                session = sessions.get(session.session_id)
+                run = runs.get(run.run_id)
             owner_facts = _current_owner_facts()
             try:
                 _revive_same_lineage(
@@ -1381,31 +1517,56 @@ class RuntimeOrchestrator:
             )
         except StoreError as exc:
             active = sessions.find_active_for_workspace(self.workspace_root)
-            message = _active_conflict_message(active.session_id if active else "unknown")
-            if active is not None:
-                write_runtime_log(
-                    sessions_root,
-                    session_id=active.session_id,
-                    run_id=active.active_run_id,
-                    level="ERROR",
-                    event="ownership_conflict",
-                    message=message,
-                    metadata={"workspace_root": str(self.workspace_root)},
-                )
-            db.close()
-            return ReplStartResult(
-                runtime=None,
-                error=ReplStartError(
-                    exit_code=3,
-                    message=message,
-                    error={
-                        "error_class": exc.error_class,
-                        "message": message,
-                        "source": exc.source,
-                        "recoverable": exc.recoverable,
-                    },
-                ),
+            stale_result = self._try_fail_close_stale_owner(
+                db=db,
+                sessions=sessions,
+                checkpoints=checkpoints,
+                active=active,
             )
+            if stale_result is not None and stale_result.exit_code == 0:
+                session = sessions.create(
+                    workspace_root=self.workspace_root,
+                    approval_mode=approval_mode,
+                    config_snapshot=config_snapshot,
+                )
+            elif stale_result is not None:
+                db.close()
+                return ReplStartResult(
+                    runtime=None,
+                    error=ReplStartError(
+                        exit_code=stale_result.exit_code,
+                        message=stale_result.message,
+                        error=stale_result.error,
+                    ),
+                )
+            else:
+                message = _active_conflict_message(
+                    active.session_id if active else "unknown"
+                )
+                if active is not None:
+                    write_runtime_log(
+                        sessions_root,
+                        session_id=active.session_id,
+                        run_id=active.active_run_id,
+                        level="ERROR",
+                        event="ownership_conflict",
+                        message=message,
+                        metadata={"workspace_root": str(self.workspace_root)},
+                    )
+                db.close()
+                return ReplStartResult(
+                    runtime=None,
+                    error=ReplStartError(
+                        exit_code=3,
+                        message=message,
+                        error={
+                            "error_class": exc.error_class,
+                            "message": message,
+                            "source": exc.source,
+                            "recoverable": exc.recoverable,
+                        },
+                    ),
+                )
 
         run = runs.create_prompt_run(session.session_id)
         session = sessions.set_active_run(session.session_id, run.run_id)
@@ -2087,12 +2248,211 @@ def _indexes_from_message_refs(message_refs: list[dict[str, int]]) -> list[int]:
     return indexes
 
 
+@dataclass(frozen=True)
+class _StaleProof:
+    session_id: str = ""
+    run_id: str = ""
+    owner_pid: int = 0
+    owner_host_id: str = ""
+    owner_token: str = ""
+    error_reason: str | None = None
+
+
+class _HostIdentityProvider:
+    def current_host_id(self) -> str | None:
+        machine_id = _platform_machine_id()
+        if machine_id is None:
+            return None
+        digest = hashlib.sha256(machine_id.encode("utf-8")).hexdigest()
+        return f"host-v1:sha256({digest})"
+
+
+class _ProcessLiveness:
+    def pid_exists(self, pid: int) -> bool:
+        if pid <= 0:
+            raise OSError("invalid pid")
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+
+def _platform_machine_id() -> str | None:
+    system = platform.system().lower()
+    if system == "linux":
+        for path in (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id")):
+            try:
+                value = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if value:
+                return value
+        return None
+    if system == "darwin":
+        try:
+            result = subprocess.run(
+                ["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        for line in result.stdout.splitlines():
+            if "IOPlatformUUID" not in line:
+                continue
+            _key, _sep, value = line.partition("=")
+            parsed = value.strip().strip('"')
+            if parsed:
+                return parsed
+        return None
+    if system == "windows":
+        try:
+            import winreg  # type: ignore[import-not-found]
+
+            with winreg.OpenKey(  # type: ignore[attr-defined]
+                winreg.HKEY_LOCAL_MACHINE,  # type: ignore[attr-defined]
+                r"SOFTWARE\Microsoft\Cryptography",
+            ) as key:
+                value, _kind = winreg.QueryValueEx(key, "MachineGuid")  # type: ignore[attr-defined]
+        except Exception:
+            return None
+        return str(value).strip() or None
+    return None
+
+
+def _capture_stale_proof(
+    connection: sqlite3.Connection,
+    *,
+    workspace_root: Path,
+    session_id: str,
+    host_identity_provider: Any,
+    process_liveness: Any,
+) -> _StaleProof:
+    row = connection.execute(
+        """
+        SELECT session_id, workspace_root, active_run_id, owner_pid,
+               owner_host_id, owner_token
+        FROM sessions
+        WHERE session_id = ? AND status = 'running'
+        """,
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        return _StaleProof(error_reason="workspace_owner_active")
+    if row[1] != str(Path(workspace_root).resolve()):
+        return _StaleProof(error_reason="workspace_owner_active")
+    run_id = row[2]
+    owner_pid = row[3]
+    owner_host_id = row[4]
+    owner_token = row[5]
+    if not isinstance(run_id, str) or not run_id:
+        return _StaleProof(error_reason="workspace_owner_not_proven_stale")
+    if not isinstance(owner_host_id, str) or not owner_host_id:
+        return _StaleProof(error_reason="workspace_owner_not_proven_stale")
+    if not isinstance(owner_token, str) or not owner_token:
+        return _StaleProof(error_reason="workspace_owner_not_proven_stale")
+    try:
+        owner_pid_int = int(owner_pid)
+    except (TypeError, ValueError):
+        return _StaleProof(error_reason="workspace_owner_not_proven_stale")
+    try:
+        current_host_id = host_identity_provider.current_host_id()
+    except Exception:
+        return _StaleProof(error_reason="workspace_owner_not_proven_stale")
+    if not isinstance(current_host_id, str) or current_host_id != owner_host_id:
+        return _StaleProof(error_reason="workspace_owner_not_proven_stale")
+    try:
+        pid_exists = process_liveness.pid_exists(owner_pid_int)
+    except Exception:
+        return _StaleProof(error_reason="workspace_owner_not_proven_stale")
+    if pid_exists:
+        return _StaleProof(error_reason="workspace_owner_not_proven_stale")
+    return _StaleProof(
+        session_id=str(row[0]),
+        run_id=run_id,
+        owner_pid=owner_pid_int,
+        owner_host_id=owner_host_id,
+        owner_token=owner_token,
+    )
+
+
+def _ownership_conflict_one_shot(
+    active: Any,
+    *,
+    reason: str,
+    message: str,
+) -> OneShotResult:
+    error = NormalizedError.create(
+        "policy_error",
+        reason,
+        message=message,
+        scope="startup",
+    )
+    return OneShotResult(
+        exit_code=ERROR_ACTIVE_SESSION_CONFLICT,
+        assistant_output=None,
+        error=error.to_dict(),
+        message=message,
+        session_id=active.session_id,
+        run_id=getattr(active, "active_run_id", None),
+    )
+
+
+def _stale_confirmation_unavailable_message(session_id: str) -> str:
+    return (
+        "An active debug-agent session already owns this workspace and appears stale, "
+        "but confirmation is unavailable.\n"
+        f"Session: {session_id}"
+    )
+
+
+def _stale_confirmation_request(proof: _StaleProof) -> dict[str, Any]:
+    return {
+        "session_id": proof.session_id,
+        "run_id": proof.run_id,
+        "evidence": {
+            "host_match": True,
+            "pid_absent": True,
+            "owner_token_present": True,
+        },
+        "message": (
+            "The active owner appears stale on this host. Confirm fail-close of "
+            "the old session before continuing?"
+        ),
+    }
+
+
+def _prepare_stale_terminal_checkpoint(
+    checkpoints: CheckpointStore,
+    proof: _StaleProof,
+) -> Any | None:
+    try:
+        return checkpoints._new_terminal_recovery_checkpoint(
+            checkpoint_id=f"chk_{uuid4().hex}",
+            session_id=proof.session_id,
+            run_id=proof.run_id,
+            terminal_status="failed",
+            terminal_reason="terminal_stale",
+            terminal_error=None,
+            created_at=utc_now_iso(),
+            artifact_ids=[],
+        )
+    except StoreError:
+        return None
+
+
 def _current_owner_facts() -> dict[str, Any]:
-    host_name = socket.gethostname() or "unknown"
-    host_digest = hashlib.sha256(host_name.encode("utf-8")).hexdigest()
+    host_id = _HostIdentityProvider().current_host_id()
+    if host_id is None:
+        host_id = "host-v1:sha256(unavailable)"
     return {
         "pid": os.getpid(),
-        "host_id": f"host-v1:sha256({host_digest})",
+        "host_id": host_id,
         "owner_token": f"owner_{uuid4().hex}",
     }
 

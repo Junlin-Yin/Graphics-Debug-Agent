@@ -442,24 +442,39 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 
 **Runnable state:** startup/resume blocked by a proven-stale owner can proceed only after confirmation and owner-token-fenced durable closure.
 
-- [ ] Persist active ownership `pid`, `host_id`, and `owner_token`.
-- [ ] Generate a fresh `owner_token` on every startup claim and successful resume reclaim.
-- [ ] Use `owner_token` fencing for ordinary ownership release.
-- [ ] Implement the documented `host-v1:sha256(<platform-stable-machine-id>)` host identity provider with fake test seam.
-- [ ] Prove stale only when recorded host matches current host, recorded pid is absent, and owner token is present and captured.
-- [ ] Fail closed when host id is unavailable/mismatched, pid is missing/live/unreliably checkable, or token is missing.
-- [ ] Prompt interactive startup/resume users with blocked owner id and concise stale evidence summary; do not promise resumability.
-- [ ] Fail closed when confirmation cannot be obtained.
-- [ ] Implement owner-token-fenced stale fail-close transaction that compares workspace root, session id, run id, host id, pid, and owner token.
-- [ ] For checkpoint-eligible stale owners, commit terminal checkpoint, terminal status `failed`, terminal reason `terminal_stale`, `latest_checkpoint_id`, `stale_fail_closed`, and ownership release in one fenced transaction.
-- [ ] For non-resumable stale owners, commit terminal status `failed`, terminal reason `terminal_stale`, `stale_fail_closed`, clear/unset `latest_checkpoint_id`, and ownership release in one fenced transaction.
-- [ ] Ensure prepared checkpoint payloads outside SQLite are not runtime truth unless the fenced transaction commits a checkpoint row/reference.
-- [ ] Write exactly the redacted `stale_fail_closed` proof summary and no raw host id, pid, token, process name, command line, confirmation text, or user input details.
-- [ ] Do not write normalized error facts or durable conversation failure/cancellation facts for stale fail-close.
-- [ ] Implement stale-target resume pre-step: if `resume <session_id>` targets the current proven-stale active owner, confirm fail-close first, then continue ordinary resume only when a valid terminal checkpoint exists.
-- [ ] Ensure ordinary startup blocked by stale owner can only create a new session after administrative closure; it must not resume the old stale session.
-- [ ] Add tests for live owner blocking, insufficient proof, missing token, token mismatch rollback, confirmation unavailable, confirmed stale release, event redaction, non-resumable closure clearing latest checkpoint, resumable stale closure, and stale-target resume.
-- [ ] Run canonical verification and record required manual verification evidence.
+- [x] Persist active ownership `pid`, `host_id`, and `owner_token`.
+- [x] Generate a fresh `owner_token` on every startup claim and successful resume reclaim.
+- [x] Use `owner_token` fencing for ordinary ownership release.
+- [x] Implement the documented `host-v1:sha256(<platform-stable-machine-id>)` host identity provider with fake test seam.
+- [x] Prove stale only when recorded host matches current host, recorded pid is absent, and owner token is present and captured.
+- [x] Fail closed when host id is unavailable/mismatched, pid is missing/live/unreliably checkable, or token is missing.
+- [x] Prompt interactive startup/resume users with blocked owner id and concise stale evidence summary; do not promise resumability.
+- [x] Fail closed when confirmation cannot be obtained.
+- [x] Implement owner-token-fenced stale fail-close transaction that compares workspace root, session id, run id, host id, pid, and owner token.
+- [x] For checkpoint-eligible stale owners, commit terminal checkpoint, terminal status `failed`, terminal reason `terminal_stale`, `latest_checkpoint_id`, `stale_fail_closed`, and ownership release in one fenced transaction.
+- [x] For non-resumable stale owners, commit terminal status `failed`, terminal reason `terminal_stale`, `stale_fail_closed`, clear/unset `latest_checkpoint_id`, and ownership release in one fenced transaction.
+- [x] Ensure prepared checkpoint payloads outside SQLite are not runtime truth unless the fenced transaction commits a checkpoint row/reference.
+- [x] Write exactly the redacted `stale_fail_closed` proof summary and no raw host id, pid, token, process name, command line, confirmation text, or user input details.
+- [x] Do not write normalized error facts or durable conversation failure/cancellation facts for stale fail-close.
+- [x] Implement stale-target resume pre-step: if `resume <session_id>` targets the current proven-stale active owner, confirm fail-close first, then continue ordinary resume only when a valid terminal checkpoint exists.
+- [x] Ensure ordinary startup blocked by stale owner can only create a new session after administrative closure; it must not resume the old stale session.
+- [x] Add tests for live owner blocking, insufficient proof, missing token, token mismatch rollback, confirmation unavailable, confirmed stale release, event redaction, non-resumable closure clearing latest checkpoint, resumable stale closure, and stale-target resume.
+- [x] Run canonical verification and record required manual verification evidence.
+  - Canonical verification: `git diff --check`, `uv run pytest tests/unit -v`,
+    and `uv run pytest tests/integration -v` passed on 2026-06-08.
+  - Manual stale fail-close confirmation smoke: terminal application was Codex
+    PTY exec; command sequence created a temporary stale owner in
+    `/private/tmp/myagent-m8-manual/workspace`, then ran
+    `HOME=/private/tmp/myagent-m8-manual/home uv run --project /Users/xinzhu/Workspace/MyAgent debug-agent -p "manual stale confirmation"`,
+    confirmed the prompt with `y`, and observed `manual stale ok`.
+  - Expected result: prompt shows blocked session/run and concise stale evidence,
+    confirmed stale owner is terminalized as `terminal_stale`, ownership is
+    released, and startup continues into a new one-shot session.
+  - Observed result: prompt rendered `sess_manual_stale` / `run_manual_stale`
+    with same-host/pid-absent/token-captured evidence; database showed old
+    session `failed` with `terminal_stale`, new session `completed`, and
+    `stale_fail_closed` payload exactly
+    `{"stale_proof_summary": {"host_match": true, "pid_absent": true, "token_fenced": true}}`.
 
 ## Milestone 9: Retry Controller And Shell Timeout Cleanup
 

@@ -435,9 +435,9 @@ def test_resume_rejects_non_terminal_target(tmp_path) -> None:
     finally:
         controller.runtime.close()
 
-    assert resume.exit_code == ERROR_EXECUTION_FAILED
-    assert resume.error["error_class"] == "runtime_error"
-    assert resume.error["reason"] == "resume_not_eligible"
+    assert resume.exit_code == ERROR_ACTIVE_SESSION_CONFLICT
+    assert resume.error["error_class"] == "policy_error"
+    assert resume.error["reason"] == "workspace_owner_not_proven_stale"
 
 
 def test_resume_rejects_missing_checkpoint(tmp_path) -> None:
@@ -540,7 +540,7 @@ def test_resume_rejects_active_ownership_conflict(tmp_path) -> None:
 
     assert resume.exit_code == ERROR_ACTIVE_SESSION_CONFLICT
     assert resume.error["error_class"] == "policy_error"
-    assert resume.error["reason"] == "workspace_owner_active"
+    assert resume.error["reason"] == "workspace_owner_not_proven_stale"
 
 
 def test_resume_restores_drifted_current_todo_without_update_event(tmp_path) -> None:

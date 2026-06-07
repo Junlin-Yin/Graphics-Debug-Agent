@@ -4,7 +4,11 @@ import sys
 from collections.abc import Sequence
 
 from debug_agent.cli.exit_codes import ERROR_USAGE, INTERRUPTED
-from debug_agent.cli.repl import run_repl, run_resumed_repl
+from debug_agent.cli.repl import (
+    _stale_confirmation_provider,
+    run_repl,
+    run_resumed_repl,
+)
 from debug_agent.persistence.sqlite import RuntimeBootstrapError
 from debug_agent.runtime.config import load_config_snapshot
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
@@ -69,7 +73,12 @@ def _main(args: list[str]) -> int:
     if prompt is None:
         return run_repl(config.snapshot, approval_mode=approval_mode)
 
-    result = RuntimeOrchestrator().run_one_shot(
+    result = RuntimeOrchestrator(
+        stale_confirmation=_stale_confirmation_provider(
+            input_stream=sys.stdin,
+            output_stream=sys.stdout,
+        )
+    ).run_one_shot(
         prompt or "",
         config.snapshot,
         approval_mode=approval_mode,

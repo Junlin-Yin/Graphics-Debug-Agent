@@ -1,3 +1,4 @@
+import json
 import re
 import sqlite3
 
@@ -178,6 +179,149 @@ def test_session_store_release_ownership_requires_matching_owner_token(tmp_path)
     ).fetchone()
 
     assert row == (None, None, None)
+    db.close()
+
+
+def test_stale_fail_close_event_kind_is_valid() -> None:
+    event = RunEvent(
+        event_id="evt_stale",
+        timestamp="2026-06-06T00:00:00Z",
+        session_id="sess_1",
+        run_id="run_1",
+        step_id=None,
+        kind="stale_fail_closed",
+        payload={
+            "stale_proof_summary": {
+                "host_match": True,
+                "pid_absent": True,
+                "token_fenced": True,
+            }
+        },
+    )
+
+    assert event.kind == "stale_fail_closed"
+
+
+def test_session_store_stale_fail_close_non_resumable_is_token_fenced_and_redacted(
+    tmp_path,
+) -> None:
+    workspace, db, sessions, runs, *_ = _stores(tmp_path)
+    session = sessions.create(
+        workspace_root=workspace,
+        approval_mode="yolo",
+        config_snapshot={},
+        session_id="sess_1",
+    )
+    run = runs.create_prompt_run(session.session_id, run_id="run_1")
+    sessions.set_active_run(session.session_id, run.run_id)
+    sessions.record_owner(
+        session_id=session.session_id,
+        owner_pid=12345,
+        owner_host_id="host-v1:sha256(test-host)",
+        owner_token="owner_original",
+    )
+
+    closed = sessions.fail_close_stale_owner(
+        workspace_root=workspace,
+        session_id=session.session_id,
+        run_id=run.run_id,
+        owner_pid=12345,
+        owner_host_id="host-v1:sha256(test-host)",
+        owner_token="owner_original",
+        checkpoint_id=None,
+    )
+
+    assert closed is True
+    row = db.connection.execute(
+        """
+        SELECT status, active_run_id, latest_checkpoint_id, terminal_reason,
+               terminal_error_json, owner_pid, owner_host_id, owner_token
+        FROM sessions
+        WHERE session_id = ?
+        """,
+        (session.session_id,),
+    ).fetchone()
+    run_row = db.connection.execute(
+        """
+        SELECT status, latest_checkpoint_id, terminal_reason, terminal_error_json
+        FROM runs
+        WHERE run_id = ?
+        """,
+        (run.run_id,),
+    ).fetchone()
+    event_row = db.connection.execute(
+        "SELECT kind, payload_json FROM run_events WHERE run_id = ?",
+        (run.run_id,),
+    ).fetchone()
+
+    assert row == ("failed", None, None, "terminal_stale", None, None, None, None)
+    assert run_row == ("failed", None, "terminal_stale", None)
+    assert event_row[0] == "stale_fail_closed"
+    assert json.loads(event_row[1]) == {
+        "stale_proof_summary": {
+            "host_match": True,
+            "pid_absent": True,
+            "token_fenced": True,
+        }
+    }
+    db.close()
+
+
+def test_session_store_stale_fail_close_token_mismatch_rolls_back(tmp_path) -> None:
+    workspace, db, sessions, runs, *_ = _stores(tmp_path)
+    session = sessions.create(
+        workspace_root=workspace,
+        approval_mode="yolo",
+        config_snapshot={},
+        session_id="sess_1",
+    )
+    run = runs.create_prompt_run(session.session_id, run_id="run_1")
+    sessions.set_active_run(session.session_id, run.run_id)
+    sessions.record_owner(
+        session_id=session.session_id,
+        owner_pid=12345,
+        owner_host_id="host-v1:sha256(test-host)",
+        owner_token="owner_original",
+    )
+
+    closed = sessions.fail_close_stale_owner(
+        workspace_root=workspace,
+        session_id=session.session_id,
+        run_id=run.run_id,
+        owner_pid=12345,
+        owner_host_id="host-v1:sha256(test-host)",
+        owner_token="owner_changed",
+        checkpoint_id=None,
+    )
+
+    assert closed is False
+    row = db.connection.execute(
+        """
+        SELECT status, active_run_id, terminal_reason,
+               owner_pid, owner_host_id, owner_token
+        FROM sessions
+        WHERE session_id = ?
+        """,
+        (session.session_id,),
+    ).fetchone()
+    run_row = db.connection.execute(
+        "SELECT status, terminal_reason FROM runs WHERE run_id = ?",
+        (run.run_id,),
+    ).fetchone()
+    event_count = db.connection.execute(
+        "SELECT COUNT(*) FROM run_events WHERE kind = 'stale_fail_closed'"
+    ).fetchone()[0]
+
+    assert row == (
+        "running",
+        run.run_id,
+        None,
+        12345,
+        "host-v1:sha256(test-host)",
+        "owner_original",
+    )
+    assert run_row == ("running", None)
+    assert event_count == 0
     db.close()
 
 

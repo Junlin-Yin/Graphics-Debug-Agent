@@ -715,6 +715,7 @@ def test_one_shot_active_workspace_conflict_returns_policy_exit(tmp_path) -> Non
     conflict = RuntimeOrchestrator(workspace_root=workspace).run_one_shot("hello", _config())
 
     assert conflict.exit_code == 3
-    assert conflict.error["error_class"] == "user_error"
+    assert conflict.error["error_class"] == "policy_error"
+    assert conflict.error["reason"] == "workspace_owner_not_proven_stale"
     assert "An active debug-agent session already owns this workspace." in conflict.message
     assert f"Session: {first.session_id}" in conflict.message

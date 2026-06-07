@@ -67,10 +67,14 @@ class ReplController:
         config_snapshot: dict[str, Any],
         approval_mode: str = "normal",
         workspace_root: str | None = None,
+        stale_confirmation: Callable[[dict[str, Any]], bool] | None = None,
         view: ReplView | None = None,
         wakeup_callback: Callable[[], None] | None = None,
     ) -> ReplController:
-        result = RuntimeOrchestrator(workspace_root=workspace_root).start_repl(
+        result = RuntimeOrchestrator(
+            workspace_root=workspace_root,
+            stale_confirmation=stale_confirmation,
+        ).start_repl(
             config_snapshot,
             approval_mode=approval_mode,
         )
@@ -88,10 +92,14 @@ class ReplController:
         *,
         session_id: str,
         workspace_root: str | None = None,
+        stale_confirmation: Callable[[dict[str, Any]], bool] | None = None,
         view: ReplView | None = None,
         wakeup_callback: Callable[[], None] | None = None,
     ) -> ReplController:
-        result = RuntimeOrchestrator(workspace_root=workspace_root).start_resumed_repl(
+        result = RuntimeOrchestrator(
+            workspace_root=workspace_root,
+            stale_confirmation=stale_confirmation,
+        ).start_resumed_repl(
             session_id
         )
         if result.error is not None or result.runtime is None:

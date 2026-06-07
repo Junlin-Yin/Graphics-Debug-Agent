@@ -34,6 +34,10 @@ def run_repl(
             config_snapshot=config_snapshot,
             approval_mode=approval_mode,
             workspace_root=workspace_root,
+            stale_confirmation=_stale_confirmation_provider(
+                input_stream=input_stream,
+                output_stream=output_stream,
+            ),
         )
     except ReplStartFailed as exc:
         print(exc.message, file=error_stream)
@@ -85,6 +89,10 @@ def run_resumed_repl(
         controller = ReplController.resume(
             session_id=session_id,
             workspace_root=workspace_root,
+            stale_confirmation=_stale_confirmation_provider(
+                input_stream=input_stream,
+                output_stream=output_stream,
+            ),
         )
     except ReplStartFailed as exc:
         print(exc.message, file=error_stream)
@@ -149,6 +157,32 @@ def _select_repl_view(
 def _stream_isatty(stream: TextIO) -> bool:
     isatty = getattr(stream, "isatty", None)
     return bool(isatty and isatty())
+
+
+def _stale_confirmation_provider(
+    *,
+    input_stream: TextIO,
+    output_stream: TextIO,
+) -> Any | None:
+    if not (_stream_isatty(input_stream) and _stream_isatty(output_stream)):
+        return None
+
+    def confirm(request: dict[str, Any]) -> bool:
+        evidence = request.get("evidence")
+        print("Active owner appears stale.", file=output_stream)
+        print(f"session: {request.get('session_id', '')}", file=output_stream)
+        print(f"run: {request.get('run_id', '')}", file=output_stream)
+        if isinstance(evidence, dict):
+            print(
+                "stale evidence: same host, owner pid absent, owner token captured",
+                file=output_stream,
+            )
+        print("Fail-close the stale owner and continue? [y/N] ", end="", file=output_stream)
+        output_stream.flush()
+        response = input_stream.readline()
+        return response.strip().lower() in {"y", "yes"}
+
+    return confirm
 
 
 class PlainApprovalProvider:

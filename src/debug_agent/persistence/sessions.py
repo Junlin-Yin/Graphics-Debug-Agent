@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from debug_agent.persistence.errors import StoreError
-from debug_agent.runtime.contracts import CONTRACT_VERSION, Session, utc_now_iso
+from debug_agent.runtime.contracts import CONTRACT_VERSION, Checkpoint, Session, utc_now_iso
 
 
 @dataclass(frozen=True)
@@ -164,6 +164,125 @@ class SessionStore:
         )
         self.connection.commit()
         return result.rowcount == 1
+
+    def fail_close_stale_owner(
+        self,
+        *,
+        workspace_root: str | Path,
+        session_id: str,
+        run_id: str,
+        owner_pid: int,
+        owner_host_id: str,
+        owner_token: str,
+        checkpoint_id: str | None,
+        checkpoint: Checkpoint | None = None,
+    ) -> bool:
+        workspace = str(Path(workspace_root).resolve())
+        if checkpoint is not None:
+            checkpoint_id = checkpoint.checkpoint_id
+        now = utc_now_iso()
+        event = {
+            "stale_proof_summary": {
+                "host_match": True,
+                "pid_absent": True,
+                "token_fenced": True,
+            }
+        }
+        with self.connection:
+            session_result = self.connection.execute(
+                """
+                UPDATE sessions
+                SET status = 'failed', active_run_id = NULL,
+                    latest_checkpoint_id = ?, error_summary = ?,
+                    terminal_reason = 'terminal_stale', terminal_error_json = NULL,
+                    non_resumable_startup_failure = 0,
+                    owner_pid = NULL, owner_host_id = NULL, owner_token = NULL,
+                    updated_at = ?
+                WHERE session_id = ? AND workspace_root = ? AND status = 'running'
+                  AND active_run_id = ? AND owner_pid = ? AND owner_host_id = ?
+                  AND owner_token = ?
+                """,
+                (
+                    checkpoint_id,
+                    "Session failed closed because a prior active owner was proven stale.",
+                    now,
+                    session_id,
+                    workspace,
+                    run_id,
+                    owner_pid,
+                    owner_host_id,
+                    owner_token,
+                ),
+            )
+            if session_result.rowcount != 1:
+                return False
+            run_result = self.connection.execute(
+                """
+                UPDATE runs
+                SET status = 'failed', latest_checkpoint_id = ?,
+                    error_summary = ?, terminal_reason = 'terminal_stale',
+                    terminal_error_json = NULL, non_resumable_startup_failure = 0,
+                    updated_at = ?
+                WHERE run_id = ? AND session_id = ? AND status = 'running'
+                """,
+                (
+                    checkpoint_id,
+                    "Run failed closed because a prior active owner was proven stale.",
+                    now,
+                    run_id,
+                    session_id,
+                ),
+            )
+            if run_result.rowcount != 1:
+                raise StoreError(
+                    error_class="persistence_error",
+                    message="Stale fail-close run transition failed.",
+                    recoverable=False,
+                )
+            if checkpoint is not None:
+                self.connection.execute(
+                    """
+                    INSERT INTO checkpoints (
+                        checkpoint_id, session_id, run_id, kind, state_json,
+                        summary, created_at, version
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        checkpoint.checkpoint_id,
+                        checkpoint.session_id,
+                        checkpoint.run_id,
+                        checkpoint.kind,
+                        json.dumps(
+                            checkpoint.state,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                        checkpoint.summary,
+                        checkpoint.created_at,
+                        checkpoint.version,
+                    ),
+                )
+            self.connection.execute(
+                """
+                INSERT INTO run_events (
+                    event_id, timestamp, session_id, run_id, step_id, kind,
+                    payload_json, version
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"evt_{uuid4().hex}",
+                    now,
+                    session_id,
+                    run_id,
+                    None,
+                    "stale_fail_closed",
+                    json.dumps(event, ensure_ascii=False, sort_keys=True),
+                    1,
+                ),
+            )
+        return True
 
     def update_approval_mode(self, session_id: str, approval_mode: str) -> Session:
         now = utc_now_iso()
