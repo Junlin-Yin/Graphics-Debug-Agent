@@ -137,9 +137,36 @@ def test_debug_agent_repl_accepts_two_turns_status_and_exit(tmp_path) -> None:
         assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "completed"
         assert conn.execute("SELECT status FROM runs").fetchone()[0] == "completed"
         assert (
+            conn.execute("SELECT terminal_reason FROM sessions").fetchone()[0]
+            == "user_exit"
+        )
+        assert (
             conn.execute("SELECT terminal_reason FROM runs").fetchone()[0]
             == "user_exit"
         )
+        assert (
+            conn.execute(
+                "SELECT json_extract(state_json, '$.terminal_reason') FROM checkpoints"
+            ).fetchone()[0]
+            == "user_exit"
+        )
+        lifecycle_payloads = conn.execute(
+            """
+            SELECT kind, payload_json
+            FROM run_events
+            WHERE kind IN (
+              'session_started', 'run_started',
+              'run_completed', 'session_completed'
+            )
+            ORDER BY event_id
+            """
+        ).fetchall()
+        assert sorted(lifecycle_payloads) == [
+            ("run_completed", "{}"),
+            ("run_started", "{}"),
+            ("session_completed", "{}"),
+            ("session_started", "{}"),
+        ]
         assert (
             conn.execute(
                 "SELECT COUNT(*) FROM run_events WHERE kind = 'user_message'"

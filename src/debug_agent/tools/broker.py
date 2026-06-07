@@ -111,11 +111,13 @@ class ToolUseContext:
     skill_snapshot_store: Any = None
     run_store: Any = None
     shell_runner: Any = None
+    shell_process_registry: Any = None
     todo_plan_store: Any = None
     vision_client: Any = None
     view_image_reader: Any = None
     provider_cancellation_registry: Any = None
     effective_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS
+    cancellation_timeout_seconds: float = 10
 
 
 class ToolRouter:
@@ -139,6 +141,7 @@ class ToolRouter:
                     context,
                     arguments,
                     timeout_seconds=context.effective_timeout_seconds,
+                    cleanup_timeout_seconds=context.cancellation_timeout_seconds,
                     register_cancellation_handle=context.provider_cancellation_registry,
                 )
             return self._native_handlers[context.tool_definition.name](context, arguments)
@@ -509,11 +512,15 @@ class ToolBroker:
             skill_snapshot_store=context.get("skill_snapshot_store"),
             run_store=context.get("run_store"),
             shell_runner=context.get("shell_runner"),
+            shell_process_registry=context.get("shell_process_registry"),
             todo_plan_store=context.get("todo_plan_store"),
             vision_client=context.get("vision_client"),
             view_image_reader=context.get("view_image_reader"),
             provider_cancellation_registry=context.get("provider_cancellation_registry"),
             effective_timeout_seconds=route_timeout_seconds,
+            cancellation_timeout_seconds=_effective_cancellation_timeout(
+                frozen_config=context.get("frozen_config", {})
+            ),
         )
         self._write_event(
             session_id=session_id,
@@ -680,6 +687,11 @@ class ToolBroker:
                 )
             return result
         if isinstance(output, ShellHandlerResult):
+            if output.status == "cancelled":
+                return _cancelled_tool_result(
+                    output.error_message or "Tool call cancelled.",
+                    metadata={"tool_name": tool_name, **(output.metadata or {})},
+                )
             if output.status == "timeout":
                 return _timeout_result(
                     float((output.metadata or {}).get("effective_timeout_seconds", 0)),
@@ -1331,6 +1343,14 @@ def _effective_view_image_timeout(
     return fallback
 
 
+def _effective_cancellation_timeout(*, frozen_config: dict[str, Any]) -> float:
+    execution = frozen_config.get("execution") if isinstance(frozen_config, dict) else None
+    timeout = execution.get("cancellation_timeout_seconds") if isinstance(execution, dict) else None
+    if isinstance(timeout, int) and not isinstance(timeout, bool) and timeout > 0:
+        return float(timeout)
+    return 10
+
+
 def _load_reusable_grant(
     *,
     approval_grants: Any,
@@ -1441,6 +1461,28 @@ def _timeout_result(timeout_seconds: float, *, metadata: dict[str, Any] | None =
     )
     return ToolResult(
         status="timeout",
+        output=None,
+        error=normalized.to_dict(),
+        artifacts=[],
+        metadata=metadata or {},
+        redacted_output=None,
+    )
+
+
+def _cancelled_tool_result(
+    message: str,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> ToolResult:
+    normalized = NormalizedError.create(
+        "cancelled",
+        "tool_call_cancelled",
+        message=message,
+        scope="tool",
+        metadata=metadata or {},
+    )
+    return ToolResult(
+        status="cancelled",
         output=None,
         error=normalized.to_dict(),
         artifacts=[],

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 import json
 from time import monotonic
 from typing import Any
@@ -14,7 +15,9 @@ from debug_agent.runtime.provider_execution import (
     ProviderBoundaryNotClosed,
     ProviderCallCancelled,
     provider_cancellation_uncertainty_metadata,
+    run_async_provider_call,
     run_provider_call,
+    stream_async_provider_call,
     stream_provider_call,
 )
 from debug_agent.runtime.stream_events import AgentStreamEvent
@@ -109,15 +112,6 @@ class LangChainAgentLoopAdapter:
         except TimeoutError as exc:
             return _error_result("timeout", "timeout", str(exc), source="model")
         except ProviderCallCancelled as exc:
-            return _error_result(
-                "cancelled",
-                "cancelled",
-                str(exc),
-                source="model",
-                reason="model_call_cancelled",
-                metadata={"provider_cancellation": provider_cancellation_uncertainty_metadata()},
-            )
-        except KeyboardInterrupt as exc:
             return _error_result(
                 "cancelled",
                 "cancelled",
@@ -231,15 +225,6 @@ class LangChainAgentLoopAdapter:
                 reason="model_call_cancelled",
                 metadata={"provider_cancellation": provider_cancellation_uncertainty_metadata()},
             )
-        except KeyboardInterrupt as exc:
-            return _error_result(
-                "cancelled",
-                "cancelled",
-                str(exc),
-                source="model",
-                reason="model_call_cancelled",
-                metadata={"provider_cancellation": provider_cancellation_uncertainty_metadata()},
-            )
         except ProviderBoundaryNotClosed:
             raise
         except Exception as exc:
@@ -269,6 +254,8 @@ class LangChainAgentLoopAdapter:
                 context_dict,
             )
             results.append((call, result))
+            if _tool_result_turn_aborted(result):
+                break
         return results
 
     def _invoke_stream_tool_calls(
@@ -355,6 +342,8 @@ class LangChainAgentLoopAdapter:
             )
             context_dict.pop("tool_audit_recorder", None)
             results.append((call, result))
+            if _tool_result_turn_aborted(result):
+                break
         return results
 
 
@@ -414,8 +403,15 @@ def _tool_context(request: AgentRunRequest, context: RunContext) -> dict[str, An
     return payload
 
 
+def _tool_result_turn_aborted(result: object) -> bool:
+    metadata = getattr(result, "metadata", None)
+    return isinstance(metadata, dict) and metadata.get("turn_aborted") is True
+
+
 def _supports_native_stream(model: object) -> bool:
-    if not callable(getattr(model, "stream", None)):
+    if not callable(getattr(model, "stream", None)) and not callable(
+        getattr(model, "astream", None)
+    ):
         return False
     if getattr(model, "stream_chunks", object()) is None:
         return False
@@ -424,10 +420,9 @@ def _supports_native_stream(model: object) -> bool:
 
 def _compose_messages(request: AgentRunRequest) -> list[dict[str, str]]:
     if request.model_context_frame is not None:
-        return [
-            _provider_message_from_segment(segment)
-            for segment in request.model_context_frame.ordered_message_segments()
-        ]
+        return _provider_messages_from_segments(
+            request.model_context_frame.ordered_message_segments()
+        )
     return [
         {
             "role": "system",
@@ -453,10 +448,11 @@ def _provider_message_from_segment(segment: ConversationMessage) -> object:
         )
     if segment.role == "tool" and segment.kind == "tool_result":
         return {"role": "assistant", "content": _tool_result_content(content)}
-    if segment.role == "assistant" and segment.kind == "tool_call":
+    if segment.role == "assistant" and _is_assistant_tool_call_kind(segment.kind):
         assistant_content, tool_calls = _assistant_tool_call_content(content)
         if tool_calls:
             return AIMessage(content=assistant_content, tool_calls=tool_calls)
+    provider_role = "system" if segment.role == "runtime" else segment.role
     if not isinstance(content, str):
         content = json.dumps(content, ensure_ascii=False, sort_keys=True)
     if segment.artifact_refs:
@@ -464,13 +460,121 @@ def _provider_message_from_segment(segment: ConversationMessage) -> object:
             f"{content}\n\nArtifact references: "
             f"{', '.join(segment.artifact_refs)}"
         )
-    return {"role": segment.role, "content": content}
+    return {"role": provider_role, "content": content}
+
+
+def _provider_messages_from_segments(
+    segments: list[ConversationMessage],
+) -> list[object]:
+    duplicate_tool_call_ids = _duplicate_provider_tool_call_ids(segments)
+    if not duplicate_tool_call_ids:
+        return [_provider_message_from_segment(segment) for segment in segments]
+    remapped_segments = _remap_duplicate_provider_tool_call_ids(
+        segments,
+        duplicate_tool_call_ids,
+    )
+    return [_provider_message_from_segment(segment) for segment in remapped_segments]
+
+
+def _duplicate_provider_tool_call_ids(
+    segments: list[ConversationMessage],
+) -> set[str]:
+    counts: dict[str, int] = {}
+    for segment in segments:
+        if segment.role != "assistant" or not _is_assistant_tool_call_kind(segment.kind):
+            continue
+        content = segment.content
+        if not isinstance(content, dict):
+            continue
+        raw_tool_calls = content.get("tool_calls")
+        if not isinstance(raw_tool_calls, list):
+            continue
+        for call in raw_tool_calls:
+            if not isinstance(call, dict):
+                continue
+            tool_call_id = call.get("id")
+            if isinstance(tool_call_id, str) and tool_call_id:
+                counts[tool_call_id] = counts.get(tool_call_id, 0) + 1
+    return {tool_call_id for tool_call_id, count in counts.items() if count > 1}
+
+
+def _remap_duplicate_provider_tool_call_ids(
+    segments: list[ConversationMessage],
+    duplicate_tool_call_ids: set[str],
+) -> list[ConversationMessage]:
+    id_map: dict[tuple[str | None, str], str] = {}
+    remapped = []
+    for segment in segments:
+        remapped.append(
+            _remap_duplicate_provider_tool_call_id(
+                segment,
+                duplicate_tool_call_ids,
+                id_map,
+            )
+        )
+    return remapped
+
+
+def _remap_duplicate_provider_tool_call_id(
+    segment: ConversationMessage,
+    duplicate_tool_call_ids: set[str],
+    id_map: dict[tuple[str | None, str], str],
+) -> ConversationMessage:
+    if (
+        segment.role == "assistant"
+        and _is_assistant_tool_call_kind(segment.kind)
+        and isinstance(segment.content, dict)
+    ):
+        raw_tool_calls = segment.content.get("tool_calls")
+        if not isinstance(raw_tool_calls, list):
+            return segment
+        tool_calls = []
+        changed = False
+        for index, call in enumerate(raw_tool_calls, start=1):
+            if not isinstance(call, dict):
+                tool_calls.append(call)
+                continue
+            tool_call = dict(call)
+            tool_call_id = tool_call.get("id")
+            if isinstance(tool_call_id, str) and tool_call_id in duplicate_tool_call_ids:
+                provider_tool_call_id = f"ctx_{segment.seq}_tool_{index}"
+                tool_call["id"] = provider_tool_call_id
+                id_map[(segment.turn_id, tool_call_id)] = provider_tool_call_id
+                changed = True
+            tool_calls.append(tool_call)
+        if not changed:
+            return segment
+        content = dict(segment.content)
+        content["tool_calls"] = tool_calls
+        return replace(segment, content=content)
+
+    if segment.role != "tool" or segment.kind != "tool_result":
+        return segment
+    tool_call_id = segment.tool_call_id
+    if not isinstance(tool_call_id, str) or tool_call_id not in duplicate_tool_call_ids:
+        return segment
+    provider_tool_call_id = id_map.get((segment.turn_id, tool_call_id))
+    if provider_tool_call_id is None:
+        return segment
+    content = segment.content
+    if isinstance(content, dict):
+        content = dict(content)
+        content["tool_call_id"] = provider_tool_call_id
+    return replace(
+        segment,
+        tool_call_id=provider_tool_call_id,
+        content=content,
+    )
 
 
 def _tool_result_content(content: object) -> str:
     if isinstance(content, str):
         return content
     return json.dumps(content, ensure_ascii=False, sort_keys=True)
+
+
+def _is_assistant_tool_call_kind(kind: str) -> bool:
+    return kind in {"tool_call", "assistant_tool_call"}
 
 
 def _is_structured_tool_result(
@@ -510,10 +614,7 @@ def _refresh_frame_messages(
         return None
     refreshed = refresh(tool_loop_messages)
     frame = refreshed.get("frame") if isinstance(refreshed, dict) else refreshed
-    return [
-        _provider_message_from_segment(segment)
-        for segment in frame.ordered_message_segments()
-    ]
+    return _provider_messages_from_segments(frame.ordered_message_segments())
 
 
 def _invoke_model(
@@ -732,6 +833,18 @@ def _invoke_with_timeout(
     request: AgentRunRequest,
     context: RunContext,
 ) -> object:
+    ainvoke = getattr(model, "ainvoke", None)
+    if callable(ainvoke):
+        return run_async_provider_call(
+            operation="main_model",
+            provider=request.model_config.get("provider"),
+            model=request.model_config.get("model"),
+            call=lambda: ainvoke(messages),
+            timeout_seconds=request.timeout_seconds,
+            cancellation_token=context.cancellation_token,
+            register_cancellation_handle=_provider_cancellation_registry(context),
+            cleanup_timeout_seconds=_provider_cleanup_timeout_seconds(request),
+        )
     return run_provider_call(
         operation="main_model",
         provider=request.model_config.get("provider"),
@@ -750,6 +863,19 @@ def _stream_with_timeout(
     request: AgentRunRequest,
     context: RunContext,
 ):
+    astream = getattr(model, "astream", None)
+    if callable(astream):
+        yield from stream_async_provider_call(
+            operation="main_model_stream",
+            provider=request.model_config.get("provider"),
+            model=request.model_config.get("model"),
+            stream=lambda: astream(messages),
+            timeout_seconds=request.timeout_seconds,
+            cancellation_token=context.cancellation_token,
+            register_cancellation_handle=_provider_cancellation_registry(context),
+            cleanup_timeout_seconds=_provider_cleanup_timeout_seconds(request),
+        )
+        return
     yield from stream_provider_call(
         operation="main_model_stream",
         provider=request.model_config.get("provider"),

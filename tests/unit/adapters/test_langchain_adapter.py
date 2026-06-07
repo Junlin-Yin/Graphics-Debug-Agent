@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import threading
 import time
 from dataclasses import replace
@@ -127,6 +128,35 @@ def test_langchain_adapter_maps_model_success() -> None:
     assert adapter.model.messages[-1]["content"] == "hello"
 
 
+def test_langchain_adapter_run_uses_async_invoke_when_available() -> None:
+    class AsyncOnlyModel:
+        def __init__(self) -> None:
+            self.messages = None
+            self.ainvoke_called = False
+
+        def invoke(self, _messages):
+            raise AssertionError("sync invoke must not be used when ainvoke is available")
+
+        async def ainvoke(self, messages):
+            self.ainvoke_called = True
+            self.messages = messages
+            await asyncio.sleep(0)
+            return type(
+                "Response",
+                (),
+                {"content": "async answer", "tool_calls": [], "usage": {}},
+            )()
+
+    model = AsyncOnlyModel()
+
+    result = LangChainAgentLoopAdapter(model=model).run(_request(), _context())
+
+    assert result.status == "completed"
+    assert result.assistant_output == "async answer"
+    assert model.ainvoke_called is True
+    assert model.messages[-1]["content"] == "hello"
+
+
 def test_langchain_adapter_extracts_provider_finish_metadata_for_token_limit() -> None:
     class TokenLimitModel:
         def invoke(self, messages):
@@ -180,6 +210,46 @@ def test_langchain_adapter_stream_extracts_provider_finish_metadata() -> None:
     }
     completed = _event_payloads(events, "stream_model_call_completed")[0]
     assert completed["provider_finish"]["finish_reason"] == "length"
+
+
+def test_langchain_adapter_stream_uses_async_stream_when_available() -> None:
+    class AsyncStreamingModel:
+        def __init__(self) -> None:
+            self.messages = None
+            self.astream_called = False
+
+        def stream(self, _messages):
+            raise AssertionError("sync stream must not be used when astream is available")
+
+        async def astream(self, messages):
+            self.astream_called = True
+            self.messages = messages
+            await asyncio.sleep(0)
+            yield type("Chunk", (), {"content": "async ", "tool_calls": [], "usage": {}})()
+            await asyncio.sleep(0)
+            yield type(
+                "Chunk",
+                (),
+                {"content": "stream", "tool_calls": [], "usage": {"output_tokens": 2}},
+            )()
+
+    events = []
+    model = AsyncStreamingModel()
+
+    result = LangChainAgentLoopAdapter(model=model).stream(
+        _request(),
+        _context(),
+        events.append,
+    )
+
+    assert result.status == "completed"
+    assert result.assistant_output == "async stream"
+    assert model.astream_called is True
+    assert model.messages[-1]["content"] == "hello"
+    assert [payload["text"] for payload in _event_payloads(events, "stream_text_delta")] == [
+        "async ",
+        "stream",
+    ]
 
 
 def test_langchain_adapter_has_no_public_cancel_placeholder() -> None:
@@ -826,6 +896,34 @@ def test_langchain_adapter_cancels_worker_and_ignores_late_model_result() -> Non
     assert result.metadata["provider_cancellation"]["remote_stop_uncertain"] is True
     assert result.metadata["provider_cancellation"]["billing_stop_uncertain"] is True
     assert registered_handles and registered_handles[0].cancel_requested is True
+    assert [kind for kind, _payload in events] == [
+        "model_call_started",
+        "model_call_failed",
+    ]
+    assert events[-1][1]["error"]["reason"] == "model_call_cancelled"
+
+
+def test_langchain_adapter_user_keyboard_interrupt_escapes_provider_wait(monkeypatch) -> None:
+    from debug_agent.adapters import langchain_adapter as adapter_module
+
+    events = []
+
+    def interrupting_wait(**kwargs):
+        raise KeyboardInterrupt("user interrupt")
+
+    monkeypatch.setattr(adapter_module, "run_async_provider_call", interrupting_wait)
+
+    context = replace(
+        _context(),
+        model_event_recorder=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        LangChainAgentLoopAdapter(model=FakeChatModel(response="unused")).run(
+            _request(),
+            context,
+        )
+
     assert [kind for kind, _payload in events] == [
         "model_call_started",
         "model_call_failed",
@@ -1807,6 +1905,65 @@ def test_langchain_adapter_short_circuits_same_turn_after_approval_denial() -> N
     assert result.tool_results[0]["metadata"]["turn_aborted"] is True
 
 
+def test_langchain_adapter_stops_parallel_tool_calls_after_turn_abort_denial() -> None:
+    class FirstToolDeniedBroker:
+        def __init__(self) -> None:
+            self.invocations: list[str] = []
+
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            self.invocations.append(tool_name)
+            return ToolResult(
+                status="denied",
+                output=None,
+                error={
+                    "error_class": "policy_error",
+                    "reason": "approval_denied",
+                    "message": "Turn cancelled by user.",
+                    "source": "toolbroker",
+                    "recoverable": True,
+                },
+                artifacts=[],
+                metadata={"turn_aborted": True},
+                redacted_output=None,
+            )
+
+    class MultiToolModel:
+        def invoke(self, messages):
+            return type(
+                "Response",
+                (),
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "shell_exec_0",
+                            "name": "shell_exec",
+                            "args": {"argv": ["git", "status", "-s"]},
+                        },
+                        {
+                            "id": "shell_exec_1",
+                            "name": "shell_exec",
+                            "args": {"argv": ["git", "log", "--oneline"]},
+                        },
+                    ],
+                    "usage": {},
+                },
+            )()
+
+    broker = FirstToolDeniedBroker()
+
+    result = LangChainAgentLoopAdapter(
+        model=MultiToolModel(),
+        tool_broker=broker,
+    ).run(_request(), _context())
+
+    assert broker.invocations == ["shell_exec"]
+    assert result.status == "failed"
+    assert result.error["reason"] == "approval_denied"
+    assert result.metadata["approval_denied_abort"] is True
+    assert len(result.tool_results) == 1
+
+
 def test_langchain_adapter_materializes_denied_terminal_observation_for_next_turn() -> None:
     from langchain_core.messages import convert_to_messages
 
@@ -1911,6 +2068,79 @@ def test_langchain_adapter_does_not_materialize_empty_tool_call_id_observation()
 
     assert result.status == "completed"
     assert result.assistant_output == "saw plain denial"
+
+
+def test_langchain_adapter_projects_repeated_historical_tool_ids_uniquely() -> None:
+    from langchain_core.messages import ToolMessage, convert_to_messages
+
+    def assistant_tool(seq: int, turn_id: str, tool_name: str) -> ConversationMessage:
+        return ConversationMessage(
+            seq=seq,
+            role="assistant",
+            kind="tool_call",
+            turn_id=turn_id,
+            model_call_id="model_call_1",
+            tool_call_id=None,
+            content={
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "model_call_1_tool_1",
+                        "name": tool_name,
+                        "args": {},
+                    }
+                ],
+            },
+        )
+
+    def tool_result(seq: int, turn_id: str, content: str) -> ConversationMessage:
+        return ConversationMessage(
+            seq=seq,
+            role="tool",
+            kind="tool_result",
+            turn_id=turn_id,
+            model_call_id="model_call_1",
+            tool_call_id="model_call_1_tool_1",
+            content={
+                "message_type": "tool_result",
+                "content": content,
+                "tool_call_id": "model_call_1_tool_1",
+            },
+        )
+
+    class ProviderValidatingModel:
+        def invoke(self, messages):
+            converted = convert_to_messages(messages)
+            pairs = []
+            for index, message in enumerate(converted):
+                tool_calls = getattr(message, "tool_calls", None)
+                if tool_calls:
+                    next_message = converted[index + 1]
+                    assert isinstance(next_message, ToolMessage)
+                    assert next_message.tool_call_id
+                    assert next_message.tool_call_id == tool_calls[0]["id"]
+                    pairs.append(next_message.tool_call_id)
+            assert len(pairs) == 2
+            assert len(set(pairs)) == 2
+            return AIMessage(content="history ok")
+
+    request = _frame_request()
+    request.model_context_frame.message_segments.extend(
+        [
+            assistant_tool(30, "turn-1", "view_image"),
+            tool_result(40, "turn-1", "cancelled"),
+            assistant_tool(50, "turn-2", "shell_exec"),
+            tool_result(60, "turn-2", "completed"),
+        ]
+    )
+
+    result = LangChainAgentLoopAdapter(model=ProviderValidatingModel()).run(
+        request,
+        _context(),
+    )
+
+    assert result.status == "completed"
+    assert result.assistant_output == "history ok"
 
 
 def test_langchain_adapter_aggregates_usage_across_tool_loop_model_calls() -> None:

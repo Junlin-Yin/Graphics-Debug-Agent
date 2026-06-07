@@ -219,6 +219,21 @@ def test_prompt_toolkit_welcome_omits_status_bar_fields_and_spaces_after_tool_na
     assert "|                   |" in rendered
 
 
+def test_prompt_toolkit_view_running_cancellation_renders_system_not_error() -> None:
+    view = _prompt_toolkit_view()
+
+    view.append_view_event(
+        ReplViewEvent(
+            kind="system_message",
+            payload={"message": "Turn cancelled by user."},
+        )
+    )
+
+    rendered = view.rendered_text()
+    assert "🤖 System\n\nTurn cancelled by user." in rendered
+    assert "❌ Error" not in rendered
+
+
 def test_prompt_toolkit_view_status_bar_renders_initial_zero_values() -> None:
     view = _prompt_toolkit_view()
 
@@ -1329,7 +1344,9 @@ def test_prompt_toolkit_view_exit_is_idempotent_after_slash_exit() -> None:
     assert app.exit_calls == 1
     assert "session sess_full" not in view.rendered_text()
     assert view._terminal_summary_text() == (
-        "session sess_full exit.\ntrace: debug-agent trace sess_full"
+        "session sess_full exit.\n"
+        "trace: debug-agent trace sess_full\n"
+        "resume: debug-agent resume sess_full"
     )
 
 
@@ -1352,6 +1369,76 @@ def test_prompt_toolkit_view_ctrl_c_invokes_existing_interrupt_path() -> None:
 
     assert controller.interrupts == 1
     assert event.app.exit_calls == 1
+
+
+def test_prompt_toolkit_view_ctrl_c_keeps_running_cancellation_alive() -> None:
+    from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
+
+    class Controller:
+        def __init__(self) -> None:
+            self.control_state = "running_turn"
+            self.is_executing = True
+            self.interrupts = 0
+
+        def on_interrupt(self) -> None:
+            self.interrupts += 1
+            self.control_state = "cancelling"
+
+    controller = Controller()
+    view = _prompt_toolkit_view()
+    view._active_controller = controller
+    event = _FakeKeyEvent(view._input_buffer)
+
+    view.handle_interrupt_event(event)
+
+    assert controller.interrupts == 1
+    assert controller.control_state == "cancelling"
+    assert event.app.exit_calls == 0
+    assert view._application_exit_requested is False
+
+
+def test_prompt_toolkit_view_second_ctrl_c_while_cancelling_exits() -> None:
+    class Controller:
+        def __init__(self) -> None:
+            self.control_state = "cancelling"
+            self.is_executing = True
+            self.interrupts = 0
+
+        def on_interrupt(self) -> None:
+            self.interrupts += 1
+
+    controller = Controller()
+    view = _prompt_toolkit_view()
+    view._active_controller = controller
+    event = _FakeKeyEvent(view._input_buffer)
+
+    view.handle_interrupt_event(event)
+
+    assert controller.interrupts == 1
+    assert event.app.exit_calls == 1
+
+
+def test_prompt_toolkit_view_drain_exits_on_fatal_interrupted_cancelling_state() -> None:
+    class Controller:
+        def __init__(self) -> None:
+            self.exit_code = 130
+            self.control_state = "cancelling"
+            self.is_executing = False
+            self.drains = 0
+
+        def drain_completed_turns(self) -> int:
+            self.drains += 1
+            return 0
+
+    controller = Controller()
+    view = _prompt_toolkit_view()
+    app = _RaisingExitApp()
+
+    view._drain_once(controller, app=app)
+
+    assert controller.drains == 1
+    assert app.exit_calls == 1
+    assert view._application_exit_requested is True
 
 
 def test_prompt_toolkit_view_ctrl_y_invokes_controller_mode_cycle() -> None:
@@ -1503,8 +1590,30 @@ def test_prompt_toolkit_view_run_prints_terminal_summary_after_application_exit(
 
     assert exit_code == 0
     assert output.getvalue() == (
-        "session sess_full exit.\ntrace: debug-agent trace sess_full\n"
+        "session sess_full exit.\n"
+        "trace: debug-agent trace sess_full\n"
+        "resume: debug-agent resume sess_full\n"
     )
+
+
+def test_prompt_toolkit_view_run_renders_controller_restored_history() -> None:
+    class Controller:
+        exit_code = 0
+
+        def __init__(self) -> None:
+            self.rendered_history = False
+
+        def render_restored_history(self) -> None:
+            self.rendered_history = True
+
+    controller = Controller()
+    view = _prompt_toolkit_view()
+    view._application = _FakeRunApp(lambda: None)
+
+    exit_code = view.run(controller)
+
+    assert exit_code == 0
+    assert controller.rendered_history is True
 
 
 def test_prompt_toolkit_view_run_prints_cancelled_terminal_summary() -> None:
@@ -1535,7 +1644,9 @@ def test_prompt_toolkit_view_run_prints_cancelled_terminal_summary() -> None:
 
     assert exit_code == 1
     assert output.getvalue() == (
-        "session sess_full cancelled.\ntrace: debug-agent trace sess_full\n"
+        "session sess_full cancelled.\n"
+        "trace: debug-agent trace sess_full\n"
+        "resume: debug-agent resume sess_full\n"
     )
 
 

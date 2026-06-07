@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -101,6 +102,9 @@ class PromptAgentExecutor:
         prompt_turn_counter: int = 1,
         agent_stream_callback: Callable[[AgentStreamEvent], None] | None = None,
         approval_provider: object | None = None,
+        cancellation_token: object | None = None,
+        provider_cancellation_registry: Callable[[Any], None] | None = None,
+        shell_process_registry: Callable[[Any], None] | None = None,
     ) -> AgentRunResult:
         self._validate_durable_projection_alignment(
             run_id=run.run_id,
@@ -384,6 +388,8 @@ class PromptAgentExecutor:
             "approval_grants": ApprovalGrantStore(self.event_writer.connection),
             "approval_provider": approval_provider,
             "refresh_model_context_frame": refresh_model_context_frame,
+            "provider_cancellation_registry": provider_cancellation_registry,
+            "shell_process_registry": shell_process_registry,
         }
         policy_snapshot = session.config_snapshot.get("policy")
         if isinstance(policy_snapshot, dict):
@@ -394,7 +400,7 @@ class PromptAgentExecutor:
             workspace_root=workspace_root,
             artifact_root=session.artifact_root,
             approval_mode=session.approval_mode,
-            cancellation_token=None,
+            cancellation_token=cancellation_token,
             metadata=tool_metadata,
             model_event_recorder=lambda kind, payload: self._append_model_event(
                 session=session,
@@ -450,6 +456,10 @@ class PromptAgentExecutor:
         )
         if result.metadata.get("compression_failed_abort") is True:
             return result
+        result = _turn_scoped_running_cancellation(
+            result,
+            cancellation_requested=_token_cancelled(cancellation_token),
+        )
         self._append_durable_result(
             session=session,
             run=run,
@@ -1631,7 +1641,8 @@ def _provider_message_from_conversation(message: ConversationMessage) -> dict[st
             f"{content}\n\nArtifact references: "
             f"{', '.join(message.artifact_refs)}"
         )
-    return {"role": message.role, "content": content}
+    provider_role = "system" if message.role == "runtime" else message.role
+    return {"role": provider_role, "content": content}
 
 
 def _conversation_messages(conversation: list[dict[str, Any]]) -> list[ConversationMessage]:
@@ -1857,6 +1868,152 @@ def _durable_failure_append(
             "reason": reason,
         },
     )
+
+
+def _turn_scoped_running_cancellation(
+    result: AgentRunResult,
+    *,
+    cancellation_requested: bool,
+) -> AgentRunResult:
+    error = result.error if isinstance(result.error, dict) else {}
+    if not cancellation_requested:
+        return result
+    metadata = dict(result.metadata)
+    if result.status == "cancelled" and error.get("reason") == "model_call_cancelled":
+        metadata["provider_cancellation_error"] = dict(error)
+    elif _is_approval_denied_abort_under_cancellation(result, error):
+        metadata["approval_cancellation_error"] = dict(error)
+        metadata["turn_tool_loop_messages"] = _approval_denial_messages_as_cancelled(
+            metadata.get("turn_tool_loop_messages")
+        )
+    else:
+        return result
+    return AgentRunResult(
+        status="cancelled",
+        assistant_output=None,
+        tool_results=result.tool_results,
+        usage=result.usage,
+        error={
+            "schema_version": 1,
+            "error_class": "cancelled",
+            "reason": "user_cancel_running",
+            "message": "Turn cancelled by user.",
+            "scope": "turn",
+            "recoverability": "turn_recoverable",
+            "metadata": {},
+            "artifact_ids": [],
+        },
+        metadata={**metadata, "failure_scope": "turn"},
+    )
+
+
+def _is_approval_denied_abort_under_cancellation(
+    result: AgentRunResult,
+    error: dict[str, Any],
+) -> bool:
+    if (
+        result.status != "failed"
+        or result.metadata.get("approval_denied_abort") is not True
+    ):
+        return False
+    if error.get("error_class") == "policy_denied":
+        return True
+    return (
+        error.get("error_class") == "policy_error"
+        and error.get("reason")
+        in {"approval_denied", "approval_required_non_interactive"}
+    )
+
+
+def _approval_denial_messages_as_cancelled(
+    messages: object,
+) -> object:
+    if not isinstance(messages, list):
+        return messages
+    converted: list[object] = []
+    for raw_message in messages:
+        if not isinstance(raw_message, dict):
+            converted.append(raw_message)
+            continue
+        message = dict(raw_message)
+        if _is_approval_denial_tool_observation(message):
+            tool_call_id = _tool_call_id_from_message(message)
+            message["content"] = {
+                "message_type": "tool_result",
+                "content": None,
+                "tool_call_id": tool_call_id,
+                "status": "cancelled",
+                "error": NormalizedError.create(
+                    "cancelled",
+                    "tool_call_cancelled",
+                    message="Tool call cancelled by user.",
+                    scope="tool",
+                    metadata={},
+                ).to_dict(),
+                "artifact_ids": [],
+            }
+        converted.append(message)
+    return converted
+
+
+def _is_approval_denial_tool_observation(message: dict[str, Any]) -> bool:
+    if message.get("role") != "tool" or message.get("kind") != "tool_result":
+        return False
+    content = message.get("content")
+    if not isinstance(content, dict):
+        return False
+    error = _error_from_tool_observation_content(content)
+    if not isinstance(error, dict):
+        return False
+    if error.get("error_class") in {"policy_denied", "policy_error"}:
+        return error.get("reason") in {
+            None,
+            "approval_denied",
+            "approval_required_non_interactive",
+        }
+    return False
+
+
+def _error_from_tool_observation_content(
+    content: dict[str, Any],
+) -> dict[str, Any] | None:
+    error = content.get("error")
+    if isinstance(error, dict):
+        return error
+    nested = content.get("content")
+    if isinstance(nested, dict):
+        error = nested.get("error")
+        return error if isinstance(error, dict) else None
+    if isinstance(nested, str):
+        try:
+            decoded = json.loads(nested)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(decoded, dict) and isinstance(decoded.get("error"), dict):
+            return decoded["error"]
+    return None
+
+
+def _tool_call_id_from_message(message: dict[str, Any]) -> str | None:
+    tool_call_id = message.get("tool_call_id")
+    if isinstance(tool_call_id, str) and tool_call_id:
+        return tool_call_id
+    content = message.get("content")
+    if isinstance(content, dict):
+        return _tool_call_id_from_content(content)
+    return None
+
+
+def _token_cancelled(cancellation_token: object | None) -> bool:
+    if cancellation_token is None:
+        return False
+    is_cancelled = getattr(cancellation_token, "is_cancelled", None)
+    if callable(is_cancelled):
+        return bool(is_cancelled())
+    cancelled = getattr(cancellation_token, "cancelled", None)
+    if callable(cancelled):
+        return bool(cancelled())
+    return bool(getattr(cancellation_token, "cancel_requested", False))
 
 
 def _with_group_position(

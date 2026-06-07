@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+import io
+import time
 from typing import Any
 
 from debug_agent.cli.repl_view import ReplViewEvent
@@ -73,6 +75,8 @@ class FakeRuntime:
         self.completed = False
         self.closed = False
         self.failed_results: list[AgentRunResult] = []
+        self.cancel_running_calls = 0
+        self.cancel_idle_calls = 0
         self.session_id = "sess_123456789"
         self.run_id = "run_1"
         self.workspace_root = "/repo"
@@ -196,6 +200,23 @@ class FakeRuntime:
     def fail(self, result: AgentRunResult) -> None:
         self.failed_results.append(result)
 
+    def cancel_running_turn(self) -> AgentRunResult:
+        self.cancel_running_calls += 1
+        self.release_turn.set()
+        return _result(
+            "cancelled",
+            error={
+                "error_class": "cancelled",
+                "reason": "user_cancel_running",
+                "message": "Turn cancelled.",
+            },
+            metadata={"failure_scope": "turn"},
+        )
+
+    def cancel_idle(self) -> None:
+        self.cancel_idle_calls += 1
+        self.closed = True
+
     def close(self) -> None:
         self.closed = True
 
@@ -217,6 +238,15 @@ def _result(
         error=error,
         metadata=metadata or {},
     )
+
+
+def _eventually(predicate, *, timeout: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.001)
+    return predicate()
 
 
 def test_submit_runs_turn_in_background_and_finalizes_on_ui_side() -> None:
@@ -261,6 +291,189 @@ def test_submit_runs_turn_in_background_and_finalizes_on_ui_side() -> None:
     assert view.status_bars[-1].output_tokens == 5
     assert view.status_bars[-1].total_tokens == 8
     assert runtime.run_inputs == ["hello"]
+
+
+def test_running_interrupt_routes_to_runtime_cancellation_without_terminalizing() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime(_result("completed", assistant_output="late"))
+    runtime.block_turn = True
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_submit("hello")
+    assert runtime.turn_started.wait(timeout=2)
+
+    controller.on_interrupt()
+    controller.wait_for_active_turn(timeout=2)
+    controller.drain_completed_turns()
+
+    assert runtime.cancel_running_calls == 1
+    assert runtime.cancel_idle_calls == 0
+    assert runtime.failed_results == []
+    assert view.closed_summaries == []
+    assert view.input_enabled[-1] is True
+
+
+def test_running_interrupt_does_not_emit_non_durable_cancellation_requested_message() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime(_result("completed", assistant_output="late"))
+    runtime.block_turn = True
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_submit("hello")
+    assert runtime.turn_started.wait(timeout=2)
+
+    controller.on_interrupt()
+
+    assert not any(
+        event.kind == "system_message"
+        and event.payload.get("message")
+        == "Cancellation requested; ending the current turn."
+        for event in view.events
+    )
+    assert view.turn_statuses[-1][1] == "cancelling"
+
+    runtime.release_turn.set()
+    controller.wait_for_active_turn(timeout=2)
+    controller.drain_completed_turns()
+
+
+def test_double_interrupt_while_cancelling_exits_interrupted_without_prompt_return() -> None:
+    from debug_agent.cli.exit_codes import INTERRUPTED
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    runtime.block_turn = True
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_submit("hello")
+    assert runtime.turn_started.wait(timeout=2)
+
+    controller.on_interrupt()
+    controller.on_interrupt()
+    runtime.release_turn.set()
+    controller.wait_for_active_turn(timeout=2)
+
+    assert controller.exit_code == INTERRUPTED
+    assert runtime.cancel_running_calls == 1
+    assert view.input_enabled[-1] is False
+    assert controller.drain_completed_turns() == 0
+
+
+def test_provider_boundary_not_closed_aborts_without_runtime_fail_or_prompt_return() -> None:
+    from debug_agent.cli.exit_codes import INTERRUPTED
+    from debug_agent.cli.repl_controller import ReplController
+    from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
+
+    class Runtime(FakeRuntime):
+        def run_turn(self, user_input: str, agent_stream_callback=None) -> AgentRunResult:
+            self.run_inputs.append(user_input)
+            self.turn_started.set()
+            raise ProviderBoundaryNotClosed("provider cancellation boundary did not close")
+
+    view = FakeView()
+    runtime = Runtime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_submit("hello")
+    controller.wait_for_active_turn(timeout=2)
+
+    assert controller.drain_completed_turns() == 0
+    assert controller.exit_code == INTERRUPTED
+    assert runtime.failed_results == []
+    assert view.closed_summaries == []
+    assert view.input_enabled[-1] is False
+    assert controller.control_state == "cancelling"
+
+
+def test_cancelled_running_turn_result_returns_to_input_without_terminalizing() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+    controller.is_executing = True
+    controller.control_state = "cancelling"
+
+    controller.on_turn_finished(
+        _result(
+            "cancelled",
+            error={
+                "schema_version": 1,
+                "error_class": "cancelled",
+                "reason": "user_cancel_running",
+                "message": "Turn cancelled by user.",
+                "scope": "turn",
+                "recoverability": "turn_recoverable",
+                "metadata": {},
+                "artifact_ids": [],
+            },
+            metadata={"failure_scope": "turn"},
+        )
+    )
+
+    assert runtime.failed_results == []
+    assert view.closed_summaries == []
+    assert view.input_enabled[-1] is True
+    assert controller.control_state == "idle"
+
+
+def test_plain_controller_keyboard_interrupt_routes_running_cancellation() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    class Runtime(FakeRuntime):
+        def run_turn(self, user_input: str, agent_stream_callback=None) -> AgentRunResult:
+            self.run_inputs.append(user_input)
+            self.turn_started.set()
+            self.cancel_running_calls += 1
+            return _result(
+                "cancelled",
+                error={
+                    "schema_version": 1,
+                    "error_class": "cancelled",
+                    "reason": "user_cancel_running",
+                    "message": "Turn cancelled by user.",
+                    "scope": "turn",
+                    "recoverability": "turn_recoverable",
+                    "metadata": {},
+                    "artifact_ids": [],
+                },
+                metadata={"failure_scope": "turn"},
+            )
+
+    runtime = Runtime()
+    controller = ReplController(runtime=runtime)
+    output = io.StringIO()
+
+    should_continue = controller.handle_line("hello\n", output=output)
+
+    assert should_continue is True
+    assert controller.exit_code == 0
+    assert controller.control_state == "idle"
+    assert runtime.cancel_running_calls == 1
+    assert runtime.cancel_idle_calls == 0
+    assert runtime.failed_results == []
+    assert "Turn cancelled by user." in output.getvalue()
+
+
+def test_idle_interrupt_terminalizes_idle_session_without_runtime_fail() -> None:
+    from debug_agent.cli.exit_codes import INTERRUPTED
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_interrupt()
+
+    assert runtime.cancel_idle_calls == 1
+    assert runtime.failed_results == []
+    assert controller.exit_code == INTERRUPTED
+    assert view.closed_summaries
 
 
 def test_background_runtime_does_not_call_view_before_ui_drain() -> None:
@@ -983,7 +1196,8 @@ def test_streamed_error_result_with_preview_appends_preview_only_detail() -> Non
     assert view.events[1].payload["preview"].artifact_ids == ["artifact_1"]
 
 
-def test_interrupt_marks_runtime_cancelled_and_shows_cancel_summary() -> None:
+def test_idle_interrupt_terminalizes_and_shows_cancel_summary() -> None:
+    from debug_agent.cli.exit_codes import INTERRUPTED
     from debug_agent.cli.repl_controller import ReplController
 
     view = FakeView()
@@ -992,9 +1206,9 @@ def test_interrupt_marks_runtime_cancelled_and_shows_cancel_summary() -> None:
 
     controller.on_interrupt()
 
-    assert controller.exit_code == 1
-    assert runtime.failed_results[-1].status == "cancelled"
-    assert runtime.failed_results[-1].error["error_class"] == "cancelled"
+    assert controller.exit_code == INTERRUPTED
+    assert runtime.cancel_idle_calls == 1
+    assert runtime.failed_results == []
     assert view.closed_summaries[-1].status == "cancelled"
     assert view.input_enabled[-1] is False
 
@@ -1021,6 +1235,30 @@ def test_timer_updates_running_turn_elapsed_seconds() -> None:
 
     assert (1, "running", 1) in view.turn_statuses
     assert (1, "running", 2) in view.turn_statuses
+    controller.drain_completed_turns()
+
+
+def test_timer_preserves_cancelling_status_while_turn_is_closing() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    now = 10.0
+    view = FakeView()
+    runtime = FakeRuntime()
+    runtime.block_turn = True
+    controller = ReplController(runtime=runtime, view=view, time_fn=lambda: now)
+
+    controller.on_submit("hello")
+    assert runtime.turn_started.wait(timeout=2)
+    controller.on_interrupt()
+
+    now = 11.2
+    controller.update_running_turn_status()
+
+    assert view.turn_statuses[-1][1] == "cancelling"
+    assert (1, "running", 1) not in view.turn_statuses
+
+    runtime.release_turn.set()
+    controller.wait_for_active_turn(timeout=2)
     controller.drain_completed_turns()
 
 
@@ -1142,6 +1380,42 @@ def test_controller_approval_provider_uses_input_lane_for_session_approval() -> 
     assert decisions[0].decision == "approved_for_session"
     assert decisions[0].grant_scope == "session"
     assert controller._approval_pending is False
+
+
+def test_running_interrupt_unblocks_pending_approval_request() -> None:
+    from debug_agent.cli.repl_controller import (
+        ControllerApprovalProvider,
+        ReplController,
+    )
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+    controller.is_executing = True
+    controller.control_state = "running_turn"
+    provider = ControllerApprovalProvider(controller)
+    decisions: list[object] = []
+
+    worker = threading.Thread(
+        target=lambda: decisions.append(
+            provider.request_approval(
+                "approval request",
+                {"tool_name": "shell_exec"},
+            )
+        )
+    )
+    worker.start()
+    assert _eventually(lambda: controller._approval_pending)
+
+    controller.on_interrupt()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert runtime.cancel_running_calls == 1
+    assert decisions[0].decision == "denied"
+    assert decisions[0].message == "Turn cancelled by user."
+    assert controller._approval_pending is False
+    assert view.input_enabled[-1] is False
     assert view.inline_approval_ended == 1
 
 
@@ -1571,6 +1845,53 @@ def test_welcome_snapshot_uses_contract_session_id_not_artifact_directory() -> N
     assert snapshot.session_id_short == "sess-0abc"
 
 
+def test_controller_renders_restored_conversation_history_for_resumed_tui() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    runtime.conversation = [
+        {
+            "seq": 1,
+            "role": "user",
+            "kind": "current_user_input",
+            "content": "show history",
+        },
+        {
+            "seq": 2,
+            "role": "assistant",
+            "kind": "assistant_output",
+            "content": "history answer",
+        },
+        {
+            "seq": 3,
+            "role": "runtime",
+            "kind": "cancellation_fact",
+            "content": {
+                "error_class": "cancelled",
+                "reason": "user_cancel_running",
+                "message": "Turn cancelled by user.",
+                "artifact_ids": [],
+            },
+        },
+    ]
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.render_restored_history()
+
+    assert view.user_messages == ["show history"]
+    assert view.events == [
+        ReplViewEvent(
+            kind="model_markdown_final",
+            payload={"text": "history answer"},
+        ),
+        ReplViewEvent(
+            kind="system_message",
+            payload={"message": "Turn cancelled by user."},
+        ),
+    ]
+
+
 def test_exit_slash_command_completes_runtime_and_shows_summary() -> None:
     from debug_agent.cli.repl_controller import ReplController
 
@@ -1682,6 +2003,40 @@ def test_approval_denial_turn_abort_renders_neutral_status_not_error() -> None:
     assert view.errors == []
     assert view.events == []
     assert view.turn_statuses[-1][1] == "failed"
+    assert view.input_enabled[-1] is True
+
+
+def test_running_cancellation_renders_system_message_not_error() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime(
+        _result(
+            "cancelled",
+            error={
+                "error_class": "cancelled",
+                "reason": "user_cancel_running",
+                "message": "Turn cancelled by user.",
+                "scope": "turn",
+                "recoverability": "turn_recoverable",
+            },
+            metadata={"failure_scope": "turn"},
+        )
+    )
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_turn_finished(runtime.result)
+
+    assert runtime.failed_results == []
+    assert controller.exit_code == 0
+    assert view.errors == []
+    assert view.events == [
+        ReplViewEvent(
+            kind="system_message",
+            payload={"message": "Turn cancelled by user."},
+        )
+    ]
+    assert view.turn_statuses[-1][1] == "cancelled"
     assert view.input_enabled[-1] is True
 
 

@@ -387,11 +387,25 @@ Phase 3 acceptance requires:
   requested/observed with remote-stop uncertainty metadata, shell termination
   requested/result, turn cancellation fact, and whether REPL returned to input or
   exited interrupted.
-- main model provider calls run through runtime-owned cancellable workers.
+- main model provider calls run through runtime-owned async provider tasks
+  internally while preserving the public synchronous adapter `run()` /
+  `stream()` contract.
+- non-streaming authoritative main-model execution uses the configured
+  provider async invocation API, such as `ainvoke`, when available.
+- streaming observational main-model execution uses the configured provider
+  async streaming API, such as `astream`, when available.
+- one-shot/non-stream REPL coverage proves the authoritative `run()` path
+  inherits async provider cancellation behavior.
+- streaming REPL/TUI coverage proves stream output inherits async provider
+  cancellation behavior.
 - `view_image` provider calls run through runtime-owned async cancellable
   workers.
 - streaming fallback to non-streaming provider invocation still runs the
-  provider call through a runtime-owned cancellable worker.
+  provider call through a runtime-owned async provider task when an async
+  invocation API is available.
+- sync `invoke()` / `stream()` wrapped in a worker is rejected as an accepted
+  concrete main-model provider fallback when the provider exposes usable async
+  APIs.
 - late provider results after accepted cancellation are ignored.
 - main model provider cancellation uses `cancelled/model_call_cancelled` with
   `scope = "provider"`.
@@ -404,6 +418,9 @@ Phase 3 acceptance requires:
   event kind with `payload.error.reason = "tool_call_cancelled"`.
 - runtime does not claim remote provider stop or billing stop.
 - stream tokens shown before cancellation are not accepted as final output.
+- async stream cancellation does not drain late chunks into durable assistant
+  output and closes or observes the local async provider boundary before the
+  runtime accepts durable turn cancellation.
 - late `view_image` provider results are not accepted as `ToolResult`, vision
   analysis, raw provider text, or provider response.
 - cancelled `view_image` metadata preserves Phase 2 query redaction and contains

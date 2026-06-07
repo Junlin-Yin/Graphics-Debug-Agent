@@ -27,9 +27,18 @@ class ShellTimeout(Exception):
     pass
 
 
+class ShellCancelled(Exception):
+    pass
+
+
 class ShellRunner(Protocol):
     def run(
-        self, argv: list[str], *, cwd: Path, timeout_seconds: int
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+        timeout_seconds: int,
+        register_process_handle: Any = None,
     ) -> ShellRunResult:
         ...
 
@@ -50,13 +59,19 @@ class FakeShellRunner:
         self.calls: list[dict[str, Any]] = []
 
     def run(
-        self, argv: list[str], *, cwd: Path, timeout_seconds: int
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+        timeout_seconds: int,
+        register_process_handle: Any = None,
     ) -> ShellRunResult:
         self.calls.append(
             {
                 "argv": list(argv),
                 "cwd": cwd,
                 "timeout_seconds": timeout_seconds,
+                "register_process_handle": register_process_handle,
             }
         )
         if self.exc is not None:
@@ -70,25 +85,48 @@ class FakeShellRunner:
 
 class SubprocessShellRunner:
     def run(
-        self, argv: list[str], *, cwd: Path, timeout_seconds: int
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+        timeout_seconds: int,
+        register_process_handle: Any = None,
     ) -> ShellRunResult:
-        try:
-            completed = subprocess.run(
-                argv,
-                cwd=cwd,
-                timeout=timeout_seconds,
-                shell=False,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise ShellTimeout(str(exc)) from exc
-        return ShellRunResult(
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-            returncode=completed.returncode,
+        process = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            shell=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
+        handle = ActiveShellProcessHandle(process)
+        if callable(register_process_handle):
+            register_process_handle(handle)
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            handle.terminate()
+            stdout, stderr = process.communicate()
+            raise ShellTimeout(str(exc)) from exc
+        if handle.terminate_requested:
+            raise ShellCancelled("shell_exec was cancelled.")
+        return ShellRunResult(
+            stdout=stdout,
+            stderr=stderr,
+            returncode=process.returncode,
+        )
+
+
+@dataclass
+class ActiveShellProcessHandle:
+    process: subprocess.Popen
+    terminate_requested: bool = False
+
+    def terminate(self) -> None:
+        self.terminate_requested = True
+        if self.process.poll() is None:
+            self.process.terminate()
 
 
 def tool_definitions() -> list[ToolDefinition]:
@@ -125,10 +163,17 @@ def shell_exec(context: Any, arguments: dict[str, Any]) -> ShellHandlerResult:
             list(arguments["argv"]),
             cwd=Path(arguments["execution_cwd"]),
             timeout_seconds=timeout_seconds,
+            register_process_handle=getattr(context, "shell_process_registry", None),
         )
     except ShellTimeout as exc:
         return ShellHandlerResult(
             status="timeout",
+            error_message=str(exc),
+            metadata={"effective_timeout_seconds": timeout_seconds},
+        )
+    except ShellCancelled as exc:
+        return ShellHandlerResult(
+            status="cancelled",
             error_message=str(exc),
             metadata={"effective_timeout_seconds": timeout_seconds},
         )

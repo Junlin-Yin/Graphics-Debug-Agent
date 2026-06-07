@@ -12,6 +12,7 @@ from debug_agent.adapters.vision_client import (
     VisionModelClient,
     project_chat_completions_request,
 )
+from debug_agent.runtime.provider_execution import AsyncProviderCallTask, ProviderCallCancelled
 
 
 def test_request_projection_contains_kimi_json_shape() -> None:
@@ -139,9 +140,10 @@ def test_client_async_analysis_registers_cancellation_handle_and_ignores_late_re
     registered_handles = []
 
     class _SlowCompletions:
-        def create(self, **_kwargs):
+        async def create(self, **_kwargs):
             started.set()
-            release.wait(timeout=1)
+            while not release.is_set():
+                await __import__("asyncio").sleep(0.001)
 
             class _Message:
                 content = '{"analysis":"too late"}'
@@ -154,11 +156,11 @@ def test_client_async_analysis_registers_cancellation_handle_and_ignores_late_re
 
             return _Completion()
 
-    class _SlowOpenAI:
+    class _SlowAsyncOpenAI:
         def __init__(self, **_kwargs) -> None:
             self.chat = type("Chat", (), {"completions": _SlowCompletions()})()
 
-    client = VisionModelClient(factory=_SlowOpenAI)
+    client = VisionModelClient(async_factory=_SlowAsyncOpenAI)
     config = VisionClientConfig(
         provider="openai",
         model="kimi-k2.5",
@@ -172,12 +174,13 @@ def test_client_async_analysis_registers_cancellation_handle_and_ignores_late_re
         images=[VisionImageInput(mime_type="image/png", data=b"abc")],
         instruction="Return JSON.",
         timeout_seconds=7.5,
+        cleanup_timeout_seconds=2,
         register_cancellation_handle=registered_handles.append,
     )
     assert started.wait(timeout=1)
     registered_handles[0].cancel()
 
-    with pytest.raises(KeyboardInterrupt, match="view_image provider call cancelled"):
+    with pytest.raises(ProviderCallCancelled, match="view_image provider call cancelled"):
         future.result(timeout=1)
     release.set()
     time.sleep(0.03)
@@ -185,6 +188,125 @@ def test_client_async_analysis_registers_cancellation_handle_and_ignores_late_re
     assert registered_handles[0].cancel_requested is True
     assert registered_handles[0].metadata["remote_stop_uncertain"] is True
     assert registered_handles[0].metadata["billing_stop_uncertain"] is True
+
+
+def test_client_async_analysis_uses_async_openai_client_path() -> None:
+    created_sync = []
+    created_async = []
+
+    def sync_factory(**kwargs):
+        created_sync.append(kwargs)
+        raise AssertionError("sync client must not be used by analyze_async")
+
+    class _AsyncCompletions:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+
+            class _Message:
+                content = '{"analysis":"async path"}'
+
+            class _Choice:
+                message = _Message()
+
+            class _Completion:
+                choices = [_Choice()]
+
+            return _Completion()
+
+    class _AsyncOpenAI:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.chat = type("Chat", (), {"completions": _AsyncCompletions()})()
+
+    def async_factory(**kwargs):
+        client = _AsyncOpenAI(**kwargs)
+        created_async.append(client)
+        return client
+
+    client = VisionModelClient(factory=sync_factory, async_factory=async_factory)
+    config = VisionClientConfig(
+        provider="openai",
+        model="kimi-k2.5",
+        api_key="secret",
+        base_url="https://example.test/v1",
+        max_tokens=321,
+    )
+
+    future = client.analyze_async(
+        config=config,
+        images=[VisionImageInput(mime_type="image/png", data=b"abc")],
+        instruction="Return JSON.",
+        timeout_seconds=7.5,
+        cleanup_timeout_seconds=1,
+    )
+
+    assert isinstance(future, AsyncProviderCallTask)
+
+    response = future.result(timeout=1)
+
+    assert response.text == '{"analysis":"async path"}'
+    assert created_sync == []
+    assert len(created_async) == 1
+    assert created_async[0].kwargs == {
+        "api_key": "secret",
+        "base_url": "https://example.test/v1",
+        "timeout": 7.5,
+        "max_retries": 0,
+    }
+    calls = created_async[0].chat.completions.calls
+    assert calls[0]["stream"] is False
+    assert calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_client_async_analysis_cancels_blocked_async_provider_task_promptly() -> None:
+    started = threading.Event()
+    task_cancelled = threading.Event()
+    registered_handles = []
+
+    class _AsyncCompletions:
+        async def create(self, **_kwargs):
+            started.set()
+            try:
+                await __import__("asyncio").sleep(60)
+            except __import__("asyncio").CancelledError:
+                task_cancelled.set()
+                raise
+
+    class _AsyncOpenAI:
+        def __init__(self, **_kwargs) -> None:
+            self.chat = type("Chat", (), {"completions": _AsyncCompletions()})()
+
+    client = VisionModelClient(async_factory=_AsyncOpenAI)
+    config = VisionClientConfig(
+        provider="openai",
+        model="kimi-k2.5",
+        api_key="secret",
+        base_url="https://example.test/v1",
+        max_tokens=321,
+    )
+
+    future = client.analyze_async(
+        config=config,
+        images=[VisionImageInput(mime_type="image/png", data=b"abc")],
+        instruction="Return JSON.",
+        timeout_seconds=7.5,
+        cleanup_timeout_seconds=1,
+        register_cancellation_handle=registered_handles.append,
+    )
+    assert started.wait(timeout=1)
+    registered_handles[0].cancel()
+
+    started_at = time.monotonic()
+    with pytest.raises(ProviderCallCancelled):
+        future.result(timeout=1)
+
+    assert time.monotonic() - started_at < 0.2
+    assert task_cancelled.wait(timeout=1)
+    assert registered_handles[0].metadata["local_boundary_closed"] is True
+    assert registered_handles[0].metadata["late_result_ignored"] is True
 
 
 def test_client_rejects_completion_without_message_content() -> None:

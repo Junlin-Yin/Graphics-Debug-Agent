@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any, Callable, TextIO
 
-from debug_agent.tools.broker import ApprovalDecision
+from debug_agent.cli.exit_codes import INTERRUPTED
 from debug_agent.cli.repl_view import (
     ReplView,
     ReplViewEvent,
@@ -18,7 +18,9 @@ from debug_agent.cli.repl_view import (
 )
 from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.orchestrator import ReplRuntime, RuntimeOrchestrator
+from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
 from debug_agent.runtime.stream_events import AgentStreamEvent
+from debug_agent.tools.broker import ApprovalDecision
 
 
 BUSY_MESSAGE = "Prompt run is already executing. Input is disabled."
@@ -34,6 +36,7 @@ class ReplController:
     wakeup_callback: Callable[[], None] | None = None
     time_fn: Callable[[], float] = monotonic
     is_executing: bool = False
+    control_state: str = "idle"
     exit_code: int = 0
     _turn_counter: int = 0
     _active_turn_id: int | None = None
@@ -50,6 +53,7 @@ class ReplController:
     _usage_total_tokens: int | None = None
     _context_used_tokens: int | None = None
     _stream_usage_accounted: bool = False
+    _restored_history_rendered: bool = False
     _approval_condition: threading.Condition = field(
         default_factory=threading.Condition
     )
@@ -104,14 +108,21 @@ class ReplController:
             return True
         if command.startswith("/"):
             return self._handle_plain_slash_command(command, output)
-        if self.is_executing:
+        if self.is_executing or self.control_state == "cancelling":
             print(BUSY_MESSAGE, file=output)
             return True
         self.is_executing = True
+        self.control_state = "running_turn"
         try:
             result = self.runtime.run_turn(command)
+        except KeyboardInterrupt:
+            self.on_interrupt()
+            self.exit_code = INTERRUPTED
+            return False
         finally:
-            self.is_executing = False
+            if self.control_state != "cancelling":
+                self.is_executing = False
+                self.control_state = "idle"
         if result.status == "completed":
             print(result.assistant_output or "", file=output)
             return True
@@ -129,6 +140,9 @@ class ReplController:
         command = text.strip()
         if not command:
             return
+        if self.control_state == "cancelling":
+            self._append_system_message(BUSY_MESSAGE)
+            return
         if self._approval_pending:
             self._handle_approval_response(command)
             return
@@ -144,6 +158,7 @@ class ReplController:
         self._active_turn_started_at = self.time_fn()
         self._last_elapsed_seconds = 0
         self.is_executing = True
+        self.control_state = "running_turn"
         if self.view is not None:
             self.view.append_user_message(command)
             self.view.set_input_enabled(False)
@@ -157,7 +172,7 @@ class ReplController:
         self._active_thread.start()
 
     def on_slash_command(self, command: str) -> bool:
-        if self.is_executing:
+        if self.is_executing or self.control_state == "cancelling":
             return True
         if command == "/status":
             self._append_system_message("\n".join(self.runtime.status_lines()))
@@ -203,7 +218,7 @@ class ReplController:
         return True
 
     def on_approval_mode_cycle(self) -> bool:
-        if self.is_executing or self._approval_pending:
+        if self.is_executing or self._approval_pending or self.control_state == "cancelling":
             return True
         cycle = getattr(self.runtime, "cycle_approval_mode", None)
         if not callable(cycle):
@@ -252,14 +267,49 @@ class ReplController:
             self._approval_decision = decision
             self._approval_condition.notify_all()
 
+    def _cancel_pending_approval(self) -> None:
+        with self._approval_condition:
+            if not self._approval_pending:
+                return
+            self._approval_decision = ApprovalDecision(
+                "denied",
+                "none",
+                "Turn cancelled by user.",
+            )
+            self._approval_condition.notify_all()
+
     def on_interrupt(self) -> None:
-        result = _error_result(
-            "cancelled",
-            "cancelled",
-            "REPL interrupted by Ctrl+C.",
-        )
-        self.runtime.fail(result)
-        self.exit_code = 1
+        if self.control_state == "cancelling":
+            self.exit_code = INTERRUPTED
+            self.is_executing = False
+            if self.view is not None:
+                self.view.set_input_enabled(False)
+            self._discard_pending_turn_results()
+            return
+        if self.is_executing:
+            self.control_state = "cancelling"
+            self._cancel_pending_approval()
+            if self.view is not None:
+                self.view.set_input_enabled(False)
+                turn_id = self._active_turn_id or self._turn_counter or 1
+                self.view.set_turn_status(turn_id, "cancelling", self._elapsed_seconds())
+            cancel = getattr(self.runtime, "cancel_running_turn", None)
+            if callable(cancel):
+                cancel()
+            return
+        self.control_state = "terminalizing"
+        cancel_idle = getattr(self.runtime, "cancel_idle", None)
+        if callable(cancel_idle):
+            cancel_idle()
+        else:
+            self.runtime.fail(
+                _error_result(
+                    "cancelled",
+                    "cancelled",
+                    "REPL interrupted by Ctrl+C.",
+                )
+            )
+        self.exit_code = INTERRUPTED
         self.is_executing = False
         if self.view is not None:
             self.view.set_input_enabled(False)
@@ -279,11 +329,47 @@ class ReplController:
     def status_bar_snapshot(self) -> StatusBarSnapshot:
         return self._status_bar_snapshot()
 
+    def render_restored_history(self) -> None:
+        if self.view is None or self._restored_history_rendered:
+            return
+        self._restored_history_rendered = True
+        for message in getattr(self.runtime, "conversation", []) or []:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "")
+            kind = str(message.get("kind") or "")
+            content = message.get("content")
+            if role == "user":
+                text = _conversation_content_text(content)
+                if text:
+                    self.view.append_user_message(text)
+            elif role == "assistant" and kind == "assistant_output":
+                text = _conversation_content_text(content)
+                if text:
+                    self.view.append_view_event(
+                        ReplViewEvent(
+                            kind="model_markdown_final",
+                            payload={"text": text},
+                        )
+                    )
+            elif role == "runtime":
+                text = _runtime_fact_message(content)
+                if text:
+                    self.view.append_view_event(
+                        ReplViewEvent(
+                            kind="system_message",
+                            payload={"message": text},
+                        )
+                    )
+
     def notify_event_ready(self) -> None:
         if self.wakeup_callback is not None:
             self.wakeup_callback()
 
     def drain_completed_turns(self) -> int:
+        if self.exit_code == INTERRUPTED and self.control_state == "cancelling":
+            self._discard_pending_turn_results()
+            return 0
         drained = 0
         while True:
             try:
@@ -308,6 +394,8 @@ class ReplController:
             drained += 1
 
     def on_turn_finished(self, result: AgentRunResult) -> None:
+        if self.exit_code == INTERRUPTED and self.control_state == "cancelling":
+            return
         turn_id = self._active_turn_id or self._turn_counter or 1
         elapsed_seconds = self._elapsed_seconds()
         self._update_usage(result)
@@ -321,6 +409,9 @@ class ReplController:
         elif _is_turn_scoped_failure(result):
             if _is_approval_denied_abort(result):
                 pass
+            elif _is_running_cancellation(result):
+                message = result.error["message"] if result.error else "Turn cancelled."
+                self._append_system_message(message)
             else:
                 message = (
                     result.error["message"] if result.error else "Prompt execution failed."
@@ -351,12 +442,20 @@ class ReplController:
                     )
                 )
         self.is_executing = False
+        self.control_state = "idle"
         self._active_turn_id = None
         self._active_turn_started_at = None
         self._streamed_model_text.clear()
         self._streamed_tool_blocks.clear()
         self._streamed_output_seen = False
         self._stream_usage_accounted = False
+
+    def _discard_pending_turn_results(self) -> None:
+        while True:
+            try:
+                self._completion_queue.get_nowait()
+            except queue.Empty:
+                return
 
     def update_running_turn_status(self) -> None:
         if not self.is_executing or self._active_turn_id is None or self.view is None:
@@ -365,7 +464,8 @@ class ReplController:
         if elapsed_seconds <= self._last_elapsed_seconds:
             return
         self._last_elapsed_seconds = elapsed_seconds
-        self.view.set_turn_status(self._active_turn_id, "running", elapsed_seconds)
+        status = "cancelling" if self.control_state == "cancelling" else "running"
+        self.view.set_turn_status(self._active_turn_id, status, elapsed_seconds)
 
     def wait_for_active_turn(self, timeout: float | None = None) -> None:
         thread = self._active_thread
@@ -381,6 +481,15 @@ class ReplController:
                 command,
                 agent_stream_callback=self.on_agent_stream_event,
             )
+        except ProviderBoundaryNotClosed:
+            self.exit_code = INTERRUPTED
+            self.control_state = "cancelling"
+            self.is_executing = False
+            if self.view is not None:
+                self.view.set_input_enabled(False)
+            self._discard_pending_turn_results()
+            self.notify_event_ready()
+            return
         except KeyboardInterrupt as exc:
             result = _error_result("cancelled", "cancelled", str(exc))
         except TimeoutError as exc:
@@ -832,6 +941,27 @@ def _error_class(result: AgentRunResult) -> str | None:
     return str(value) if value else None
 
 
+def _conversation_content_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        value = content.get("content")
+        if isinstance(value, str):
+            return value
+        message = content.get("message")
+        if isinstance(message, str):
+            return message
+    return ""
+
+
+def _runtime_fact_message(content: object) -> str:
+    if isinstance(content, dict):
+        message = content.get("message")
+        if isinstance(message, str):
+            return message
+    return _conversation_content_text(content)
+
+
 def _terminal_summary_status(result: AgentRunResult) -> str:
     return "cancelled" if _error_class(result) == "cancelled" else "failed"
 
@@ -839,6 +969,8 @@ def _terminal_summary_status(result: AgentRunResult) -> str:
 def _is_turn_scoped_failure(result: AgentRunResult) -> bool:
     return (
         result.status == "timeout"
+        or result.status == "cancelled"
+        and result.metadata.get("failure_scope") == "turn"
         or result.status == "failed"
         and result.metadata.get("failure_scope") == "turn"
     )
@@ -858,6 +990,15 @@ def _is_approval_denied_abort(result: AgentRunResult) -> bool:
                 }
             )
         )
+    )
+
+
+def _is_running_cancellation(result: AgentRunResult) -> bool:
+    return (
+        result.status == "cancelled"
+        and result.metadata.get("failure_scope") == "turn"
+        and _error_class(result) == "cancelled"
+        and _error_reason(result) == "user_cancel_running"
     )
 
 

@@ -143,6 +143,44 @@ def test_session_store_releases_ownership_after_terminal_status(tmp_path) -> Non
     db.close()
 
 
+def test_session_store_release_ownership_requires_matching_owner_token(tmp_path) -> None:
+    workspace, db, sessions, *_ = _stores(tmp_path)
+    sessions.create(
+        workspace_root=workspace,
+        approval_mode="yolo",
+        config_snapshot={},
+        session_id="sess_1",
+    )
+    sessions.record_owner(
+        session_id="sess_1",
+        owner_pid=123,
+        owner_host_id="host-v1:sha256(test)",
+        owner_token="owner_original",
+    )
+    sessions.mark_completed("sess_1", latest_checkpoint_id="chk_1")
+
+    assert (
+        sessions.release_ownership(
+            session_id="sess_1",
+            owner_token="owner_changed",
+        )
+        is False
+    )
+    assert (
+        sessions.release_ownership(
+            session_id="sess_1",
+            owner_token="owner_original",
+        )
+        is True
+    )
+    row = db.connection.execute(
+        "SELECT owner_pid, owner_host_id, owner_token FROM sessions WHERE session_id = 'sess_1'"
+    ).fetchone()
+
+    assert row == (None, None, None)
+    db.close()
+
+
 def test_run_store_creates_prompt_run_and_allows_phase_0_transitions(tmp_path) -> None:
     workspace, db, sessions, runs, *_ = _stores(tmp_path)
     session = sessions.create(

@@ -19,7 +19,7 @@ from debug_agent.runtime.policy import (
     build_builtin_policy,
 )
 from debug_agent.tools.broker import FakeApprovalProvider, ToolBroker
-from debug_agent.tools.shell import FakeShellRunner, ShellTimeout, tool_definitions
+from debug_agent.tools.shell import FakeShellRunner, ShellCancelled, ShellTimeout, tool_definitions
 
 
 def _runtime(
@@ -147,6 +147,7 @@ def test_shell_nonzero_exit_code_is_tool_failure_with_concrete_message(tmp_path)
             "argv": ["echo", "ok"],
             "cwd": runtime["workspace"],
             "timeout_seconds": 10,
+            "register_process_handle": None,
         }
     ]
     assert _event_kinds(runtime) == ["tool_call_started", "tool_call_failed"]
@@ -209,6 +210,38 @@ def test_shell_timeout_returns_tool_result_through_broker(tmp_path) -> None:
     assert result.error["reason"] == "tool_execution_timeout"
     assert result.metadata["effective_timeout_seconds"] == 5
     assert _event_kinds(runtime) == ["tool_call_started", "tool_call_failed"]
+    runtime["db"].close()
+
+
+def test_shell_cancelled_returns_tool_call_cancelled_result(tmp_path) -> None:
+    runner = FakeShellRunner(exc=ShellCancelled("cancelled"))
+    runtime = _runtime(tmp_path, default_timeout=5, runner=runner)
+
+    result = _invoke(runtime, {"argv": ["sleep", "10"]})
+
+    assert result.status == "cancelled"
+    assert result.error["error_class"] == "cancelled"
+    assert result.error["reason"] == "tool_call_cancelled"
+    assert result.error["scope"] == "tool"
+    assert result.metadata["tool_name"] == "shell_exec"
+    assert _event_kinds(runtime) == ["tool_call_started", "tool_call_failed"]
+    runtime["db"].close()
+
+
+def test_shell_exec_passes_process_registry_to_runner_after_start_boundary(tmp_path) -> None:
+    runner = FakeShellRunner(stdout="ok")
+    handles = []
+    runtime = _runtime(tmp_path, default_timeout=5, runner=runner)
+
+    result = _invoke(
+        runtime,
+        {"argv": ["echo", "ok"]},
+        shell_process_registry=handles.append,
+    )
+
+    assert result.status == "ok"
+    assert runner.calls[0]["register_process_handle"].__self__ is handles
+    assert _event_kinds(runtime) == ["tool_call_started", "tool_call_completed"]
     runtime["db"].close()
 
 

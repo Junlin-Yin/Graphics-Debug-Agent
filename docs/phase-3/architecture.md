@@ -92,8 +92,8 @@ assistant or tool message saying that resume occurred.
 
 ### Provider Execution
 
-Main model calls and `view_image` provider calls must execute through
-runtime-owned cancellable workers.
+Main model calls and `view_image` provider calls must execute through a shared
+runtime-owned async provider primitive where practical.
 
 Responsibilities:
 
@@ -101,16 +101,19 @@ Responsibilities:
   model calls.
 - keep `run()` as the authoritative main model result path.
 - keep `stream()` as UI observation path.
-- execute main model calls through runtime-owned cancellable workers without
-  adding a public async adapter method.
+- execute main model calls through runtime-owned async provider tasks without
+  adding a public async adapter method: `run()` drives the provider async
+  invocation path such as `ainvoke`, and `stream()` drives the provider async
+  streaming path such as `astream`, when those APIs are available for the
+  configured provider.
 - remove the older placeholder `AgentLoopAdapter.cancel(run_id)` public API from
   the adapter protocol and concrete adapter implementation. That API was a
   Phase 0/0.5 future-control placeholder, not a real provider-cancellation
   boundary.
-- keep cancellation handles owned by the runtime worker/task wrapping `run()`
-  or `stream()`.
-- execute `view_image` provider calls through an async vision provider path and
-  runtime-owned cancellable worker.
+- keep cancellation handles owned by the runtime async provider task wrapping
+  the internal provider boundary for `run()` or `stream()`.
+- execute `view_image` provider calls through the same class of runtime-owned
+  async provider boundary using the async vision provider path.
 - return normalized cancellation/failure results when local cancellation is
   observed.
 - expose enough provider stop/finish metadata for
@@ -125,11 +128,18 @@ cancellation contract.
 Adapters must not make stream observations runtime truth. The existing
 streaming observation fallback to non-streaming provider invocation may remain,
 but the underlying provider invocation must still run through a runtime-owned
-cancellable worker. Sync-only uncancellable provider execution is not an
-accepted Phase 3 fallback. After local cancellation is accepted, late provider
-results are ignored and must not become durable conversation, accepted
-assistant output, accepted tool-call output, or accepted `view_image` tool
-result. Runtime must not claim the remote provider stopped execution or billing.
+async provider task when the configured provider exposes a usable async
+invocation API. Sync-only `invoke()` / `stream()` wrapped in a worker is not an
+accepted Phase 3 fallback for concrete main-model providers once async provider
+APIs are available. After local cancellation is accepted, late provider results
+are ignored and must not become durable conversation, accepted assistant output,
+accepted tool-call output, or accepted `view_image` tool result. Runtime must
+not claim the remote provider stopped execution or billing.
+
+The one-shot/non-stream REPL path and streaming REPL/TUI path share the same
+adapter/executor provider boundary. Both paths therefore inherit the same async
+provider cancellation behavior even though the public adapter methods remain
+synchronous.
 
 ### ToolBroker
 

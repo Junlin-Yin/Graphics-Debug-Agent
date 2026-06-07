@@ -99,6 +99,17 @@ class ReplStartError:
     error: dict[str, Any] | None
 
 
+class _RuntimeCancellationToken:
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    def is_cancelled(self) -> bool:
+        return self._event.is_set()
+
+
 class ReplRuntime:
     def __init__(
         self,
@@ -113,6 +124,7 @@ class ReplRuntime:
         run_id: str,
         workspace_root: Path,
         conversation: list[dict[str, Any]] | None = None,
+        owner_token: str | None = None,
     ) -> None:
         self.db = db
         self.sessions = sessions
@@ -123,14 +135,18 @@ class ReplRuntime:
         self.session_id = session_id
         self.run_id = run_id
         self.workspace_root = workspace_root
-        self.turn_counter = 0
+        self.owner_token = owner_token
         self.conversation: list[dict[str, Any]] = (
             [] if conversation is None else [dict(message) for message in conversation]
         )
+        self.turn_counter = _max_repl_turn_counter(self.conversation)
         self.latest_context_estimate: dict[str, Any] | None = None
         self.approval_provider = NonInteractiveApprovalProvider()
         self.closed = False
         self._lock = threading.RLock()
+        self._active_cancellation_token: _RuntimeCancellationToken | None = None
+        self._active_provider_handles: list[Any] = []
+        self._active_shell_handles: list[Any] = []
 
     def run_turn(
         self,
@@ -141,28 +157,88 @@ class ReplRuntime:
             self.turn_counter += 1
             session = self.sessions.get(self.session_id)
             run = self.runs.get(self.run_id)
-            def runtime_stream_callback(event: AgentStreamEvent) -> None:
-                if event.kind == "stream_context_estimate_updated":
-                    estimate = event.payload.get("context_estimate")
-                    if isinstance(estimate, dict):
-                        self.latest_context_estimate = dict(estimate)
-                if agent_stream_callback is not None:
-                    agent_stream_callback(event)
+            turn_counter = self.turn_counter
+            conversation = [dict(message) for message in self.conversation]
+            cancellation_token = _RuntimeCancellationToken()
+            self._active_cancellation_token = cancellation_token
+            self._active_provider_handles = []
+            self._active_shell_handles = []
 
+        def runtime_stream_callback(event: AgentStreamEvent) -> None:
+            if event.kind == "stream_context_estimate_updated":
+                estimate = event.payload.get("context_estimate")
+                if isinstance(estimate, dict):
+                    with self._lock:
+                        self.latest_context_estimate = dict(estimate)
+            if agent_stream_callback is not None:
+                agent_stream_callback(event)
+
+        try:
             result = self.executor.run_turn(
                 session=session,
                 run=run,
                 user_input=user_input,
                 workspace_root=str(self.workspace_root),
-                conversation=self.conversation,
-                prompt_turn_counter=self.turn_counter,
+                conversation=conversation,
+                prompt_turn_counter=turn_counter,
                 approval_provider=self.approval_provider,
                 agent_stream_callback=runtime_stream_callback
                 if agent_stream_callback is not None
                 else None,
+                cancellation_token=cancellation_token,
+                provider_cancellation_registry=self._register_provider_cancellation_handle,
+                shell_process_registry=self._register_shell_process_handle,
             )
+        except KeyboardInterrupt:
+            self.cancel_running_turn(collect_provider_boundaries=True)
+            result = _running_cancelled_result()
+        finally:
+            with self._lock:
+                self._active_cancellation_token = None
+                self._active_provider_handles = []
+                self._active_shell_handles = []
+        with self._lock:
             self._append_turn_conversation(user_input, result)
             return result
+
+    def cancel_running_turn(
+        self,
+        *,
+        collect_provider_boundaries: bool = False,
+    ) -> AgentRunResult:
+        with self._lock:
+            token = self._active_cancellation_token
+            handles = list(self._active_provider_handles)
+            shell_handles = list(self._active_shell_handles)
+        if token is not None:
+            token.cancel()
+        for handle in handles:
+            cancel = getattr(handle, "cancel", None)
+            if callable(cancel):
+                cancel()
+        if collect_provider_boundaries:
+            for handle in handles:
+                collect = getattr(handle, "collect_boundary", None)
+                if not callable(collect):
+                    collect = getattr(handle, "collect", None)
+                if callable(collect):
+                    collect()
+        for handle in shell_handles:
+            terminate = getattr(handle, "terminate", None)
+            if callable(terminate):
+                terminate()
+        return _running_cancelled_result()
+
+    def cancel_idle(self) -> None:
+        self.fail(_idle_cancelled_result(prompt_turn_counter=self.turn_counter))
+
+    def _register_provider_cancellation_handle(self, handle: Any) -> None:
+        with self._lock:
+            self._active_provider_handles.append(handle)
+
+    def _register_shell_process_handle(self, handle: Any) -> None:
+        with self._lock:
+            self._active_shell_handles.append(handle)
 
     def _append_turn_conversation(
         self,
@@ -173,7 +249,8 @@ class ReplRuntime:
         if isinstance(estimate, dict):
             self.latest_context_estimate = estimate
         writeback = result.metadata.get("conversation_writeback")
-        if isinstance(writeback, list):
+        has_writeback = isinstance(writeback, list)
+        if has_writeback:
             self.conversation = [dict(message) for message in writeback]
         next_seq = _next_conversation_seq(self.conversation)
         turn_id = f"turn-{self.turn_counter}"
@@ -223,6 +300,62 @@ class ReplRuntime:
             self._sync_durable_message_indexes()
             return
         error = result.error if isinstance(result.error, dict) else {}
+        if (
+            result.status == "cancelled"
+            and not has_writeback
+            and not _durable_turn_runtime_fact_exists(
+                self.db.connection,
+                run_id=self.run_id,
+                turn_id=turn_id,
+                kind="cancellation_fact",
+            )
+        ):
+            content = {
+                "error_class": str(error.get("error_class") or "cancelled"),
+                "reason": str(error.get("reason") or "user_cancel_running"),
+                "message": str(error.get("message") or "Turn cancelled by user."),
+                "artifact_ids": error.get("artifact_ids")
+                if isinstance(error.get("artifact_ids"), list)
+                else [],
+            }
+            self.conversation.append(
+                {
+                    "seq": next_seq,
+                    "role": "runtime",
+                    "kind": "cancellation_fact",
+                    "turn_id": turn_id,
+                    "model_call_id": None,
+                    "tool_call_id": None,
+                    "content": content,
+                    "artifact_refs": [],
+                    "metadata": {
+                        "error_class": content["error_class"],
+                        "reason": content["reason"],
+                    },
+                }
+            )
+            ConversationStore(self.db.connection).append_closed_group(
+                session_id=self.session_id,
+                run_id=self.run_id,
+                messages=[
+                    ConversationAppend(
+                        turn_id=turn_id,
+                        message_group_id=f"{turn_id}:runtime:cancellation_fact",
+                        model_call_id=None,
+                        group_position=0,
+                        group_row_count=1,
+                        role="runtime",
+                        kind="cancellation_fact",
+                        content=content,
+                        metadata={
+                            "error_class": content["error_class"],
+                            "reason": content["reason"],
+                        },
+                    )
+                ],
+            )
+            self._sync_durable_message_indexes()
+            return
         self.conversation.append(
             {
                 "seq": next_seq,
@@ -376,6 +509,7 @@ class ReplRuntime:
             TraceWriter(self.db.connection, self.db.path.parent).refresh_if_stale(
                 session.session_id
             )
+            self._release_active_ownership()
             self.close()
 
     def fail(self, result: AgentRunResult) -> None:
@@ -392,6 +526,7 @@ class ReplRuntime:
                 run_id=self.run_id,
                 agent_result=result,
             )
+            self._release_active_ownership()
             self.close()
 
     def close(self) -> None:
@@ -399,6 +534,31 @@ class ReplRuntime:
             if not self.closed:
                 self.db.close()
                 self.closed = True
+
+    def _release_active_ownership(self) -> None:
+        if self.owner_token is None:
+            return
+        released = self.sessions.release_ownership(
+            session_id=self.session_id,
+            owner_token=self.owner_token,
+        )
+        if released:
+            self.owner_token = None
+            return
+        _record_ownership_release_failed_event(
+            self.events,
+            session_id=self.session_id,
+            run_id=self.run_id,
+        )
+        write_runtime_log(
+            self.db.path.parent,
+            session_id=self.session_id,
+            run_id=self.run_id,
+            level="ERROR",
+            event="ownership_release_failed",
+            message="Active ownership release failed after terminalization.",
+            metadata={"reason": "runtime_error/ownership_release_failed"},
+        )
 
 
 @dataclass(frozen=True)
@@ -481,6 +641,13 @@ class RuntimeOrchestrator:
                 )
             run = runs.create_prompt_run(session.session_id)
             session = sessions.set_active_run(session.session_id, run.run_id)
+            owner_facts = _current_owner_facts()
+            session = sessions.record_owner(
+                session_id=session.session_id,
+                owner_pid=int(owner_facts["pid"]),
+                owner_host_id=str(owner_facts["host_id"]),
+                owner_token=str(owner_facts["owner_token"]),
+            )
             _append_event(events, session.session_id, run.run_id, "session_started", {})
             _append_event(events, session.session_id, run.run_id, "run_started", {})
             startup_error = _snapshot_skills_for_startup(
@@ -510,6 +677,14 @@ class RuntimeOrchestrator:
                     ),
                     startup_failure=True,
                 )
+                _release_ownership_after_terminalization(
+                    sessions=sessions,
+                    events=events,
+                    sessions_root=sessions_root,
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    owner_token=str(owner_facts["owner_token"]),
+                )
                 return OneShotResult(
                     exit_code=1,
                     assistant_output=None,
@@ -538,6 +713,14 @@ class RuntimeOrchestrator:
                         metadata={"prompt_turn_counter": 0},
                     ),
                     startup_failure=True,
+                )
+                _release_ownership_after_terminalization(
+                    sessions=sessions,
+                    events=events,
+                    sessions_root=sessions_root,
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    owner_token=str(owner_facts["owner_token"]),
                 )
                 return OneShotResult(
                     exit_code=ERROR_STARTUP_CONFIG,
@@ -604,6 +787,14 @@ class RuntimeOrchestrator:
                 TraceWriter(db.connection, sessions_root).refresh_if_stale(
                     session.session_id
                 )
+                _release_ownership_after_terminalization(
+                    sessions=sessions,
+                    events=events,
+                    sessions_root=sessions_root,
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    owner_token=str(owner_facts["owner_token"]),
+                )
                 return OneShotResult(
                     exit_code=0,
                     assistant_output=agent_result.assistant_output,
@@ -615,7 +806,7 @@ class RuntimeOrchestrator:
                     session_id=session.session_id,
                     run_id=run.run_id,
                 )
-            return _mark_failed_terminal(
+            failed = _mark_failed_terminal(
                 sessions=sessions,
                 runs=runs,
                 events=events,
@@ -625,6 +816,15 @@ class RuntimeOrchestrator:
                 run_id=run.run_id,
                 agent_result=agent_result,
             )
+            _release_ownership_after_terminalization(
+                sessions=sessions,
+                events=events,
+                sessions_root=sessions_root,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                owner_token=str(owner_facts["owner_token"]),
+            )
+            return failed
         finally:
             db.close()
 
@@ -1068,8 +1268,18 @@ class RuntimeOrchestrator:
                     run_id=None,
                 )
             run_id = session.active_run_id
+            owner_token = _owner_token_for_session(db.connection, session.session_id)
             if run_id is None:
                 session = sessions.mark_failed(session.session_id, message)
+                if owner_token is not None:
+                    _release_ownership_after_terminalization(
+                        sessions=sessions,
+                        events=events,
+                        sessions_root=sessions_root,
+                        session_id=session.session_id,
+                        run_id=None,
+                        owner_token=owner_token,
+                    )
                 return OneShotResult(
                     exit_code=1,
                     assistant_output=None,
@@ -1078,7 +1288,7 @@ class RuntimeOrchestrator:
                     session_id=session.session_id,
                     run_id=None,
                 )
-            return _mark_failed_terminal(
+            failed = _mark_failed_terminal(
                 sessions=sessions,
                 runs=runs,
                 events=events,
@@ -1095,6 +1305,16 @@ class RuntimeOrchestrator:
                     metadata={},
                 ),
             )
+            if owner_token is not None:
+                _release_ownership_after_terminalization(
+                    sessions=sessions,
+                    events=events,
+                    sessions_root=sessions_root,
+                    session_id=session.session_id,
+                    run_id=run_id,
+                    owner_token=owner_token,
+                )
+            return failed
         finally:
             db.close()
 
@@ -1189,6 +1409,13 @@ class RuntimeOrchestrator:
 
         run = runs.create_prompt_run(session.session_id)
         session = sessions.set_active_run(session.session_id, run.run_id)
+        owner_facts = _current_owner_facts()
+        session = sessions.record_owner(
+            session_id=session.session_id,
+            owner_pid=int(owner_facts["pid"]),
+            owner_host_id=str(owner_facts["host_id"]),
+            owner_token=str(owner_facts["owner_token"]),
+        )
         _append_event(events, session.session_id, run.run_id, "session_started", {})
         _append_event(events, session.session_id, run.run_id, "run_started", {})
         startup_error = _snapshot_skills_for_startup(
@@ -1217,6 +1444,14 @@ class RuntimeOrchestrator:
                     metadata={"prompt_turn_counter": 0},
                 ),
                 startup_failure=True,
+            )
+            _release_ownership_after_terminalization(
+                sessions=sessions,
+                events=events,
+                sessions_root=sessions_root,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                owner_token=str(owner_facts["owner_token"]),
             )
             db.close()
             return ReplStartResult(
@@ -1247,6 +1482,14 @@ class RuntimeOrchestrator:
                     metadata={"prompt_turn_counter": 0},
                 ),
                 startup_failure=True,
+            )
+            _release_ownership_after_terminalization(
+                sessions=sessions,
+                events=events,
+                sessions_root=sessions_root,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                owner_token=str(owner_facts["owner_token"]),
             )
             db.close()
             return ReplStartResult(
@@ -1290,6 +1533,7 @@ class RuntimeOrchestrator:
                 session_id=session.session_id,
                 run_id=run.run_id,
                 workspace_root=self.workspace_root,
+                owner_token=str(owner_facts["owner_token"]),
             ),
             error=None,
         )
@@ -1541,13 +1785,17 @@ def _mark_failed_terminal(
             "reason"
         ) == "user_cancel_idle":
             terminal_reason = "user_cancel_idle"
+            message_index = _next_durable_message_index(
+                runs.connection,
+                run_id=run_id,
+            )
             ConversationStore(runs.connection).append_closed_group(
                 session_id=session_id,
                 run_id=run_id,
                 messages=[
                     ConversationAppend(
                         turn_id=None,
-                        message_group_id=f"{run_id}:user_cancel_idle",
+                        message_group_id=f"{run_id}:user_cancel_idle:{message_index}",
                         model_call_id=None,
                         group_position=0,
                         group_row_count=1,
@@ -1645,6 +1893,76 @@ def _bootstrap_one_shot_error(exc: RuntimeBootstrapError) -> OneShotResult:
         session_id=None,
         run_id=None,
     )
+
+
+def _running_cancelled_result() -> AgentRunResult:
+    return AgentRunResult(
+        status="cancelled",
+        assistant_output=None,
+        tool_results=[],
+        usage={},
+        error={
+            "schema_version": 1,
+            "error_class": "cancelled",
+            "reason": "user_cancel_running",
+            "message": "Turn cancelled by user.",
+            "scope": "turn",
+            "recoverability": "turn_recoverable",
+            "metadata": {},
+            "artifact_ids": [],
+        },
+        metadata={"failure_scope": "turn"},
+    )
+
+
+def _durable_turn_runtime_fact_exists(
+    connection,
+    *,
+    run_id: str,
+    turn_id: str,
+    kind: str,
+) -> bool:
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM conversation_messages
+        WHERE run_id = ?
+          AND turn_id = ?
+          AND role = 'runtime'
+          AND kind = ?
+        LIMIT 1
+        """,
+        (run_id, turn_id, kind),
+    ).fetchone()
+    return row is not None
+
+
+def _idle_cancelled_result(*, prompt_turn_counter: int) -> AgentRunResult:
+    return AgentRunResult(
+        status="cancelled",
+        assistant_output=None,
+        tool_results=[],
+        usage={},
+        error={
+            "schema_version": 1,
+            "error_class": "cancelled",
+            "reason": "user_cancel_idle",
+            "message": "REPL interrupted by Ctrl+C.",
+            "scope": "session",
+            "recoverability": "terminal_recoverable",
+            "metadata": {},
+            "artifact_ids": [],
+        },
+        metadata={"prompt_turn_counter": prompt_turn_counter},
+    )
+
+
+def _next_durable_message_index(connection: sqlite3.Connection, *, run_id: str) -> int:
+    row = connection.execute(
+        "SELECT COALESCE(MAX(message_index), 0) FROM conversation_messages WHERE run_id = ?",
+        (run_id,),
+    ).fetchone()
+    return int(row[0]) + 1
 
 
 def _ensure_phase3_frozen_runtime_defaults(config_snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -1777,6 +2095,61 @@ def _current_owner_facts() -> dict[str, Any]:
         "host_id": f"host-v1:sha256({host_digest})",
         "owner_token": f"owner_{uuid4().hex}",
     }
+
+
+def _release_ownership_after_terminalization(
+    *,
+    sessions: SessionStore,
+    events: EventWriter,
+    sessions_root: Path,
+    session_id: str,
+    run_id: str | None,
+    owner_token: str,
+) -> None:
+    if sessions.release_ownership(session_id=session_id, owner_token=owner_token):
+        return
+    _record_ownership_release_failed_event(
+        events,
+        session_id=session_id,
+        run_id=run_id,
+    )
+    write_runtime_log(
+        sessions_root,
+        session_id=session_id,
+        run_id=run_id,
+        level="ERROR",
+        event="ownership_release_failed",
+        message="Active ownership release failed after terminalization.",
+        metadata={"reason": "runtime_error/ownership_release_failed"},
+    )
+
+
+def _record_ownership_release_failed_event(
+    events: EventWriter,
+    *,
+    session_id: str,
+    run_id: str | None,
+) -> None:
+    if run_id is None:
+        return
+    error = NormalizedError.create(
+        "runtime_error",
+        "ownership_release_failed",
+        message="Active ownership release failed after terminalization.",
+        scope="session",
+        recoverability="non_recoverable",
+    ).to_dict()
+    _append_event(events, session_id, run_id, "run_failed", {"error": error})
+
+
+def _owner_token_for_session(connection, session_id: str) -> str | None:
+    row = connection.execute(
+        "SELECT owner_token FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    if row is None or not isinstance(row[0], str) or not row[0]:
+        return None
+    return row[0]
 
 
 def _revive_same_lineage(
@@ -1915,6 +2288,7 @@ def _runtime_from_resumed_session(
         artifact_store=artifacts,
     )
     session = sessions.get(session_id)
+    owner_token = _owner_token_for_session(db.connection, session_id)
     if session.status != "running" or session.active_run_id is None:
         raise StoreError(
             error_class="persistence_error",
@@ -1971,6 +2345,7 @@ def _runtime_from_resumed_session(
         run_id=run.run_id,
         workspace_root=workspace_root,
         conversation=conversation,
+        owner_token=owner_token,
     )
     runtime._sync_durable_message_indexes()
     return runtime
@@ -2042,6 +2417,34 @@ def _next_conversation_seq(conversation: list[dict[str, Any]]) -> int:
     if not seq_values:
         return 1
     return max(seq_values) + 1
+
+
+def _max_repl_turn_counter(conversation: list[dict[str, Any]]) -> int:
+    max_counter = 0
+    for message in conversation:
+        for key in ("turn_id", "model_call_id"):
+            value = message.get(key)
+            if not isinstance(value, str):
+                continue
+            counter = _extract_repl_turn_counter(value)
+            if counter > max_counter:
+                max_counter = counter
+    return max_counter
+
+
+def _extract_repl_turn_counter(value: str) -> int:
+    for prefix in ("turn-", "repl_turn_"):
+        if not value.startswith(prefix):
+            continue
+        suffix = value[len(prefix) :]
+        digits = []
+        for character in suffix:
+            if not character.isdigit():
+                break
+            digits.append(character)
+        if digits:
+            return int("".join(digits))
+    return 0
 
 
 def _consumed_model_call_ids(conversation: list[dict[str, Any]]) -> list[str]:

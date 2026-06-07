@@ -393,24 +393,36 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 
 **Runnable state:** interactive session control matches Phase 3 running and idle semantics; active ownership remains consistent across cancellation and terminalization.
 
-- [ ] Add transient control states `idle`, `running_turn`, `cancelling`, `terminalizing`, and `resuming` without making them lifecycle truth.
-- [ ] Parse and freeze `[execution].cancellation_timeout_seconds` with default `10`; invalid values are startup config failures.
-- [ ] Route running `Ctrl+C` from plain REPL and TUI to runtime cancellation control.
-- [ ] Request active provider cancellation when a provider call is in flight.
-- [ ] Register active `shell_exec` subprocess handles only after command start audit and command-start boundary.
-- [ ] Request active shell best-effort termination on running cancellation.
-- [ ] Keep pending model/tool/shell state out of durable truth.
-- [ ] Append cancelled tool observation first when an accepted assistant tool call is already in flight, then append turn-scoped `cancelled/user_cancel_running`.
-- [ ] Append only turn-scoped `cancelled/user_cancel_running` when no complete assistant tool-call message was accepted.
-- [ ] Persist provider-boundary `cancelled/model_call_cancelled` as internal/audit detail only, not a separate durable conversation message for running `Ctrl+C`.
-- [ ] Ensure running cancellation does not write a terminal checkpoint, terminalize, or release active ownership.
-- [ ] Lock out ordinary prompts, slash commands, and unrelated approval input while `cancelling`.
-- [ ] Implement double `Ctrl+C` as process-level interruption with `INTERRUPTED`, no partial accepted state, and no prompt return from the same cancelling state.
-- [ ] Implement idle `Ctrl+C` as session-scoped `cancelled/user_cancel_idle`, terminal reason `user_cancel_idle`, terminal checkpoint when eligible, terminal lifecycle, owner-token-fenced release, and exit.
-- [ ] Ensure `/exit` and normal graceful shutdown use terminal reason `user_exit`.
-- [ ] Use owner-token fencing for normal ownership release; record `runtime_error/ownership_release_failed` if release fails after terminalization.
-- [ ] Add unit/integration tests for running cancellation, no terminalization/release, shell termination request, cancellation timeout envelope, cleanup timeout fail-closed behavior, double interrupt, idle terminalization, `/exit`, and durable conversation ordering.
-- [ ] Run canonical verification and record required manual verification evidence.
+- [x] Add transient control states `idle`, `running_turn`, `cancelling`, `terminalizing`, and `resuming` without making them lifecycle truth.
+- [x] Parse and freeze `[execution].cancellation_timeout_seconds` with default `10`; invalid values are startup config failures.
+- [x] Route running `Ctrl+C` from plain REPL and TUI to runtime cancellation control.
+- [x] Request active provider cancellation when a provider call is in flight.
+- [x] Register active `shell_exec` subprocess handles only after command start audit and command-start boundary.
+- [x] Request active shell best-effort termination on running cancellation.
+- [x] Keep pending model/tool/shell state out of durable truth.
+- [x] Append cancelled tool observation first when an accepted assistant tool call is already in flight, then append turn-scoped `cancelled/user_cancel_running`.
+- [x] Append only turn-scoped `cancelled/user_cancel_running` when no complete assistant tool-call message was accepted.
+- [x] Persist provider-boundary `cancelled/model_call_cancelled` as internal/audit detail only, not a separate durable conversation message for running `Ctrl+C`.
+- [x] Ensure running cancellation does not write a terminal checkpoint, terminalize, or release active ownership.
+- [x] Lock out ordinary prompts, slash commands, and unrelated approval input while `cancelling`.
+- [x] Implement double `Ctrl+C` as process-level interruption with `INTERRUPTED`, no partial accepted state, and no prompt return from the same cancelling state.
+- [x] Implement idle `Ctrl+C` as session-scoped `cancelled/user_cancel_idle`, terminal reason `user_cancel_idle`, terminal checkpoint when eligible, terminal lifecycle, owner-token-fenced release, and exit.
+- [x] Ensure `/exit` and normal graceful shutdown use terminal reason `user_exit`.
+- [x] Use owner-token fencing for normal ownership release; record `runtime_error/ownership_release_failed` if release fails after terminalization.
+- [x] Add unit/integration tests for running cancellation, no terminalization/release, shell termination request, cancellation timeout envelope, cleanup timeout fail-closed behavior, double interrupt, idle terminalization, `/exit`, and durable conversation ordering.
+- [x] Repair main model provider execution to use a runtime-owned async provider primitive shared with `view_image` where practical.
+- [x] Repair authoritative main-model `run()` internals to use the configured provider async invocation API, such as `ainvoke`, when available, while preserving the public synchronous adapter API.
+- [x] Repair observational main-model `stream()` internals to use the configured provider async streaming API, such as `astream`, when available, while preserving stream deltas as presentation-only.
+- [x] Reject sync `invoke()` / `stream()` wrapped in a worker as the accepted concrete main-model fallback when the configured provider exposes usable async APIs.
+- [x] Add regression coverage for one-shot/non-stream REPL and TUI/streaming REPL async provider cancellation, including late stream chunks not becoming durable output.
+- [x] Run canonical verification and record required manual verification evidence.
+  Manual TTY verification recorded 2026-06-08: running `Ctrl+C` in model
+  call, model output, `view_image`, long shell/tool, idle `Ctrl+C`, double
+  `Ctrl+C` while cancelling, `/exit`, same-lineage resume after idle
+  terminalization, repeated resume after post-resume idle terminalization, TUI
+  terminal summary with trace/resume guidance, and `/exit`
+  `terminal_reason = user_exit` checkpoint/runtime truth all matched
+  Milestone 7 expectations.
 
 ## Milestone 8: User-Confirmed Stale Fail-Close
 

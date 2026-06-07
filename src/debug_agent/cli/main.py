@@ -26,7 +26,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         result = RuntimeOrchestrator().cancel_active_session("Interrupted by Ctrl+C.")
         print(result.message, file=sys.stderr)
-        return result.exit_code or INTERRUPTED
+        return INTERRUPTED
     except RuntimeBootstrapError as exc:
         print(str(exc), file=sys.stderr)
         return 1

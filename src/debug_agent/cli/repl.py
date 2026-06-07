@@ -11,7 +11,7 @@ from debug_agent.cli.repl_controller import (
     ReplController,
     ReplStartFailed,
 )
-from debug_agent.runtime.contracts import AgentRunResult
+from debug_agent.cli.exit_codes import INTERRUPTED
 from debug_agent.tools.broker import ApprovalDecision, NonInteractiveApprovalProvider
 
 
@@ -62,23 +62,8 @@ def run_repl(
             controller.runtime.set_approval_provider(NonInteractiveApprovalProvider())
         return view.run(controller)
     except KeyboardInterrupt:
-        controller.runtime.fail(
-            AgentRunResult(
-                status="cancelled",
-                assistant_output=None,
-                tool_results=[],
-                usage={},
-                error={
-                    "error_class": "cancelled",
-                    "reason": "user_cancel_idle",
-                    "message": "REPL interrupted by Ctrl+C.",
-                    "source": "cli",
-                    "recoverable": False,
-                },
-                metadata={"prompt_turn_counter": controller.runtime.turn_counter},
-            )
-        )
-        return 1
+        controller.runtime.cancel_idle()
+        return INTERRUPTED
     finally:
         controller.close()
 
@@ -128,23 +113,8 @@ def run_resumed_repl(
             controller.runtime.set_approval_provider(NonInteractiveApprovalProvider())
         return view.run(controller)
     except KeyboardInterrupt:
-        controller.runtime.fail(
-            AgentRunResult(
-                status="cancelled",
-                assistant_output=None,
-                tool_results=[],
-                usage={},
-                error={
-                    "error_class": "cancelled",
-                    "reason": "user_cancel_idle",
-                    "message": "REPL interrupted by Ctrl+C.",
-                    "source": "cli",
-                    "recoverable": False,
-                },
-                metadata={"prompt_turn_counter": controller.runtime.turn_counter},
-            )
-        )
-        return 1
+        controller.runtime.cancel_idle()
+        return INTERRUPTED
     finally:
         controller.close()
 

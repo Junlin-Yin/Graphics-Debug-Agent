@@ -149,6 +149,8 @@ class PromptToolkitReplView:
             self.show_welcome(controller.welcome_snapshot())
         if hasattr(controller, "status_bar_snapshot"):
             self.update_status_bar(controller.status_bar_snapshot())
+        if hasattr(controller, "render_restored_history"):
+            controller.render_restored_history()
 
         exit_code = getattr(controller, "exit_code", 0)
         try:
@@ -277,10 +279,19 @@ class PromptToolkitReplView:
         self._sync_input_region_height()
 
     def handle_interrupt_event(self, event: Any) -> None:
+        was_cancelling = (
+            getattr(self._active_controller, "control_state", None) == "cancelling"
+        )
         if self._active_controller is not None and hasattr(
             self._active_controller, "on_interrupt"
         ):
             self._active_controller.on_interrupt()
+            if (
+                not was_cancelling
+                and getattr(self._active_controller, "control_state", None)
+                == "cancelling"
+            ):
+                return
         if not self._closed:
             self._exit_application(getattr(event, "app", None))
 
@@ -613,7 +624,7 @@ class PromptToolkitReplView:
 
     async def _drain_prompt_runtime(self, controller: object, app: object) -> None:
         while not self._closed:
-            self._drain_once(controller)
+            self._drain_once(controller, app=app)
             self.invalidate_toolbar_if_changed(app)
             await asyncio.sleep(0.1)
 
@@ -625,13 +636,15 @@ class PromptToolkitReplView:
         if hasattr(app, "invalidate"):
             app.invalidate()
 
-    def _drain_once(self, controller: object) -> None:
+    def _drain_once(self, controller: object, app: object | None = None) -> None:
         if hasattr(controller, "update_running_turn_status"):
             controller.update_running_turn_status()
         if hasattr(controller, "drain_stream_events"):
             controller.drain_stream_events()
         if hasattr(controller, "drain_completed_turns"):
             controller.drain_completed_turns()
+        if _controller_fatal_interrupted_cancellation(controller):
+            self._exit_application(app)
 
     def _drain_until_idle(self, controller: object) -> None:
         while getattr(controller, "is_executing", False):
@@ -741,6 +754,7 @@ def _format_terminal_summary(summary: SessionCloseSummary) -> str:
     status = "exit" if summary.status == "closed" else summary.status
     lines = [f"session {summary.session_id} {status}."]
     lines.append(f"trace: debug-agent trace {summary.session_id}")
+    lines.append(f"resume: debug-agent resume {summary.session_id}")
     return "\n".join(lines)
 
 
@@ -837,6 +851,14 @@ def _format_duration(duration_ms: object) -> str | None:
     if not isinstance(duration_ms, int):
         return None
     return f"{duration_ms / 1000:.1f}s"
+
+
+def _controller_fatal_interrupted_cancellation(controller: object) -> bool:
+    return (
+        getattr(controller, "control_state", None) == "cancelling"
+        and not bool(getattr(controller, "is_executing", False))
+        and int(getattr(controller, "exit_code", 0) or 0) != 0
+    )
 
 
 def _key_bindings(

@@ -30,6 +30,24 @@ class FakeController:
         return True
 
 
+class InterruptingActiveController(FakeController):
+    def __init__(self) -> None:
+        super().__init__(exit_code=130)
+        self.is_executing = False
+        self.control_state = "idle"
+        self.interrupts = 0
+
+    def handle_line(self, line: str, output: io.StringIO) -> bool:
+        self.lines.append(line)
+        self.is_executing = True
+        self.control_state = "running_turn"
+        raise KeyboardInterrupt
+
+    def on_interrupt(self) -> None:
+        self.interrupts += 1
+        self.control_state = "cancelling"
+
+
 def test_plain_repl_view_run_returns_zero_for_normal_close() -> None:
     input_stream = io.StringIO("/exit\n")
     output_stream = io.StringIO()
@@ -82,4 +100,18 @@ def test_plain_repl_view_returns_controller_exit_code_when_controller_stops() ->
     ).run(controller)
 
     assert exit_code == 7
+    assert controller.runtime.completed is False
+
+
+def test_plain_repl_view_routes_active_keyboard_interrupt_to_controller() -> None:
+    controller = InterruptingActiveController()
+
+    exit_code = PlainReplView(
+        input_stream=io.StringIO("hello\n"),
+        output_stream=io.StringIO(),
+    ).run(controller)
+
+    assert exit_code == 130
+    assert controller.interrupts == 1
+    assert controller.control_state == "cancelling"
     assert controller.runtime.completed is False

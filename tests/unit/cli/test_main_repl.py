@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 import debug_agent.cli.main as cli_main
 from debug_agent.cli.main import main
+from debug_agent.cli.exit_codes import INTERRUPTED
 from debug_agent.cli.repl import PlainApprovalProvider, run_repl
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
@@ -285,7 +286,7 @@ def test_repl_ctrl_c_after_session_creation_marks_failed_and_releases_ownership(
     except KeyboardInterrupt:
         pytest.fail("REPL Ctrl+C must be recorded as terminal failed state")
 
-    assert exit_code == 1
+    assert exit_code == INTERRUPTED
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         session_status, active_run_id, session_error = conn.execute(
             "SELECT status, active_run_id, error_summary FROM sessions"
@@ -353,7 +354,7 @@ def test_main_ctrl_c_fallback_marks_active_session_failed_and_releases_ownership
     exit_code = main([])
 
     captured = capsys.readouterr()
-    assert exit_code == 1
+    assert exit_code == INTERRUPTED
     assert "Interrupted by Ctrl+C." in captured.err
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         session_status, active_run_id, session_error = conn.execute(
@@ -420,7 +421,7 @@ def test_tty_repl_ctrl_c_marks_failed_and_releases_ownership(
         workspace_root=workspace,
     )
 
-    assert exit_code == 1
+    assert exit_code == INTERRUPTED
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         session_status, active_run_id, session_error = conn.execute(
             "SELECT status, active_run_id, error_summary FROM sessions"

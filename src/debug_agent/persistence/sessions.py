@@ -130,6 +130,41 @@ class SessionStore:
         self.connection.commit()
         return self.get(session_id)
 
+    def record_owner(
+        self,
+        *,
+        session_id: str,
+        owner_pid: int,
+        owner_host_id: str,
+        owner_token: str,
+    ) -> Session:
+        now = utc_now_iso()
+        self.connection.execute(
+            """
+            UPDATE sessions
+            SET owner_pid = ?, owner_host_id = ?, owner_token = ?, updated_at = ?
+            WHERE session_id = ? AND status = 'running'
+            """,
+            (owner_pid, owner_host_id, owner_token, now, session_id),
+        )
+        self.connection.commit()
+        return self.get(session_id)
+
+    def release_ownership(self, *, session_id: str, owner_token: str) -> bool:
+        now = utc_now_iso()
+        result = self.connection.execute(
+            """
+            UPDATE sessions
+            SET owner_pid = NULL, owner_host_id = NULL, owner_token = NULL,
+                updated_at = ?
+            WHERE session_id = ? AND status IN ('completed', 'failed')
+              AND owner_token = ?
+            """,
+            (now, session_id, owner_token),
+        )
+        self.connection.commit()
+        return result.rowcount == 1
+
     def update_approval_mode(self, session_id: str, approval_mode: str) -> Session:
         now = utc_now_iso()
         self.connection.execute(

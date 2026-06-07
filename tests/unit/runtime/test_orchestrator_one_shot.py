@@ -121,6 +121,47 @@ def test_one_shot_success_persists_lifecycle_and_completes_session(
     assert skill_rows == [("alpha",)]
 
 
+def test_one_shot_release_failure_persists_normalized_runtime_error_event(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def fail_release(self, *, session_id: str, owner_token: str) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        orchestrator_module.SessionStore,
+        "release_ownership",
+        fail_release,
+    )
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
+        "hello", _config("one shot answer")
+    )
+
+    assert result.exit_code == 0
+
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT kind, payload_json
+            FROM run_events
+            WHERE kind = 'run_failed'
+            ORDER BY rowid
+            """
+        ).fetchall()
+        owner_token = conn.execute("SELECT owner_token FROM sessions").fetchone()[0]
+
+    assert owner_token is not None
+    assert len(rows) == 1
+    error = json.loads(rows[0][1])["error"]
+    assert error["error_class"] == "runtime_error"
+    assert error["reason"] == "ownership_release_failed"
+    assert error["scope"] == "session"
+    assert error["schema_version"] == 1
+
+
 def test_one_shot_skill_headers_do_not_mutate_config_snapshots_or_model_input(
     tmp_path, monkeypatch
 ) -> None:

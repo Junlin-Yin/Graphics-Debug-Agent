@@ -47,22 +47,39 @@ as adapter-local cancelled-run state checked before a later `run()` or
 `stream()` call. That is not a real in-flight provider cancellation boundary.
 Phase 3 must remove this placeholder public API from the adapter protocol and
 concrete adapter implementation. Provider cancellation must be driven by
-runtime-owned cancellation handles attached to the cancellable worker wrapping a
-`run()` or `stream()` provider call, and must not build Phase 3 cancellation
-around adapter-owned `cancel(run_id)` state.
+runtime-owned cancellation handles attached to the async provider task used
+inside a `run()` or `stream()` adapter call, and must not build Phase 3
+cancellation around adapter-owned `cancel(run_id)` state.
 
-Main model adapters may internally:
+Main model adapters must internally:
 
-- run provider calls in async tasks.
+- execute authoritative `run()` provider calls through a runtime-owned async
+  provider path, using the configured provider's async API such as `ainvoke`
+  when available.
+- execute observational `stream()` provider calls through a runtime-owned async
+  provider path, using the configured provider's async streaming API such as
+  `astream` when available.
 - register runtime-owned cancellation handles.
 - observe local cancellation and return normalized cancelled results.
 - surface provider stop/finish metadata.
 
+The public adapter API remains synchronous for Phase 3: `run()` and `stream()`
+may block their caller while internally driving and collecting async provider
+tasks. Phase 3 does not add a public async adapter method.
+
 `view_image` provider calls must use an async vision provider execution path
 and register a runtime-owned cancellation handle with ToolBroker/runtime
-control. All Phase 3 provider calls must run through a runtime-owned
-cancellable worker. Phase 3 does not accept a sync-only provider execution path
-as an implementation fallback.
+control. Main model and `view_image` provider calls should share a common
+runtime-owned async provider cancellation primitive where practical so local
+boundary collection, cancellation metadata, late-result ignoring, and cleanup
+timeout behavior stay consistent.
+
+For concrete provider integrations with available async provider APIs, wrapping
+sync `invoke()` or sync `stream()` in a worker is not an accepted Phase 3
+provider fallback for either ordinary main-model invocation or streaming output.
+Phase 3 does not accept a sync-only provider execution path as an
+implementation fallback once the configured provider exposes a usable async
+call/stream API.
 
 Implementation planning must audit the concrete main-model adapter and
 `view_image` provider path before coding cancellation. If either concrete path
@@ -73,8 +90,8 @@ silently weakening the cancellation contract.
 The Phase 0.5 streaming observation fallback remains allowed: `stream()` may
 fall back to non-streaming provider invocation for UI observation. That fallback
 must still execute the underlying provider invocation inside a runtime-owned
-cancellable worker. It must not become an uncancellable sync-only execution
-path.
+async provider task when the configured provider exposes an async invocation
+API. It must not become an uncancellable sync-only execution path.
 
 If a provider call is cancelled:
 

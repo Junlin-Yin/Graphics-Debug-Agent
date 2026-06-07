@@ -422,6 +422,56 @@ def test_view_image_provider_call_uses_async_cancellation_handle(
     runtime["db"].close()
 
 
+def test_view_image_provider_uses_frozen_cancellation_cleanup_timeout(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class InspectingVisionClient(_FakeVisionClient):
+        def analyze_async(self, **kwargs):
+            self.calls.append(kwargs)
+            future = Future()
+            future.set_result(
+                type(
+                    "VisionResponse",
+                    (),
+                    {"text": self.text, "provider_metadata": {}},
+                )()
+            )
+            return future
+
+    runtime = _runtime(
+        tmp_path,
+        multimodal=_enabled_multimodal(),
+    )
+    runtime["config_snapshot"]["execution"] = {"cancellation_timeout_seconds": 2}
+    image = runtime["workspace"] / "capture.png"
+    _write_image(image)
+    monkeypatch.setenv("MOONSHOT_API_KEY", "secret")
+    monkeypatch.setenv("MOONSHOT_BASE_URL", "https://example.test/v1")
+    vision_client = InspectingVisionClient()
+
+    result = runtime["broker"].invoke(
+        session_id=runtime["session"].session_id,
+        run_id=runtime["run"].run_id,
+        tool_name="view_image",
+        arguments={"paths": ["capture.png"]},
+        context={
+            "workspace_root": str(runtime["workspace"]),
+            "approval_mode": runtime["approval_mode"],
+            "policy_facts": runtime["policy_facts"],
+            "approval_grants": ApprovalGrantStore(runtime["db"].connection),
+            "approval_provider": FakeApprovalProvider("denied"),
+            "frozen_config": runtime["config_snapshot"],
+            "vision_client": vision_client,
+        },
+    )
+
+    assert result.status == "ok"
+    assert vision_client.calls[0]["timeout_seconds"] == 60
+    assert vision_client.calls[0]["cleanup_timeout_seconds"] == 2
+    runtime["db"].close()
+
+
 def test_view_image_unclosed_provider_boundary_propagates_fail_closed(
     tmp_path,
     monkeypatch,

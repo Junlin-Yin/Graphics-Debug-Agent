@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from debug_agent.runtime.provider_execution import (
+    AsyncProviderCallTask,
     ProviderCancellationHandle,
-    ProviderCallTask,
-    start_provider_call,
+    start_async_provider_call,
 )
 
 
@@ -61,8 +61,14 @@ def project_chat_completions_request(
 
 
 class VisionModelClient:
-    def __init__(self, *, factory: Callable[..., Any] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        factory: Callable[..., Any] | None = None,
+        async_factory: Callable[..., Any] | None = None,
+    ) -> None:
         self._factory = factory
+        self._async_factory = async_factory
 
     def analyze(
         self,
@@ -104,14 +110,15 @@ class VisionModelClient:
         images: list[VisionImageInput],
         instruction: str,
         timeout_seconds: float,
+        cleanup_timeout_seconds: float,
         register_cancellation_handle: Callable[[ProviderCancellationHandle], None] | None = None,
         cancellation_token: object | None = None,
-    ) -> ProviderCallTask:
-        return start_provider_call(
+    ) -> AsyncProviderCallTask:
+        return start_async_provider_call(
             operation="view_image",
             provider=config.provider,
             model=config.model,
-            call=lambda: self.analyze(
+            call=lambda: self._analyze_async(
                 config=config,
                 images=images,
                 instruction=instruction,
@@ -120,7 +127,7 @@ class VisionModelClient:
             timeout_seconds=timeout_seconds,
             cancellation_token=cancellation_token,
             register_cancellation_handle=register_cancellation_handle,
-            cleanup_timeout_seconds=timeout_seconds,
+            cleanup_timeout_seconds=cleanup_timeout_seconds,
         )
 
     def _make_client(self, **kwargs: Any) -> Any:
@@ -129,6 +136,46 @@ class VisionModelClient:
         from openai import OpenAI
 
         return OpenAI(**kwargs)
+
+    def _make_async_client(self, **kwargs: Any) -> Any:
+        if self._async_factory is not None:
+            return self._async_factory(**kwargs)
+        from openai import AsyncOpenAI
+
+        return AsyncOpenAI(**kwargs)
+
+    async def _analyze_async(
+        self,
+        *,
+        config: VisionClientConfig,
+        images: list[VisionImageInput],
+        instruction: str,
+        timeout_seconds: float,
+    ) -> VisionModelResponse:
+        if config.provider != "openai" or config.model != "kimi-k2.5":
+            raise ValueError("Unsupported multimodal provider or model.")
+        client = self._make_async_client(
+            api_key=config.api_key,
+            base_url=config.base_url,
+            timeout=timeout_seconds,
+            max_retries=0,
+        )
+        projected = project_chat_completions_request(
+            model=config.model,
+            images=images,
+            instruction=instruction,
+            max_tokens=config.max_tokens,
+        )
+        completion = await client.chat.completions.create(
+            model=projected["model"],
+            messages=projected["messages"],
+            response_format=projected["response_format"],
+            max_tokens=projected["max_tokens"],
+            extra_body={"thinking": projected["thinking"]},
+            stream=False,
+        )
+        text = _completion_text(completion)
+        return VisionModelResponse(text=text, provider_metadata={})
 
 
 def _completion_text(completion: Any) -> str:

@@ -55,6 +55,9 @@ class FakeChatModel:
             usage=self.usage,
         )
 
+    async def ainvoke(self, messages: list[dict[str, str]]) -> FakeModelResponse:
+        return self.invoke(messages)
+
     def stream(self, messages: list[dict[str, str]]):
         self.messages = messages
         if self.timeout:
@@ -72,6 +75,10 @@ class FakeChatModel:
                 tool_calls=[],
                 usage=self.usage if index == last_index else {},
             )
+
+    async def astream(self, messages: list[dict[str, str]]):
+        for chunk in self.stream(messages):
+            yield chunk
 
 
 class ModelFactory:

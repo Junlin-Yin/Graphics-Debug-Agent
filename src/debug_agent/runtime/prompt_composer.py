@@ -135,12 +135,42 @@ class PromptComposer:
             )
             seq += 10
 
+        historical_messages = [
+            *request.retained_messages,
+            *request.live_messages,
+            *request.current_messages,
+        ]
+        runtime_context_messages = [
+            message for message in historical_messages if message.role == "runtime"
+        ]
+        if runtime_context_messages:
+            segments.extend(
+                self._renumber(
+                    [
+                        ConversationMessage(
+                            seq=message.seq,
+                            role="system",
+                            kind=message.kind,
+                            turn_id=message.turn_id,
+                            model_call_id=message.model_call_id,
+                            tool_call_id=message.tool_call_id,
+                            content=message.content,
+                            artifact_refs=message.artifact_refs,
+                            metadata=message.metadata,
+                        )
+                        for message in runtime_context_messages
+                    ],
+                    start_seq=seq,
+                )
+            )
+            seq += 10 * len(runtime_context_messages)
+
         segments.extend(
             self._renumber(
                 [
-                    *request.retained_messages,
-                    *request.live_messages,
-                    *request.current_messages,
+                    message
+                    for message in historical_messages
+                    if message.role != "runtime"
                 ],
                 start_seq=seq,
             )

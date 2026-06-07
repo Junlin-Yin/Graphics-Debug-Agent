@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from langchain_core.messages import ToolMessage, convert_to_messages
+
 from debug_agent.cli.exit_codes import (
     ERROR_ACTIVE_SESSION_CONFLICT,
     ERROR_EXECUTION_FAILED,
     ERROR_PERSISTENCE_READ,
 )
 from debug_agent.adapters.model_factory import ModelFactoryResult
+from debug_agent.persistence.conversation import ConversationAppend, ConversationStore
 from debug_agent.persistence.errors import StoreError
 from debug_agent.runtime import orchestrator as orchestrator_module
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
@@ -77,6 +80,348 @@ def test_resume_revives_one_shot_same_lineage_without_conversation_append(
         ("user", "user_input", {"content": "hello"}),
         ("assistant", "assistant_output", {"content": "one shot answer"}),
     ]
+
+
+def test_resumed_repl_with_runtime_cancellation_fact_runs_next_prompt(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class ValidatingProviderMessageModel:
+        def bind_tools(self, _tools):
+            return self
+
+        def invoke(self, messages):
+            seen_non_system = False
+            for message in messages:
+                if isinstance(message, dict) and message.get("role") == "runtime":
+                    raise ValueError("Unexpected message type: 'runtime'.")
+                if isinstance(message, dict) and message.get("role") == "system":
+                    if seen_non_system:
+                        raise ValueError("Received multiple non-consecutive system messages.")
+                else:
+                    seen_non_system = True
+            return type(
+                "Response",
+                (),
+                {"content": "post resume answer", "tool_calls": [], "usage": {}},
+            )()
+
+    class ValidatingModelFactory:
+        def create(self, _config):
+            return ModelFactoryResult(model=ValidatingProviderMessageModel(), error=None)
+
+    monkeypatch.setattr(orchestrator_module, "ModelFactory", ValidatingModelFactory)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    started = RuntimeOrchestrator(workspace_root=workspace).start_repl(
+        _config("post resume answer")
+    )
+    assert started.runtime is not None
+    runtime = started.runtime
+    try:
+        content = {
+            "error_class": "cancelled",
+            "reason": "user_cancel_running",
+            "message": "Turn cancelled by user.",
+            "artifact_ids": [],
+        }
+        store = ConversationStore(runtime.db.connection)
+        user_rows = store.append_closed_group(
+            session_id=runtime.session_id,
+            run_id=runtime.run_id,
+            messages=[
+                ConversationAppend(
+                    turn_id="turn-cancelled",
+                    message_group_id="turn-cancelled:user",
+                    model_call_id=None,
+                    group_position=0,
+                    group_row_count=1,
+                    role="user",
+                    kind="user_input",
+                    content={"content": "cancelled user prompt"},
+                    metadata={},
+                ),
+            ],
+        )
+        fact_rows = store.append_closed_group(
+            session_id=runtime.session_id,
+            run_id=runtime.run_id,
+            messages=[
+                ConversationAppend(
+                    turn_id="turn-cancelled",
+                    message_group_id="turn-cancelled:runtime:cancellation_fact",
+                    model_call_id=None,
+                    group_position=0,
+                    group_row_count=1,
+                    role="runtime",
+                    kind="cancellation_fact",
+                    content=content,
+                    metadata={
+                        "error_class": "cancelled",
+                        "reason": "user_cancel_running",
+                    },
+                )
+            ],
+        )
+        runtime.conversation = [
+            {
+                "seq": 1,
+                "role": "user",
+                "kind": "current_user_input",
+                "turn_id": "turn-cancelled",
+                "model_call_id": None,
+                "tool_call_id": None,
+                "content": "cancelled user prompt",
+                "artifact_refs": [],
+                "metadata": {},
+                "durable_message_index": user_rows[0].message_index,
+            },
+            {
+                "seq": 2,
+                "role": "runtime",
+                "kind": "cancellation_fact",
+                "turn_id": "turn-cancelled",
+                "model_call_id": None,
+                "tool_call_id": None,
+                "content": content,
+                "artifact_refs": [],
+                "metadata": {
+                    "error_class": "cancelled",
+                    "reason": "user_cancel_running",
+                },
+                "durable_message_index": fact_rows[0].message_index,
+            }
+        ]
+        runtime.cancel_idle()
+    finally:
+        runtime.close()
+
+    resumed = RuntimeOrchestrator(workspace_root=workspace).start_resumed_repl(
+        runtime.session_id
+    )
+
+    assert resumed.runtime is not None
+    try:
+        result = resumed.runtime.run_turn("continue")
+        assert result.status == "completed"
+        assert result.assistant_output == "post resume answer"
+    finally:
+        resumed.runtime.close()
+
+
+def test_resumed_repl_projects_repeated_tool_history_for_next_prompt(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class ValidatingToolHistoryModel:
+        def bind_tools(self, _tools):
+            return self
+
+        def invoke(self, messages):
+            converted = convert_to_messages(messages)
+            tool_pair_ids = []
+            for index, message in enumerate(converted):
+                tool_calls = getattr(message, "tool_calls", None)
+                if not tool_calls:
+                    continue
+                next_message = converted[index + 1]
+                if not isinstance(next_message, ToolMessage):
+                    raise AssertionError("tool call must be followed by tool result")
+                if not next_message.tool_call_id:
+                    raise AssertionError("tool result id must be non-empty")
+                if next_message.tool_call_id != tool_calls[0]["id"]:
+                    raise AssertionError("tool result id must match assistant tool call")
+                tool_pair_ids.append(next_message.tool_call_id)
+            assert len(tool_pair_ids) == 2
+            assert len(set(tool_pair_ids)) == 2
+            return type(
+                "Response",
+                (),
+                {"content": "post resume answer", "tool_calls": [], "usage": {}},
+            )()
+
+    class ValidatingModelFactory:
+        def create(self, _config):
+            return ModelFactoryResult(model=ValidatingToolHistoryModel(), error=None)
+
+    monkeypatch.setattr(orchestrator_module, "ModelFactory", ValidatingModelFactory)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    started = RuntimeOrchestrator(workspace_root=workspace).start_repl(
+        _config("post resume answer")
+    )
+    assert started.runtime is not None
+    runtime = started.runtime
+    try:
+        store = ConversationStore(runtime.db.connection)
+        rows = []
+        for turn_number, tool_name, output in [
+            (1, "view_image", "cancelled"),
+            (2, "shell_exec", "completed"),
+        ]:
+            turn_id = f"turn-tool-{turn_number}"
+            rows.extend(
+                store.append_closed_group(
+                    session_id=runtime.session_id,
+                    run_id=runtime.run_id,
+                    messages=[
+                        ConversationAppend(
+                            turn_id=turn_id,
+                            message_group_id=f"{turn_id}:user",
+                            model_call_id=None,
+                            group_position=0,
+                            group_row_count=1,
+                            role="user",
+                            kind="user_input",
+                            content={"content": f"tool prompt {turn_number}"},
+                            metadata={},
+                        ),
+                    ],
+                )
+            )
+            rows.extend(
+                store.append_closed_group(
+                    session_id=runtime.session_id,
+                    run_id=runtime.run_id,
+                    messages=[
+                        ConversationAppend(
+                            turn_id=turn_id,
+                            message_group_id=f"{turn_id}:assistant_tool_call",
+                            model_call_id="model_call_1",
+                            group_position=0,
+                            group_row_count=2,
+                            role="assistant",
+                            kind="assistant_tool_call",
+                            content={
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "model_call_1_tool_1",
+                                        "name": tool_name,
+                                        "args": {},
+                                    }
+                                ],
+                            },
+                            metadata={},
+                            tool_call_id="model_call_1_tool_1",
+                        ),
+                        ConversationAppend(
+                            turn_id=turn_id,
+                            message_group_id=f"{turn_id}:assistant_tool_call",
+                            model_call_id="model_call_1",
+                            group_position=1,
+                            group_row_count=2,
+                            role="tool",
+                            kind="tool_result",
+                            content={
+                                "message_type": "tool_result",
+                                "content": output,
+                                "tool_call_id": "model_call_1_tool_1",
+                            },
+                            metadata={},
+                            tool_call_id="model_call_1_tool_1",
+                        ),
+                    ],
+                )
+            )
+        runtime.conversation = [
+            {
+                "seq": index + 1,
+                "role": row.role,
+                "kind": row.kind,
+                "turn_id": row.turn_id,
+                "model_call_id": row.model_call_id,
+                "tool_call_id": row.tool_call_id,
+                "content": row.content,
+                "artifact_refs": [],
+                "metadata": {},
+                "durable_message_index": row.message_index,
+            }
+            for index, row in enumerate(rows)
+        ]
+        runtime.cancel_idle()
+    finally:
+        runtime.close()
+
+    resumed = RuntimeOrchestrator(workspace_root=workspace).start_resumed_repl(
+        runtime.session_id
+    )
+
+    assert resumed.runtime is not None
+    try:
+        result = resumed.runtime.run_turn("continue")
+        assert result.status == "completed"
+        assert result.assistant_output == "post resume answer"
+    finally:
+        resumed.runtime.close()
+
+
+def test_resumed_repl_idle_cancel_after_new_turn_writes_new_checkpoint(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class PromptAnswerModel:
+        def bind_tools(self, _tools):
+            return self
+
+        def invoke(self, _messages):
+            return type(
+                "Response",
+                (),
+                {"content": "post resume answer", "tool_calls": [], "usage": {}},
+            )()
+
+    class PromptAnswerModelFactory:
+        def create(self, _config):
+            return ModelFactoryResult(model=PromptAnswerModel(), error=None)
+
+    monkeypatch.setattr(orchestrator_module, "ModelFactory", PromptAnswerModelFactory)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    started = RuntimeOrchestrator(workspace_root=workspace).start_repl(
+        _config("post resume answer")
+    )
+    assert started.runtime is not None
+    session_id = started.runtime.session_id
+    try:
+        started.runtime.run_turn("first prompt")
+        started.runtime.cancel_idle()
+    finally:
+        started.runtime.close()
+
+    resumed = RuntimeOrchestrator(workspace_root=workspace).start_resumed_repl(session_id)
+    assert resumed.runtime is not None
+    try:
+        result = resumed.runtime.run_turn("second prompt")
+        assert result.status == "completed"
+        resumed.runtime.cancel_idle()
+    finally:
+        resumed.runtime.close()
+
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        session_checkpoint, run_checkpoint = conn.execute(
+            """
+            SELECT s.latest_checkpoint_id, r.latest_checkpoint_id
+            FROM sessions s
+            JOIN runs r ON r.run_id = s.active_run_id OR r.session_id = s.session_id
+            WHERE s.session_id = ?
+            ORDER BY r.updated_at DESC
+            LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+        checkpoint_count = conn.execute(
+            "SELECT COUNT(*) FROM checkpoints WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0]
+
+    assert session_checkpoint
+    assert session_checkpoint == run_checkpoint
+    assert checkpoint_count == 2
+
+    second_resume = RuntimeOrchestrator(workspace_root=workspace).resume(session_id)
+
+    assert second_resume.exit_code == 0
 
 
 def test_resume_rejects_non_terminal_target(tmp_path) -> None:

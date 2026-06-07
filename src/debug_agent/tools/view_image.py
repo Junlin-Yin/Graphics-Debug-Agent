@@ -94,6 +94,7 @@ class ViewImageTool:
         arguments: dict[str, Any],
         *,
         timeout_seconds: float,
+        cleanup_timeout_seconds: float,
         register_cancellation_handle: Callable[[ProviderCancellationHandle], None] | None = None,
     ) -> ViewImageResult:
         multimodal = _multimodal_config(context.frozen_config)
@@ -169,6 +170,7 @@ class ViewImageTool:
                 ],
                 instruction=instruction,
                 timeout_seconds=timeout_seconds,
+                cleanup_timeout_seconds=cleanup_timeout_seconds,
                 register_cancellation_handle=register_cancellation_handle,
                 cancellation_token=getattr(context, "cancellation_token", None),
             )

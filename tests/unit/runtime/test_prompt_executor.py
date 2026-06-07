@@ -480,6 +480,93 @@ def test_repl_runtime_denial_history_allows_next_turn_model_call(tmp_path) -> No
     db.close()
 
 
+def test_prompt_executor_converts_approval_unblock_after_cancel_to_running_cancellation(
+    tmp_path,
+) -> None:
+    class CancellationToken:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def is_cancelled(self) -> bool:
+            return self.cancelled
+
+    class DenyApprovalProvider:
+        is_interactive = True
+
+        def __init__(self, token: CancellationToken) -> None:
+            self.token = token
+
+        def request_approval(self, request, metadata):
+            self.token.cancelled = True
+            return ApprovalDecision(
+                decision="denied",
+                grant_scope="none",
+                message="Turn cancelled by user.",
+            )
+
+    class ToolCallModel:
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            return type(
+                "Response",
+                (),
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "write_file_0",
+                            "name": "write_file",
+                            "args": {"path": "notes.txt", "content": "hello"},
+                        }
+                    ],
+                    "usage": {},
+                },
+            )()
+
+    (
+        _workspace,
+        db,
+        sessions,
+        _runs,
+        _events,
+        _checkpoints,
+        _artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, ToolCallModel())
+    session = sessions.update_approval_mode(session.session_id, "normal")
+
+    token = CancellationToken()
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="write notes",
+        workspace_root=str(tmp_path / "workspace"),
+        approval_provider=DenyApprovalProvider(token),
+        cancellation_token=token,
+    )
+    messages = ConversationStore(db.connection).list_messages(run.run_id)
+
+    assert result.status == "cancelled"
+    assert result.error["reason"] == "user_cancel_running"
+    assert [(message.role, message.kind) for message in messages] == [
+        ("user", "user_input"),
+        ("assistant", "assistant_tool_call"),
+        ("tool", "tool_result"),
+        ("runtime", "cancellation_fact"),
+    ]
+    assert messages[2].tool_call_id == "model_call_1_tool_1"
+    assert messages[2].content["message_type"] == "tool_result"
+    assert messages[2].content["tool_call_id"] == "model_call_1_tool_1"
+    assert messages[2].content["error"]["error_class"] == "cancelled"
+    assert messages[2].content["error"]["reason"] == "tool_call_cancelled"
+    assert messages[-1].content["reason"] == "user_cancel_running"
+    db.close()
+
+
 def test_prompt_executor_reuses_session_approval_grant_for_same_tool_scope(
     tmp_path,
 ) -> None:
@@ -2996,6 +3083,80 @@ def test_repl_runtime_persists_tool_loop_messages_for_next_turn_context(tmp_path
     )
     assert "persisted tool output" in second_turn_text
     assert "what did the tool return?" in second_turn_text
+    db.close()
+
+
+def test_repl_runtime_projects_runtime_cancellation_fact_as_provider_system_message(
+    tmp_path,
+) -> None:
+    class InspectingModel(FakeChatModel):
+        def __init__(self) -> None:
+            super().__init__(response="continued")
+            self.messages: list[object] = []
+
+        def invoke(self, messages: list[object]) -> object:
+            self.messages = messages
+            return super().invoke(messages)
+
+    model = InspectingModel()
+    (
+        workspace,
+        db,
+        sessions,
+        runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, model)
+    store = ConversationStore(db.connection, artifact_store=artifacts)
+    conversation = _with_durable_history(
+        store=store,
+        session_id=session.session_id,
+        run_id=run.run_id,
+        conversation=[
+            {
+                "seq": 1,
+                "role": "runtime",
+                "kind": "cancellation_fact",
+                "turn_id": "turn-1",
+                "content": {
+                    "error_class": "cancelled",
+                    "reason": "user_cancel_running",
+                    "message": "Turn cancelled by user.",
+                    "artifact_ids": [],
+                },
+            }
+        ],
+    )
+    runtime = ReplRuntime(
+        db=db,
+        sessions=sessions,
+        runs=runs,
+        events=events,
+        checkpoints=checkpoints,
+        executor=executor,
+        session_id=session.session_id,
+        run_id=run.run_id,
+        workspace_root=workspace,
+        conversation=conversation,
+    )
+
+    result = runtime.run_turn("continue")
+
+    assert result.status == "completed"
+    assert any(
+        isinstance(message, dict)
+        and message.get("role") == "system"
+        and "Turn cancelled by user." in _provider_message_content(message)
+        for message in model.messages
+    )
+    assert all(
+        not (isinstance(message, dict) and message.get("role") == "runtime")
+        for message in model.messages
+    )
     db.close()
 
 
