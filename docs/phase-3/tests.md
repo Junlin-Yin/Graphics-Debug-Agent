@@ -309,12 +309,16 @@ Phase 3 acceptance requires:
 
 - running `Ctrl+C` or `Esc` enters `cancelling`.
 - running `Ctrl+C` or `Esc` writes `cancelled/user_cancel_running` fact.
+- running `Ctrl+C` or `Esc` does not project `cancelled/user_cancel_running`
+  into later provider prompts during ordinary execution or resume.
 - running `Ctrl+C` or `Esc` returns REPL/TUI to input.
 - running `Ctrl+C` or `Esc` leaves session/run lifecycle `running`.
 - running `Ctrl+C` or `Esc` keeps active ownership.
 - running `Ctrl+C` or `Esc` does not print a session close or cancelled terminal
   summary.
 - idle `Ctrl+C` or `Esc` writes `cancelled/user_cancel_idle` fact.
+- idle `Ctrl+C` or `Esc` does not project `cancelled/user_cancel_idle` into
+  later provider prompts during resume.
 - idle `Ctrl+C` or `Esc` terminalizes session/run.
 - idle `Ctrl+C` or `Esc` releases active ownership.
 - ownership release failure after durable terminalization records

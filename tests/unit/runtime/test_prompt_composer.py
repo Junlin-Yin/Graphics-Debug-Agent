@@ -123,6 +123,129 @@ def test_prompt_composer_orders_frame_segments_and_available_skill_headers(tmp_p
     db.close()
 
 
+def test_prompt_composer_excludes_audit_only_runtime_cancellation_facts(
+    tmp_path,
+) -> None:
+    db, session, run, _runs, store = _runtime_with_skill(tmp_path)
+    composer = PromptComposer(
+        skill_snapshot_store=store,
+        todo_plan_store=TodoPlanStore(db.connection),
+    )
+
+    result = composer.compose(
+        PromptCompositionRequest(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            stable_system_content="Main prompt.",
+            retained_messages=[
+                ConversationMessage(
+                    seq=100,
+                    role="runtime",
+                    kind="cancellation_fact",
+                    turn_id="turn-1",
+                    model_call_id=None,
+                    tool_call_id=None,
+                    content={
+                        "error_class": "cancelled",
+                        "reason": "user_cancel_running",
+                        "message": "Turn cancelled by user.",
+                        "artifact_ids": [],
+                    },
+                ),
+                ConversationMessage(
+                    seq=110,
+                    role="runtime",
+                    kind="cancellation_fact",
+                    turn_id="turn-2",
+                    model_call_id=None,
+                    tool_call_id=None,
+                    content={
+                        "error_class": "cancelled",
+                        "reason": "user_cancel_idle",
+                        "message": "REPL interrupted by Ctrl+C.",
+                        "artifact_ids": [],
+                    },
+                ),
+                ConversationMessage(
+                    seq=120,
+                    role="runtime",
+                    kind="cancellation_fact",
+                    turn_id="turn-3",
+                    model_call_id="model-call-1",
+                    tool_call_id=None,
+                    content={
+                        "error_class": "cancelled",
+                        "reason": "model_call_cancelled",
+                        "message": "main_model_stream provider call cancelled.",
+                        "artifact_ids": [],
+                    },
+                ),
+            ],
+            live_messages=[],
+            current_messages=[
+                ConversationMessage(
+                    seq=200,
+                    role="user",
+                    kind="current_user_input",
+                    turn_id="turn-4",
+                    model_call_id=None,
+                    tool_call_id=None,
+                    content="continue",
+                )
+            ],
+            tool_schema_bindings=[],
+        )
+    )
+
+    ordered = result.frame.ordered_message_segments()
+    frame_text = "\n".join(str(segment.content) for segment in ordered)
+    assert "Turn cancelled by user." not in frame_text
+    assert "REPL interrupted by Ctrl+C." not in frame_text
+    assert "main_model_stream provider call cancelled." not in frame_text
+    assert "continue" in frame_text
+    db.close()
+
+
+def test_prompt_composer_still_projects_runtime_context_summary(tmp_path) -> None:
+    db, session, run, _runs, store = _runtime_with_skill(tmp_path)
+    composer = PromptComposer(
+        skill_snapshot_store=store,
+        todo_plan_store=TodoPlanStore(db.connection),
+    )
+
+    result = composer.compose(
+        PromptCompositionRequest(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            stable_system_content="Main prompt.",
+            retained_messages=[
+                ConversationMessage(
+                    seq=100,
+                    role="runtime",
+                    kind="context_summary",
+                    turn_id=None,
+                    model_call_id=None,
+                    tool_call_id=None,
+                    content="Durable continuity summary.",
+                )
+            ],
+            live_messages=[],
+            current_messages=[],
+            tool_schema_bindings=[],
+        )
+    )
+
+    summary_segments = [
+        segment
+        for segment in result.frame.ordered_message_segments()
+        if segment.kind == "context_summary"
+    ]
+    assert len(summary_segments) == 1
+    assert summary_segments[0].role == "system"
+    assert summary_segments[0].content == "Durable continuity summary."
+    db.close()
+
+
 def test_active_skill_context_segment_shape_and_metadata(tmp_path) -> None:
     db, session, run, runs, store = _runtime_with_skill(tmp_path)
     skill = store.get_skill(

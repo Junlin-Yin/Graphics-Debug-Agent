@@ -168,9 +168,9 @@ Allowed `role` values:
 - `assistant`: accepted final assistant output or complete accepted assistant
   tool-call message.
 - `tool`: accepted tool observation returned to the model.
-- `runtime`: accepted model-visible failure/cancellation facts authored by the
-  runtime, and runtime-authored context summaries that follow Phase 1 rolling
-  summary semantics.
+- `runtime`: accepted failure/cancellation facts authored by the runtime, and
+  runtime-authored context summaries that follow Phase 1 rolling summary
+  semantics.
 
 Allowed `kind` values:
 
@@ -182,13 +182,16 @@ Allowed `kind` values:
 - `cancellation_fact`
 - `context_summary`
 
-`runtime` messages are model-visible facts, not hidden control state. Hidden
-state such as active skills, Todo Plan, approval mode, and config snapshots must
-remain in their dedicated runtime stores and may be referenced by terminal
-checkpoint manifests.
+`runtime` messages are durable runtime-authored conversation facts, not hidden
+control state, but they are not automatically provider-prompt-visible. Each
+runtime kind/reason/scope must define a provider prompt projection policy.
+Hidden state such as active skills, Todo Plan, approval mode, and config
+snapshots must remain in their dedicated runtime stores and may be referenced by
+terminal checkpoint manifests.
 
 For `failure_fact` and `cancellation_fact` rows, `content_json` stores the
-model-visible normalized error projection:
+normalized error projection used by status, trace, checkpoint validation, and
+any provider prompt projection policy that explicitly includes that fact:
 
 ```json
 {
@@ -201,9 +204,23 @@ model-visible normalized error projection:
 
 `metadata_json` may repeat `error_class` and `reason` for query convenience and
 may include correlation fields such as `turn_id`, `tool_call_id`,
-`retry_attempt`, or `continuation_attempt`, but it is not the model-visible
-error source. Resume rebuilds model-visible failure and cancellation messages
-from `content_json`, not from `metadata_json`.
+`retry_attempt`, or `continuation_attempt`, but it is not the canonical error
+source. Resume rebuilds runtime facts from `content_json`, not from
+`metadata_json`.
+
+Provider prompt projection policies:
+
+- `context_summary` is provider-prompt-visible continuity context.
+- user/session control cancellation facts are audit/recovery-only and must not
+  be included in provider prompt projection during ordinary execution or resume
+  rebuild. This includes `cancellation_fact` rows with
+  `reason = "user_cancel_running"` or `reason = "user_cancel_idle"`.
+- provider-boundary model cancellation facts are audit-only and must not be
+  included in provider prompt projection. This includes
+  `reason = "model_call_cancelled"`.
+- tool-call cancellation remains provider-prompt-visible only as the normalized
+  `tool_result` that closes an accepted `assistant_tool_call`; it must not be
+  represented as a separate runtime fact in the provider prompt.
 
 ## Append Boundaries
 

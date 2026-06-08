@@ -3732,7 +3732,7 @@ def test_repl_runtime_persists_tool_loop_messages_for_next_turn_context(tmp_path
     db.close()
 
 
-def test_repl_runtime_projects_runtime_cancellation_fact_as_provider_system_message(
+def test_repl_runtime_excludes_runtime_cancellation_fact_from_provider_prompt(
     tmp_path,
 ) -> None:
     class InspectingModel(FakeChatModel):
@@ -3793,11 +3793,8 @@ def test_repl_runtime_projects_runtime_cancellation_fact_as_provider_system_mess
     result = runtime.run_turn("continue")
 
     assert result.status == "completed"
-    assert any(
-        isinstance(message, dict)
-        and message.get("role") == "system"
-        and "Turn cancelled by user." in _provider_message_content(message)
-        for message in model.messages
+    assert "Turn cancelled by user." not in "\n".join(
+        _provider_message_content(message) for message in model.messages
     )
     assert all(
         not (isinstance(message, dict) and message.get("role") == "runtime")

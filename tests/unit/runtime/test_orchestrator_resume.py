@@ -86,11 +86,14 @@ def test_resumed_repl_with_runtime_cancellation_fact_runs_next_prompt(
     tmp_path,
     monkeypatch,
 ) -> None:
+    captured_messages: list[object] = []
+
     class ValidatingProviderMessageModel:
         def bind_tools(self, _tools):
             return self
 
         def invoke(self, messages):
+            captured_messages[:] = list(messages)
             seen_non_system = False
             for message in messages:
                 if isinstance(message, dict) and message.get("role") == "runtime":
@@ -205,6 +208,12 @@ def test_resumed_repl_with_runtime_cancellation_fact_runs_next_prompt(
         result = resumed.runtime.run_turn("continue")
         assert result.status == "completed"
         assert result.assistant_output == "post resume answer"
+        rendered_messages = [
+            message.get("content", "")
+            for message in captured_messages
+            if isinstance(message, dict)
+        ]
+        assert "Turn cancelled by user." not in "\n".join(rendered_messages)
     finally:
         resumed.runtime.close()
 

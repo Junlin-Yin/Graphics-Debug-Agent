@@ -183,6 +183,11 @@ appends the turn-scoped runtime `cancellation_fact` after that `user_input`.
 fact and must not be appended as a separate durable conversation message unless
 a later phase explicitly changes this contract.
 
+Runtime-authored user/session control cancellation facts are audit/recovery
+facts. `cancelled/user_cancel_running`, `cancelled/user_cancel_idle`, and
+provider-boundary `cancelled/model_call_cancelled` facts must not be included in
+provider prompt projection during ordinary execution or explicit resume.
+
 This ordering is the normative running-cancellation conversation order for
 `session-control.md`: a brokered tool cancellation closes an already accepted
 tool-call boundary first, then the runtime appends the turn-scoped

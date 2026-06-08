@@ -141,7 +141,10 @@ class PromptComposer:
             *request.current_messages,
         ]
         runtime_context_messages = [
-            message for message in historical_messages if message.role == "runtime"
+            message
+            for message in historical_messages
+            if message.role == "runtime"
+            and _is_provider_prompt_visible_runtime_message(message)
         ]
         if runtime_context_messages:
             segments.extend(
@@ -292,6 +295,29 @@ class PromptComposer:
 
 def _indent(text: str, prefix: str) -> str:
     return "\n".join(f"{prefix}{line}" for line in text.splitlines())
+
+
+def _is_provider_prompt_visible_runtime_message(message: ConversationMessage) -> bool:
+    reason = _runtime_message_reason(message)
+    if reason in {
+        "user_cancel_running",
+        "user_cancel_idle",
+        "model_call_cancelled",
+    }:
+        return False
+    return True
+
+
+def _runtime_message_reason(message: ConversationMessage) -> str | None:
+    content = message.content
+    if isinstance(content, dict):
+        reason = content.get("reason")
+        if isinstance(reason, str):
+            return reason
+    reason = message.metadata.get("reason")
+    if isinstance(reason, str):
+        return reason
+    return None
 
 
 def _todo_plan_content(plan: TodoPlan) -> str:
