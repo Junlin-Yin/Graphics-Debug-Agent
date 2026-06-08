@@ -29,7 +29,11 @@ from debug_agent.runtime.contracts import (
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.runtime.context_manager import CompressionError, ContextManager
 from debug_agent.runtime.errors import NormalizedError
-from debug_agent.runtime.model_context import CompressionContextFrame, ConversationMessage
+from debug_agent.runtime.model_context import (
+    CompressionContextFrame,
+    ConversationMessage,
+    provider_role_for_message_role,
+)
 from debug_agent.runtime.policy import PermissionEvaluator, policy_facts_from_snapshot
 from debug_agent.runtime.prompt_composer import PromptComposer, PromptCompositionRequest
 from debug_agent.runtime.query_control import QueryControlPlane
@@ -1824,7 +1828,7 @@ def _provider_message_from_conversation(message: ConversationMessage) -> dict[st
             f"{content}\n\nArtifact references: "
             f"{', '.join(message.artifact_refs)}"
         )
-    provider_role = "system" if message.role == "runtime" else message.role
+    provider_role = provider_role_for_message_role(message.role)
     return {"role": provider_role, "content": content}
 
 

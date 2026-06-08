@@ -10,7 +10,10 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
 from debug_agent.runtime.contracts import AgentRunRequest, AgentRunResult, RunContext
-from debug_agent.runtime.model_context import ConversationMessage
+from debug_agent.runtime.model_context import (
+    ConversationMessage,
+    provider_role_for_message_role,
+)
 from debug_agent.runtime.provider_execution import (
     ProviderBoundaryNotClosed,
     ProviderCallCancelled,
@@ -452,7 +455,7 @@ def _provider_message_from_segment(segment: ConversationMessage) -> object:
         assistant_content, tool_calls = _assistant_tool_call_content(content)
         if tool_calls:
             return AIMessage(content=assistant_content, tool_calls=tool_calls)
-    provider_role = "system" if segment.role == "runtime" else segment.role
+    provider_role = provider_role_for_message_role(segment.role)
     if not isinstance(content, str):
         content = json.dumps(content, ensure_ascii=False, sort_keys=True)
     if segment.artifact_refs:

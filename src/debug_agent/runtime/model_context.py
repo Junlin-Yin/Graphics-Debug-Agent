@@ -10,6 +10,10 @@ JsonDict = dict[str, Any]
 MessageContent = str | JsonDict
 
 
+def provider_role_for_message_role(role: str) -> str:
+    return "user" if role == "runtime" else role
+
+
 @dataclass(frozen=True)
 class ConversationMessage:
     seq: int

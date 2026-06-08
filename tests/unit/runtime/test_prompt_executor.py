@@ -4251,3 +4251,22 @@ def test_provider_messages_to_conversation_splits_multiple_tool_calls() -> None:
             }
         ],
     }
+
+
+def test_provider_message_from_conversation_projects_runtime_as_user_not_system() -> None:
+    from debug_agent.runtime.prompt_executor import _provider_message_from_conversation
+
+    message = ConversationMessage(
+        seq=1,
+        role="runtime",
+        kind="context_summary",
+        turn_id=None,
+        model_call_id=None,
+        tool_call_id=None,
+        content="compressed continuity",
+    )
+
+    assert _provider_message_from_conversation(message) == {
+        "role": "user",
+        "content": "compressed continuity",
+    }

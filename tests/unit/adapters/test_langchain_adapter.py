@@ -114,6 +114,43 @@ def _event_payloads(events: list[AgentStreamEvent], kind: str) -> list[dict[str,
     return [event.payload for event in events if event.kind == kind]
 
 
+def test_provider_messages_from_segments_projects_runtime_as_user_not_system() -> None:
+    messages = _provider_messages_from_segments(
+        [
+            ConversationMessage(
+                seq=1,
+                role="runtime",
+                kind="failure_fact",
+                turn_id="turn-1",
+                model_call_id=None,
+                tool_call_id=None,
+                content={
+                    "error_class": "tool_error",
+                    "reason": "tool_execution_timeout",
+                    "message": "shell_exec exceeded timeout_seconds.",
+                    "artifact_ids": [],
+                },
+            )
+        ]
+    )
+
+    assert messages == [
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "error_class": "tool_error",
+                    "reason": "tool_execution_timeout",
+                    "message": "shell_exec exceeded timeout_seconds.",
+                    "artifact_ids": [],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        }
+    ]
+
+
 def test_langchain_adapter_maps_model_success() -> None:
     adapter = LangChainAgentLoopAdapter(model=FakeChatModel(response="answer"))
 
