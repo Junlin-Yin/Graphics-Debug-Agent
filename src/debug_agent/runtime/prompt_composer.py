@@ -128,9 +128,12 @@ class PromptComposer:
             segments.append(
                 self._segment(
                     seq,
-                    role="system",
+                    role="user",
                     kind="context_summary",
-                    content=request.context_summary,
+                    content=_provider_prompt_runtime_content(
+                        kind="context_summary",
+                        content=request.context_summary,
+                    ),
                 )
             )
             seq += 10
@@ -152,12 +155,15 @@ class PromptComposer:
                     [
                         ConversationMessage(
                             seq=message.seq,
-                            role="system",
+                            role="user",
                             kind=message.kind,
                             turn_id=message.turn_id,
                             model_call_id=message.model_call_id,
                             tool_call_id=message.tool_call_id,
-                            content=message.content,
+                            content=_provider_prompt_runtime_content(
+                                kind=message.kind,
+                                content=message.content,
+                            ),
                             artifact_refs=message.artifact_refs,
                             metadata=message.metadata,
                         )
@@ -171,7 +177,7 @@ class PromptComposer:
         segments.extend(
             self._renumber(
                 [
-                    message
+                    _provider_prompt_historical_message(message)
                     for message in historical_messages
                     if message.role != "runtime"
                 ],
@@ -318,6 +324,60 @@ def _runtime_message_reason(message: ConversationMessage) -> str | None:
     if isinstance(reason, str):
         return reason
     return None
+
+
+def _provider_prompt_historical_message(message: ConversationMessage) -> ConversationMessage:
+    if message.kind != "context_summary":
+        return message
+    return ConversationMessage(
+        seq=message.seq,
+        role="user",
+        kind=message.kind,
+        turn_id=message.turn_id,
+        model_call_id=message.model_call_id,
+        tool_call_id=message.tool_call_id,
+        content=_provider_prompt_runtime_content(
+            kind=message.kind,
+            content=message.content,
+        ),
+        artifact_refs=list(message.artifact_refs),
+        estimated_tokens=message.estimated_tokens,
+        metadata=dict(message.metadata),
+    )
+
+
+def _provider_prompt_runtime_content(*, kind: str, content: Any) -> str:
+    if isinstance(content, str):
+        rendered = content
+    else:
+        rendered = _stable_json(content)
+    if kind == "context_summary":
+        return "\n".join(
+            [
+                "[Runtime context summary]",
+                "The following is historical continuity context, not a user request.",
+                "",
+                rendered,
+            ]
+        )
+    if kind == "failure_fact":
+        return "\n".join(
+            [
+                "[Runtime failure observation]",
+                "The following previous runtime failure may be relevant for continuation.",
+                "Use it to continue or repair the task; do not repeat this block verbatim.",
+                "",
+                rendered,
+            ]
+        )
+    return "\n".join(
+        [
+            "[Runtime context]",
+            "The following runtime-authored context may be relevant for continuation.",
+            "",
+            rendered,
+        ]
+    )
 
 
 def _todo_plan_content(plan: TodoPlan) -> str:

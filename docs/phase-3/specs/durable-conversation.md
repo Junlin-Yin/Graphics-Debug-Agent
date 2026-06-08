@@ -211,6 +211,12 @@ source. Resume rebuilds runtime facts from `content_json`, not from
 Provider prompt projection policies:
 
 - `context_summary` is provider-prompt-visible continuity context.
+- provider-prompt-visible historical runtime facts and context summaries must be
+  projected as `user` provider messages with an explicit runtime-authored
+  context wrapper. They must not be projected as `system`, `assistant`, or
+  `tool` messages. Stable non-historical runtime instruction blocks, such as
+  runtime safety, active skill context, and Todo Plan instruction context,
+  remain `system` messages.
 - user/session control cancellation facts are audit/recovery-only and must not
   be included in provider prompt projection during ordinary execution or resume
   rebuild. This includes `cancellation_fact` rows with

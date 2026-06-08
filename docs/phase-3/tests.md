@@ -311,6 +311,12 @@ Phase 3 acceptance requires:
 - running `Ctrl+C` or `Esc` writes `cancelled/user_cancel_running` fact.
 - running `Ctrl+C` or `Esc` does not project `cancelled/user_cancel_running`
   into later provider prompts during ordinary execution or resume.
+- provider-prompt-visible historical runtime facts and context summaries project
+  as wrapped `user` messages, not `system` messages.
+- turn-scoped prompt failures append in-memory and durable runtime
+  `failure_fact` observations, not assistant-authored failure messages.
+- rolling context summaries replace evicted in-memory history as
+  `runtime/context_summary`, matching durable conversation rows.
 - running `Ctrl+C` or `Esc` returns REPL/TUI to input.
 - running `Ctrl+C` or `Esc` leaves session/run lifecycle `running`.
 - running `Ctrl+C` or `Esc` keeps active ownership.

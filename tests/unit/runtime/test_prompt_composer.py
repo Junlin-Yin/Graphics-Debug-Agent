@@ -113,6 +113,13 @@ def test_prompt_composer_orders_frame_segments_and_available_skill_headers(tmp_p
         "current_user_input",
     ]
     assert ordered[3].role == "system"
+    summary_segment = ordered[5]
+    assert summary_segment.role == "user"
+    assert str(summary_segment.content).splitlines()[:2] == [
+        "[Runtime context summary]",
+        "The following is historical continuity context, not a user request.",
+    ]
+    assert "Compressed continuity summary." in summary_segment.content
     assert "Available prompt skills for activation:" in ordered[3].content
     assert "alpha: Alpha skill" in ordered[3].content
     assert "Follow every line" not in ordered[3].content
@@ -206,7 +213,9 @@ def test_prompt_composer_excludes_audit_only_runtime_cancellation_facts(
     db.close()
 
 
-def test_prompt_composer_still_projects_runtime_context_summary(tmp_path) -> None:
+def test_prompt_composer_projects_runtime_context_summary_as_wrapped_user_context(
+    tmp_path,
+) -> None:
     db, session, run, _runs, store = _runtime_with_skill(tmp_path)
     composer = PromptComposer(
         skill_snapshot_store=store,
@@ -241,8 +250,64 @@ def test_prompt_composer_still_projects_runtime_context_summary(tmp_path) -> Non
         if segment.kind == "context_summary"
     ]
     assert len(summary_segments) == 1
-    assert summary_segments[0].role == "system"
-    assert summary_segments[0].content == "Durable continuity summary."
+    assert summary_segments[0].role == "user"
+    assert str(summary_segments[0].content).splitlines()[:2] == [
+        "[Runtime context summary]",
+        "The following is historical continuity context, not a user request.",
+    ]
+    assert "Durable continuity summary." in summary_segments[0].content
+    db.close()
+
+
+def test_prompt_composer_projects_runtime_failure_fact_as_wrapped_user_context(
+    tmp_path,
+) -> None:
+    db, session, run, _runs, store = _runtime_with_skill(tmp_path)
+    composer = PromptComposer(
+        skill_snapshot_store=store,
+        todo_plan_store=TodoPlanStore(db.connection),
+    )
+
+    result = composer.compose(
+        PromptCompositionRequest(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            stable_system_content="Main prompt.",
+            retained_messages=[
+                ConversationMessage(
+                    seq=100,
+                    role="runtime",
+                    kind="failure_fact",
+                    turn_id="turn-1",
+                    model_call_id=None,
+                    tool_call_id=None,
+                    content={
+                        "error_class": "model_error",
+                        "reason": "invalid_tool_call",
+                        "message": "The previous response had malformed tool args.",
+                        "artifact_ids": [],
+                    },
+                )
+            ],
+            live_messages=[],
+            current_messages=[],
+            tool_schema_bindings=[],
+        )
+    )
+
+    failure_segments = [
+        segment
+        for segment in result.frame.ordered_message_segments()
+        if segment.kind == "failure_fact"
+    ]
+    assert len(failure_segments) == 1
+    assert failure_segments[0].role == "user"
+    content = str(failure_segments[0].content)
+    assert content.splitlines()[:2] == [
+        "[Runtime failure observation]",
+        "The following previous runtime failure may be relevant for continuation.",
+    ]
+    assert "The previous response had malformed tool args." in content
     db.close()
 
 

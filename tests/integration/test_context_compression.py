@@ -254,6 +254,7 @@ def test_manual_compress_success_updates_repl_runtime_conversation(tmp_path) -> 
     assert result.status == "completed"
     assert result.assistant_output.startswith("Context compressed: reduced from ")
     assert repl_runtime.conversation[0]["kind"] == "context_summary"
+    assert repl_runtime.conversation[0]["role"] == "runtime"
     assert "manual compression" in repl_runtime.conversation[0]["content"]
     assert runtime["runs"].get(runtime["run"].run_id).context_snapshot_id is None
     assert runtime["db"].connection.execute(

@@ -704,13 +704,15 @@ def test_repl_approval_denial_aborts_turn_and_is_visible_to_next_turn(
         failure_observations = [
             message
             for message in controller.runtime.conversation
-            if message["kind"] == "turn_failure_observation"
+            if message["kind"] == "failure_fact"
         ]
         assert len(failure_observations) == 1
+        assert failure_observations[0]["role"] == "runtime"
         assert failure_observations[0]["content"] == {
-            "status": "failed",
             "error_class": "policy_error",
+            "reason": "approval_denied",
             "message": "Approval denied.",
+            "artifact_ids": [],
         }
 
         with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:

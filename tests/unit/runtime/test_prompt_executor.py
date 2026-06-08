@@ -2613,6 +2613,7 @@ def test_prompt_executor_automatically_compresses_before_initial_model_call(
     assert result.metadata["context_optimization"]["trigger"] == "compression"
     assert result.metadata["context_optimization"]["evicted_model_call_group_count"] == 1
     assert result.metadata["conversation_writeback"][0]["kind"] == "context_summary"
+    assert result.metadata["conversation_writeback"][0]["role"] == "runtime"
 
     persisted_kinds = [event.kind for event in events.list_for_run(run.run_id)]
     assert persisted_kinds[:4] == [
@@ -3182,6 +3183,7 @@ def test_prompt_executor_manual_compress_success_writes_snapshot_and_message(
     assert " to " in result.assistant_output
     assert result.metadata["context_optimization"]["trigger"] == "manual"
     assert result.metadata["conversation_writeback"][0]["kind"] == "context_summary"
+    assert result.metadata["conversation_writeback"][0]["role"] == "runtime"
     assert db.connection.execute(
         "SELECT COUNT(*) FROM context_snapshots WHERE run_id = ?",
         (run.run_id,),
@@ -3506,7 +3508,7 @@ def test_projection_overwrite_preserves_retained_summary_durable_index(
         messages=[
             ConversationMessage(
                 seq=1,
-                role="system",
+                role="runtime",
                 kind="context_summary",
                 turn_id=None,
                 model_call_id=None,
@@ -3904,17 +3906,18 @@ def test_repl_runtime_persists_failed_turn_tool_loop_and_failure_observation(
         "current_user_input",
         "tool_call",
         "tool_result",
-        "turn_failure_observation",
+        "failure_fact",
     ]
     assert runtime.conversation[1]["content"] == "read notes"
     assert runtime.conversation[2]["seq"] == 3
     assert runtime.conversation[3]["seq"] == 4
     failure = runtime.conversation[4]
-    assert failure["role"] == "assistant"
+    assert failure["role"] == "runtime"
     assert failure["content"] == {
-        "status": "failed",
         "error_class": "internal_error",
+        "reason": "internal_error",
         "message": "Tool call loop exceeded Phase 0 iteration limit.",
+        "artifact_ids": [],
     }
     db.close()
 
@@ -3973,12 +3976,14 @@ def test_repl_runtime_approval_denial_uses_unified_failure_observation(
     assert result.status == "failed"
     assert [message["kind"] for message in runtime.conversation] == [
         "current_user_input",
-        "turn_failure_observation",
+        "failure_fact",
     ]
+    assert runtime.conversation[1]["role"] == "runtime"
     assert runtime.conversation[1]["content"] == {
-        "status": "failed",
         "error_class": "policy_denied",
+        "reason": "policy_denied",
         "message": "Approval denied.",
+        "artifact_ids": [],
     }
     assert not any(
         message["kind"] == "approval_denied_observation"

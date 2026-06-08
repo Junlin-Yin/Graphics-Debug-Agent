@@ -1735,7 +1735,7 @@ def _replace_compressed_history(
                 retained_after.append(
                     ConversationMessage(
                         seq=insertion_seq,
-                        role="system",
+                        role="runtime",
                         kind="context_summary",
                         turn_id=None,
                         model_call_id=None,
@@ -1751,7 +1751,7 @@ def _replace_compressed_history(
             0,
             ConversationMessage(
                 seq=insertion_seq,
-                role="system",
+                role="runtime",
                 kind="context_summary",
                 turn_id=None,
                 model_call_id=None,

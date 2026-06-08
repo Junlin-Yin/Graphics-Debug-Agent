@@ -278,15 +278,16 @@ def test_model_visible_runtime_json_preserves_non_ascii_text() -> None:
     failure_observation = _provider_message_from_segment(
         ConversationMessage(
             seq=1,
-            role="assistant",
-            kind="turn_failure_observation",
+            role="user",
+            kind="failure_fact",
             turn_id="turn-1",
-            model_call_id="repl_turn_1_failure",
+            model_call_id=None,
             tool_call_id=None,
             content={
-                "status": "failed",
                 "error_class": "policy_denied",
+                "reason": "approval_denied",
                 "message": UNICODE_TEXT,
+                "artifact_ids": [],
             },
         )
     )

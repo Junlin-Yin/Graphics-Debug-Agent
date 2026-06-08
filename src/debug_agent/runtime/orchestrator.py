@@ -364,18 +364,27 @@ class ReplRuntime:
         self.conversation.append(
             {
                 "seq": next_seq,
-                "role": "assistant",
-                "kind": "turn_failure_observation",
+                "role": "runtime",
+                "kind": "failure_fact",
                 "turn_id": turn_id,
-                "model_call_id": f"repl_turn_{self.turn_counter}_failure",
+                "model_call_id": None,
                 "tool_call_id": None,
                 "content": {
-                    "status": result.status,
                     "error_class": str(error.get("error_class") or result.status),
+                    "reason": str(
+                        error.get("reason") or error.get("error_class") or result.status
+                    ),
                     "message": str(error.get("message") or "Prompt execution failed."),
+                    "artifact_ids": error.get("artifact_ids")
+                    if isinstance(error.get("artifact_ids"), list)
+                    else [],
                 },
                 "artifact_refs": [],
                 "metadata": {
+                    "error_class": str(error.get("error_class") or result.status),
+                    "reason": str(
+                        error.get("reason") or error.get("error_class") or result.status
+                    ),
                     "failure_scope": result.metadata.get("failure_scope"),
                 },
             }
