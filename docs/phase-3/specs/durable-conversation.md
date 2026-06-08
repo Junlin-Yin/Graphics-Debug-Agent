@@ -432,9 +432,9 @@ paths such as starting a REPL and immediately using `/exit`, normal graceful
 shutdown, or an equivalent non-failure idle close. The empty cut uses
 `highest_message_index = 0`, `message_count = 0`, no message rows, and the
 documented checksum over the canonical empty ordered row list for the same
-`run_id`. It is not valid for idle `Ctrl+C`, which writes a session-scoped
-cancellation fact, or for terminal prompt failure, which requires at least one
-closed accepted durable conversation group.
+`run_id`. It is not valid for idle `Ctrl+C` or `Esc`, which writes a
+session-scoped cancellation fact, or for terminal prompt failure, which requires
+at least one closed accepted durable conversation group.
 
 The projection snapshot must be copied into the terminal checkpoint payload from
 the mutable current projection state at terminalization time. It must include:

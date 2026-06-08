@@ -28,7 +28,7 @@ it is not a replacement for lifecycle status.
 
 Running turn interruption is turn-scoped.
 
-When user sends `Ctrl+C` while a prompt turn is running:
+When user sends `Ctrl+C` or `Esc` while a prompt turn is running:
 
 1. controller sends interrupt to runtime control path.
 2. runtime enters `cancelling` control state for the turn.
@@ -62,8 +62,8 @@ Provider calls must run inside runtime-owned cancellable workers. Main model
 provider cancellation records `cancelled/model_call_cancelled` as an internal
 failure-class audit fact when the local cancellation boundary closes. It is not
 appended as a separate durable conversation `cancellation_fact` during running
-`Ctrl+C`; the model-visible durable conversation fact for the turn remains
-`cancelled/user_cancel_running`. Brokered `view_image` cancellation returns
+`Ctrl+C` or `Esc`; the model-visible durable conversation fact for the turn
+remains `cancelled/user_cancel_running`. Brokered `view_image` cancellation returns
 `cancelled/tool_call_cancelled` as the model-visible tool observation, with
 provider-layer cancellation details only in metadata. Late provider results are
 ignored and must not become durable conversation or accepted assistant/tool-call
@@ -72,7 +72,7 @@ and must not claim the remote provider stopped.
 
 These provider/tool cancellation reasons are boundary facts for the active
 model or tool operation. They do not replace the turn-scoped running-interrupt
-fact. When running `Ctrl+C` cancels an active turn, runtime records
+fact. When running `Ctrl+C` or `Esc` cancels an active turn, runtime records
 `cancelled/user_cancel_running` at the turn recovery boundary; if an already
 accepted tool call was in flight, the cancelled tool observation is appended
 first with its original `tool_call_id`, followed by the turn-scoped runtime
@@ -90,7 +90,7 @@ turn.
 
 Triggers:
 
-- idle `Ctrl+C`.
+- idle `Ctrl+C` or `Esc`.
 - `/exit`.
 - normal graceful REPL shutdown.
 
@@ -105,7 +105,7 @@ Required behavior:
 5. release active workspace ownership after terminal state is consistent.
 6. exit the controller.
 
-Idle `Ctrl+C` uses:
+Idle `Ctrl+C` or `Esc` uses:
 
 - `error_class = "cancelled"`
 - `reason = "user_cancel_idle"`
@@ -114,7 +114,7 @@ Idle `Ctrl+C` uses:
 Idle terminalization may produce a resumable session only when terminal
 checkpoint creation succeeds and eligibility holds.
 
-Idle `Ctrl+C` terminalization must carry the session-scoped
+Idle `Ctrl+C` or `Esc` terminalization must carry the session-scoped
 `cancelled/user_cancel_idle` fact into the terminal recovery manifest as the
 terminal cancellation fact.
 
@@ -240,26 +240,32 @@ fact and active process-handle registration must occur in the same command-start
 boundary so a started command is visible to cancellation control. They are not
 model-visible tool inputs or reusable execution handles.
 
-## Double Interrupt
+## Input Lockout While Cancelling
 
-If the user sends a second interrupt while runtime is already `cancelling`:
+While runtime is already `cancelling`, the controller must block all user input
+until runtime leaves `cancelling` by reaching a recovery boundary or by failing
+closed. This includes ordinary prompt text, slash commands, approval input,
+`Ctrl+C`, and `Esc`.
 
-- runtime treats it as a process-level interruption request.
-- runtime must stop waiting for ordinary REPL recovery, attempt only the
-  minimum local cleanup needed to avoid accepting partial state, and exit or
-  abort the command path with `INTERRUPTED`.
-- runtime must not return REPL/TUI to prompt input from the same cancelling
-  state.
-- runtime must not write partial provider/tool/shell state as durable truth.
-- later stale fail-close can only use already durable facts.
+Input received during `cancelling` must not:
 
-Double interrupt does not create a special resume source.
+- create a double-interrupt escalation path.
+- bypass the cancellation cleanup envelope.
+- queue a prompt, slash command, approval response, or later interrupt action.
+- return REPL/TUI to input before the local provider/tool/shell boundary closes
+  and the durable cancellation/failure fact is accepted.
+- write partial provider/tool/shell state as durable truth.
+- create a special resume source.
+
+The fail-closed fallback for cleanup that cannot close within
+`execution.cancellation_timeout_seconds` remains the only Phase 3 forced abort
+path for ordinary running cancellation.
 
 ## TTY Terminal Summary
 
 Phase 0.5 TTY summary behavior is narrowed by Phase 3 session control.
-Running-turn `Ctrl+C` returns the REPL/TUI to input after the cancellation
-boundary closes and must not print the post-TUI session close or cancelled
-summary. Idle `Ctrl+C`, `/exit`, normal graceful shutdown, and process-level
-interruption that exits the command may print the appropriate terminal summary
-after the TUI leaves the alternate screen.
+Running-turn `Ctrl+C` or `Esc` returns the REPL/TUI to input after the
+cancellation boundary closes and must not print the post-TUI session close or
+cancelled summary. Idle `Ctrl+C`, idle `Esc`, `/exit`, normal graceful
+shutdown, and process-level interruption that exits the command may print the
+appropriate terminal summary after the TUI leaves the alternate screen.

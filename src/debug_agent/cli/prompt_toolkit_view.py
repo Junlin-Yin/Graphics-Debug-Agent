@@ -43,6 +43,7 @@ max_markdown_render_chars = 50_000
 stream_flush_interval_seconds = 0.25
 message_scroll_step_lines = 2
 message_scroll_step_page = 10
+escape_sequence_timeout_seconds = 0.05
 
 
 class _MessageScrollablePane(ScrollablePane):
@@ -279,16 +280,14 @@ class PromptToolkitReplView:
         self._sync_input_region_height()
 
     def handle_interrupt_event(self, event: Any) -> None:
-        was_cancelling = (
-            getattr(self._active_controller, "control_state", None) == "cancelling"
-        )
+        if getattr(self._active_controller, "control_state", None) == "cancelling":
+            return
         if self._active_controller is not None and hasattr(
             self._active_controller, "on_interrupt"
         ):
             self._active_controller.on_interrupt()
             if (
-                not was_cancelling
-                and getattr(self._active_controller, "control_state", None)
+                getattr(self._active_controller, "control_state", None)
                 == "cancelling"
             ):
                 return
@@ -303,6 +302,8 @@ class PromptToolkitReplView:
             cycle()
 
     def handle_approval_key_event(self, event: Any, key: str) -> None:
+        if getattr(self._active_controller, "control_state", None) == "cancelling":
+            return
         if self._approval_prompt is None:
             event.current_buffer.insert_text(key)
             return
@@ -421,7 +422,7 @@ class PromptToolkitReplView:
                 ),
             ]
         )
-        return Application(
+        application = Application(
             layout=Layout(root, focused_element=self._input_buffer),
             key_bindings=_key_bindings(
                 self._handle_prompt_enter_event,
@@ -439,6 +440,8 @@ class PromptToolkitReplView:
             input=self._prompt_toolkit_input,
             output=self._prompt_toolkit_output,
         )
+        application.ttimeoutlen = escape_sequence_timeout_seconds
+        return application
 
     def _dispatch(self, controller: object, text: str) -> None:
         if text.strip().startswith("/") and hasattr(controller, "on_slash_command"):
@@ -909,6 +912,11 @@ def _key_bindings(
             on_page_down()
 
     @bindings.add("c-c")
+    def _(event) -> None:
+        if on_interrupt is not None:
+            on_interrupt(event)
+
+    @bindings.add("escape", eager=True)
     def _(event) -> None:
         if on_interrupt is not None:
             on_interrupt(event)

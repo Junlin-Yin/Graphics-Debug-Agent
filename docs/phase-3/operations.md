@@ -134,9 +134,12 @@ by automated tests:
 
 - running `Ctrl+C` in REPL/TUI.
 - idle `Ctrl+C` in REPL/TUI.
+- running `Esc` in REPL/TUI.
+- idle `Esc` in REPL/TUI.
 - `debug-agent resume <session_id>` interactive flow.
 - stale fail-close confirmation.
-- double interrupt while `cancelling`.
+- cancellation cleanup timeout fail-closed behavior when local boundaries do not
+  close.
 
 Manual verification must record:
 

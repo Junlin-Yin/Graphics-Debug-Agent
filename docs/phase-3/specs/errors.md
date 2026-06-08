@@ -198,9 +198,9 @@ Phase 3 must not use shell/provider-specific cancellation reasons such as
 Shell and other brokered tool cancellations use `cancelled/tool_call_cancelled`
 with `tool_name` and termination details in metadata. Model/provider boundary
 cancellations use `cancelled/model_call_cancelled` as internal/audit
-provider-boundary facts; during running `Ctrl+C`, they do not append a separate
-durable conversation cancellation message because the turn-scoped model-visible
-fact remains `cancelled/user_cancel_running`. Remote-stop and billing
+provider-boundary facts; during running `Ctrl+C` or `Esc`, they do not append a
+separate durable conversation cancellation message because the turn-scoped
+model-visible fact remains `cancelled/user_cancel_running`. Remote-stop and billing
 uncertainty are metadata, not reason symbols. `view_image` is a brokered tool:
 its model-visible cancelled observation uses `cancelled/tool_call_cancelled`
 even though the internal vision provider cancellation may be recorded in
@@ -261,7 +261,7 @@ kind with `payload.error.error_class = "cancelled"` and
 `payload.error.reason = "tool_call_cancelled"`. Main provider cancellation may
 use a model/provider failure-class audit event with
 `payload.error.reason = "model_call_cancelled"`, but it must not be appended as
-a separate durable conversation fact during running `Ctrl+C`.
+a separate durable conversation fact during running `Ctrl+C` or `Esc`.
 
 ## Model-Visible Projection
 
@@ -353,7 +353,7 @@ Phase 3 CLI code must use semantic exit codes, not scattered magic numbers.
 | `ERROR_PERSISTENCE_WRITE` | 31 | Runtime persistence write failed. |
 | `ERROR_PERSISTENCE_TRANSITION` | 32 | Runtime persistence state transition failed. |
 | `ERROR_INTERNAL_INVARIANT` | 40 | Runtime invariant or adapter-contract violation. |
-| `INTERRUPTED` | 130 | Process interrupted by user cancellation such as `Ctrl+C`. |
+| `INTERRUPTED` | 130 | Process interrupted by user cancellation such as `Ctrl+C`, `Esc`, or an abnormal process-level interrupt. |
 
 Mapping a specific error to an exit code is a CLI boundary decision. It must not
 change persisted error class, reason, session status, run status, checkpoint

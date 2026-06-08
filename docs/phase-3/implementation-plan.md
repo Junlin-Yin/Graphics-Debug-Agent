@@ -99,7 +99,7 @@ Compatibility that must be preserved:
 - Startup/config/schema failures are non-resumable and must not receive terminal recovery checkpoints.
 - Explicit `debug-agent resume <session_id>` is the only path that may transition a terminalized prompt session/run back to `running`.
 - Resume is same-lineage: keep the same `session_id` and `run_id`.
-- Running `Ctrl+C` cancels a turn; it does not terminalize, write a terminal checkpoint, or release active ownership.
+- Running `Ctrl+C` or `Esc` cancels a turn; it does not terminalize, write a terminal checkpoint, or release active ownership.
 - Idle terminalization writes terminal facts before releasing ownership.
 - Active ownership claim, release, resume reclaim, and stale fail-close use `owner_token` fencing.
 - Provider cancellation is best-effort local runtime cancellation only. Runtime must not claim remote execution or billing stopped.
@@ -264,7 +264,7 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 - [x] Limit Milestone 3 shell timeout work to frozen config/reference validation; do not change `shell_exec.timeout_seconds` runtime behavior, approval signatures, or timeout execution semantics until Milestone 9.
 - [x] Add terminal reasons `terminal_completion`, `user_exit`, `user_cancel_idle`, `terminal_failure`, and `terminal_stale` exactly as specified.
 - [x] Implement zero-message `/exit` and normal graceful shutdown checkpoint shape.
-- [x] Reject zero-message checkpoint shape for idle `Ctrl+C` and terminal prompt failure.
+- [x] Reject zero-message checkpoint shape for idle `Ctrl+C`/`Esc` and terminal prompt failure.
 - [x] Add structured non-resumable startup/config/schema failure marker on session/run lifecycle or terminal metadata.
 - [x] Ensure startup/config/schema failure after session/run creation writes normalized audit facts/events, terminalizes, releases ownership if acquired, leaves `latest_checkpoint_id` unset, and writes no terminal checkpoint.
 - [x] Treat terminal checkpoint creation failure as non-resumable: do not set `latest_checkpoint_id` or present terminal-recoverable status.
@@ -355,7 +355,7 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 
 **Verification steps:** run `uv run pytest tests/unit -v`; run integration tests if adapter behavior changes visible prompt/tool loops.
 
-**Freeze/review checkpoint:** do not implement running `Ctrl+C` cancellation until provider and vision calls can close local runtime boundaries under cancellation tests.
+**Freeze/review checkpoint:** do not implement running `Ctrl+C`/`Esc` cancellation until provider and vision calls can close local runtime boundaries under cancellation tests.
 
 **Stop conditions:** stop if the concrete main-model adapter or `view_image` provider path can only run through sync-only uncancellable execution.
 
@@ -379,13 +379,17 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 
 **Objective:** implement user interruption semantics for active turns and idle sessions.
 
-**Deliverables:** runtime control states, running `Ctrl+C` cancellation, provider cancellation requests, shell best-effort termination, cancellation cleanup envelope, durable cancellation/failure fact ordering, double interrupt behavior, idle `Ctrl+C` terminalization, `/exit`/graceful shutdown terminalization, and owner-token-fenced ordinary ownership release.
+**Note:** This milestone records the original Phase 3 implementation. The
+post-completion micro-adjustment below supersedes the original double
+`Ctrl+C` behavior and adds `Esc` as an equivalent interrupt key.
+
+**Deliverables:** runtime control states, running `Ctrl+C` cancellation, provider cancellation requests, shell best-effort termination, cancellation cleanup envelope, durable cancellation/failure fact ordering, original double interrupt behavior, idle `Ctrl+C` terminalization, `/exit`/graceful shutdown terminalization, and owner-token-fenced ordinary ownership release.
 
 **Modified boundaries:** REPL/TUI/plain controllers, Runtime Orchestrator control path, Prompt Agent Runtime cancellation boundary, ToolBroker active tool tracking, CommandRunner/shell process handles, ConversationStore cancellation append, SessionStore/RunStore terminalization and ownership release.
 
-**Invariants:** running cancellation keeps session/run `running` and ownership held; runtime returns to prompt input only after local provider/tool/shell boundary closes and durable cancellation/failure fact is accepted; shell/provider mid-flight state is not resumable; double `Ctrl+C` exits/aborts with `INTERRUPTED`; idle terminalization writes terminal facts before ownership release.
+**Invariants:** running cancellation keeps session/run `running` and ownership held; runtime returns to prompt input only after local provider/tool/shell boundary closes and durable cancellation/failure fact is accepted; shell/provider mid-flight state is not resumable; original double `Ctrl+C` exits/aborts with `INTERRUPTED`; idle terminalization writes terminal facts before ownership release.
 
-**Verification steps:** run `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`; record manual TTY verification for running `Ctrl+C`, shell cancellation, idle `Ctrl+C`, double `Ctrl+C`, and TUI terminal summary behavior.
+**Verification steps:** run `uv run pytest tests/unit -v` and `uv run pytest tests/integration -v`; record manual TTY verification for running `Ctrl+C`, shell cancellation, idle `Ctrl+C`, original double `Ctrl+C`, and TUI terminal summary behavior.
 
 **Freeze/review checkpoint:** do not implement stale fail-close until ordinary terminalization and owner-token-fenced release are complete.
 
@@ -405,11 +409,11 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 - [x] Persist provider-boundary `cancelled/model_call_cancelled` as internal/audit detail only, not a separate durable conversation message for running `Ctrl+C`.
 - [x] Ensure running cancellation does not write a terminal checkpoint, terminalize, or release active ownership.
 - [x] Lock out ordinary prompts, slash commands, and unrelated approval input while `cancelling`.
-- [x] Implement double `Ctrl+C` as process-level interruption with `INTERRUPTED`, no partial accepted state, and no prompt return from the same cancelling state.
+- [x] Implement original double `Ctrl+C` as process-level interruption with `INTERRUPTED`, no partial accepted state, and no prompt return from the same cancelling state.
 - [x] Implement idle `Ctrl+C` as session-scoped `cancelled/user_cancel_idle`, terminal reason `user_cancel_idle`, terminal checkpoint when eligible, terminal lifecycle, owner-token-fenced release, and exit.
 - [x] Ensure `/exit` and normal graceful shutdown use terminal reason `user_exit`.
 - [x] Use owner-token fencing for normal ownership release; record `runtime_error/ownership_release_failed` if release fails after terminalization.
-- [x] Add unit/integration tests for running cancellation, no terminalization/release, shell termination request, cancellation timeout envelope, cleanup timeout fail-closed behavior, double interrupt, idle terminalization, `/exit`, and durable conversation ordering.
+- [x] Add unit/integration tests for running cancellation, no terminalization/release, shell termination request, cancellation timeout envelope, cleanup timeout fail-closed behavior, original double interrupt, idle terminalization, `/exit`, and durable conversation ordering.
 - [x] Repair main model provider execution to use a runtime-owned async provider primitive shared with `view_image` where practical.
 - [x] Repair authoritative main-model `run()` internals to use the configured provider async invocation API, such as `ainvoke`, when available, while preserving the public synchronous adapter API.
 - [x] Repair observational main-model `stream()` internals to use the configured provider async streaming API, such as `astream`, when available, while preserving stream deltas as presentation-only.
@@ -417,10 +421,10 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 - [x] Add regression coverage for one-shot/non-stream REPL and TUI/streaming REPL async provider cancellation, including late stream chunks not becoming durable output.
 - [x] Run canonical verification and record required manual verification evidence.
   Manual TTY verification recorded 2026-06-08: running `Ctrl+C` in model
-  call, model output, `view_image`, long shell/tool, idle `Ctrl+C`, double
-  `Ctrl+C` while cancelling, `/exit`, same-lineage resume after idle
-  terminalization, repeated resume after post-resume idle terminalization, TUI
-  terminal summary with trace/resume guidance, and `/exit`
+  call, model output, `view_image`, long shell/tool, idle `Ctrl+C`, `/exit`,
+  same-lineage resume after idle terminalization, repeated resume after
+  post-resume idle terminalization, TUI terminal summary with trace/resume
+  guidance, and `/exit`
   `terminal_reason = user_exit` checkpoint/runtime truth all matched
   Milestone 7 expectations.
 
@@ -541,7 +545,7 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 - [x] Ensure `status`, `trace`, and `resume` missing-DB behavior matches Phase 3 compatibility contract.
 - [x] Ensure legacy DB startup reset versus read-only fail-closed behavior is covered end-to-end.
 - [x] Add broad integration coverage across schema, normalized errors, durable conversation, terminal checkpoints, one-shot/REPL resume, startup failure non-resumability, cancellation, stale fail-close, retry, and shell timeout.
-- [x] Record manual verification evidence for running `Ctrl+C` in REPL/TUI, active shell cancellation, idle `Ctrl+C`, `debug-agent resume <session_id>`, stale fail-close confirmation, double interrupt while cancelling, and TUI terminal summary after alternate-screen exit.
+- [x] Record manual verification evidence for running `Ctrl+C` in REPL/TUI, active shell cancellation, idle `Ctrl+C`, `debug-agent resume <session_id>`, stale fail-close confirmation, original double interrupt while cancelling, and TUI terminal summary after alternate-screen exit.
   Manual TTY verification confirmed 2026-06-08: running `Ctrl+C` in
   model call/model output/tool execution returns REPL/TUI to input without
   terminalizing; active long-running shell/tool cancellation returns ownership;
@@ -550,9 +554,9 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
   stale fail-close confirmation writes administrative `terminal_stale`, redacts
   raw proof details, releases ownership, and same-target resume succeeds when a
   terminal recovery checkpoint is eligible; status/trace excerpts were manually
-  checked as observational only. Double `Ctrl+C` while cancelling is recorded
-  as manually timing-infeasible because running cancellation completes almost
-  immediately; a second interrupt reaches the idle `Ctrl+C` path. The
+  checked as observational only. Original double `Ctrl+C` while cancelling is
+  recorded as manually timing-infeasible because running cancellation completes
+  almost immediately; a second interrupt reaches the idle `Ctrl+C` path. The
   cancelling double-interrupt state-machine path remains covered by automated
   tests.
   Automated Milestone 10 deterministic status/trace excerpts verified by
@@ -569,6 +573,78 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
   Result on 2026-06-08: 53 passed.
 - [x] Run `uv run pytest -v`.
   Result on 2026-06-08: 682 passed, 1 skipped.
+
+## Post-Completion Micro-Adjustment: Interrupt Key Simplification
+
+**Objective:** update Phase 3 running/idle interrupt behavior after the
+completed milestone evidence showed ordinary running cancellation completes
+fast enough that a manual double-interrupt path is unnecessary.
+
+**Deliverables:** remove the double `Ctrl+C` process-abort control path; block
+all user input while `cancelling`; keep the
+`execution.cancellation_timeout_seconds` fail-closed timeout as the forced abort
+fallback; add `Esc` as an equivalent user-facing key for the same running and
+idle semantics as `Ctrl+C`.
+
+**Modified boundaries:** plain REPL and TUI key routing, runtime cancellation
+control tests, TTY manual verification records, and documentation references to
+running/idle interrupt keys.
+
+**Invariants:** `Esc` must not introduce a new error reason, persistence shape,
+exit-code mapping, lifecycle status, or resume source. While `cancelling`,
+controllers block all user input, including `Ctrl+C` and `Esc`; blocked input
+must not queue prompts, slash commands, approval responses, duplicate
+cancellation facts, or later interrupt actions. If local provider/tool/shell
+boundaries do not close before `cancellation_timeout_seconds`, runtime uses the
+existing timeout fail-closed behavior and does not accept partial state.
+
+**Verification steps:** run the narrowest relevant automated tests for
+session-control cancellation, provider/shell cancellation, and terminalization.
+Record manual TTY verification for running `Ctrl+C`/`Esc`, idle
+`Ctrl+C`/`Esc`, input lockout while `cancelling`, cleanup timeout fail-closed
+behavior, and TUI terminal summary behavior.
+
+**Stop conditions:** stop if the TUI framework cannot distinguish `Esc` from
+ordinary input-mode escape behavior without weakening text input, slash command,
+approval, or alternate-screen semantics; stop if removing double interrupt would
+leave no bounded fail-closed path for provider/tool/shell cleanup that cannot
+close.
+
+**Runnable state:** interactive session control matches the revised Phase 3
+contract, active ownership remains consistent across cancellation and
+terminalization, and timeout fail-closed behavior remains the only ordinary
+forced-abort fallback during running cancellation.
+
+- [x] Remove double `Ctrl+C` process-abort behavior from plain REPL and TUI
+  cancellation handling.
+- [x] Route running `Esc` from plain REPL and TUI to the same runtime
+  cancellation control path as running `Ctrl+C`.
+- [x] Route idle `Esc` from plain REPL and TUI to the same terminalization path
+  as idle `Ctrl+C`.
+- [x] Block all user input while `cancelling`, including prompt text, slash
+  commands, approval input, `Ctrl+C`, and `Esc`, without writing duplicate
+  durable facts, queueing later actions, or returning to input early.
+- [x] Preserve cleanup timeout fail-closed behavior as the only ordinary
+  forced-abort fallback when local provider/tool/shell boundaries do not close.
+- [x] Update automated coverage for revised running cancellation,
+  idle terminalization, input lockout while `cancelling`, and cleanup timeout
+  fail-closed behavior.
+- [x] Record manual TTY verification evidence for `Ctrl+C` and `Esc` in
+  running and idle states, input lockout while `cancelling`, and TUI terminal
+  summary behavior.
+  Manual TTY verification recorded 2026-06-08: running `Ctrl+C`, running `Esc`,
+  idle `Ctrl+C`, idle `Esc`, input lockout while `cancelling` for ordinary
+  input, slash-style input, `Ctrl+C`, and `Esc`, plus TUI terminal summary
+  behavior all passed. Cleanup timeout fail-closed manual verification was not
+  reproducible in ordinary TTY use because local cancellation now completes
+  immediately; the timeout fallback remains covered by automated tests and by
+  the documented fail-closed contract for boundaries that do not close.
+- [x] Run canonical verification appropriate to the implementation diff.
+  Result on 2026-06-08: `uv run pytest tests/unit/cli -v` passed
+  169 tests; `uv run pytest tests/unit/runtime/test_running_cancellation.py
+  tests/unit/tools/test_shell.py tests/unit/tools/test_view_image.py -v` passed
+  60 tests; final `uv run pytest tests/unit -v` passed 633 tests with
+  1 skipped.
 
 ## Verification Strategy
 

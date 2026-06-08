@@ -341,8 +341,7 @@ def test_running_interrupt_does_not_emit_non_durable_cancellation_requested_mess
     controller.drain_completed_turns()
 
 
-def test_double_interrupt_while_cancelling_exits_interrupted_without_prompt_return() -> None:
-    from debug_agent.cli.exit_codes import INTERRUPTED
+def test_input_is_locked_out_while_cancelling_without_prompt_return() -> None:
     from debug_agent.cli.repl_controller import ReplController
 
     view = FakeView()
@@ -355,13 +354,25 @@ def test_double_interrupt_while_cancelling_exits_interrupted_without_prompt_retu
 
     controller.on_interrupt()
     controller.on_interrupt()
+    controller.on_submit("queued prompt")
+    controller.on_slash_command("/status")
+    controller._approval_pending = True
+    controller.on_submit("a")
+    assert controller._approval_decision is None
     runtime.release_turn.set()
     controller.wait_for_active_turn(timeout=2)
 
-    assert controller.exit_code == INTERRUPTED
+    assert controller.exit_code == 0
     assert runtime.cancel_running_calls == 1
-    assert view.input_enabled[-1] is False
-    assert controller.drain_completed_turns() == 0
+    assert runtime.run_inputs == ["hello"]
+    assert not any(
+        event.kind == "system_message"
+        and "Prompt run is already executing" in str(event.payload.get("message"))
+        for event in view.events
+    )
+    assert controller.drain_completed_turns() == 1
+    assert view.input_enabled[-1] is True
+    assert controller.control_state == "idle"
 
 
 def test_provider_boundary_not_closed_aborts_without_runtime_fail_or_prompt_return() -> None:
@@ -474,6 +485,39 @@ def test_idle_interrupt_terminalizes_idle_session_without_runtime_fail() -> None
     assert runtime.failed_results == []
     assert controller.exit_code == INTERRUPTED
     assert view.closed_summaries
+
+
+def test_plain_controller_escape_terminalizes_idle_session_without_model_call() -> None:
+    from debug_agent.cli.exit_codes import INTERRUPTED
+    from debug_agent.cli.repl_controller import ReplController
+
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime)
+    output = io.StringIO()
+
+    should_continue = controller.handle_line("\x1b\n", output)
+
+    assert should_continue is False
+    assert controller.exit_code == INTERRUPTED
+    assert runtime.cancel_idle_calls == 1
+    assert runtime.run_inputs == []
+    assert output.getvalue() == ""
+
+
+def test_plain_controller_blocks_input_while_cancelling_without_busy_message() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime)
+    controller.is_executing = True
+    controller.control_state = "cancelling"
+    output = io.StringIO()
+
+    should_continue = controller.handle_line("queued prompt\n", output)
+
+    assert should_continue is True
+    assert runtime.run_inputs == []
+    assert output.getvalue() == ""
 
 
 def test_background_runtime_does_not_call_view_before_ui_drain() -> None:

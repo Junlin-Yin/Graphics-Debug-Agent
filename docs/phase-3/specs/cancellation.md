@@ -8,7 +8,10 @@ behavior.
 
 ## Running Cancellation Boundary
 
-Running cancellation starts when user sends `Ctrl+C` during an active turn.
+Running cancellation starts when user sends `Ctrl+C` or `Esc` during an active
+turn. `Esc` is a user-facing equivalent for the same state-dependent
+interruption semantics; it does not introduce a separate cancellation reason,
+exit code, or persistence shape.
 
 Runtime must reduce the interruption to a durable cancellation/failure fact
 before returning the session to ordinary input. Until then, local control state
@@ -216,7 +219,8 @@ automatic retry of cancelled tools.
 
 ## Idle Cancellation
 
-Idle `Ctrl+C` is session terminalization, not running turn cancellation.
+Idle `Ctrl+C` or `Esc` is session terminalization, not running turn
+cancellation.
 
 It writes a session-scoped cancellation fact:
 
@@ -227,6 +231,25 @@ It writes a session-scoped cancellation fact:
 It then writes a terminal recovery checkpoint when eligible, terminalizes
 session/run, releases ownership, and exits.
 
+## Input Lockout While Cancelling
+
+After runtime has accepted a running interruption and entered `cancelling`,
+the controller must block all user input until runtime leaves `cancelling` by
+reaching a recovery boundary or by failing closed. This includes ordinary
+prompt text, slash commands, approval input, `Ctrl+C`, and `Esc`.
+
+Input received during `cancelling` must not create a double-interrupt
+escalation, a special process-level abort path, a second durable cancellation
+fact, a queued prompt/command/approval response, or a new resume source.
+
+Runtime continues waiting for the same cancellation cleanup envelope. If local
+provider/tool/shell boundaries do not close within
+`cancellation_timeout_seconds`, runtime uses the documented timeout
+fail-closed behavior: do not accept partial state, do not write a terminal
+recovery checkpoint from incomplete state, do not return to input, and exit or
+abort the command path with `INTERRUPTED` or another non-zero abnormal-exit
+code while ownership remains governed by the last durable facts.
+
 ## Process-Level Interrupt
 
 If process-level interrupt prevents normal turn recovery:
@@ -234,21 +257,6 @@ If process-level interrupt prevents normal turn recovery:
 - command exit code should be `INTERRUPTED`.
 - runtime must not promote partial state to durable truth.
 - later stale fail-close may use only facts already durably persisted.
-
-## Double Ctrl+C
-
-A second `Ctrl+C` while `cancelling` is a process-level interruption request.
-Runtime must stop waiting for ordinary REPL recovery, attempt only the minimum
-local cleanup needed to avoid accepting partial state, and exit or abort the
-command path with `INTERRUPTED`. It must not return REPL/TUI to prompt input
-from the same cancelling state.
-
-It must not:
-
-- mark pending provider/tool/shell state accepted.
-- write a terminal recovery checkpoint from incomplete state.
-- release ownership without terminalization or later user-confirmed stale
-  fail-close.
 
 ## Events And Trace
 
@@ -270,9 +278,9 @@ Trace/status rendering is observational and not recovery truth.
 
 | Trigger | Internal failure/cancellation fact | Model-visible durable conversation append | Notes |
 |---|---|---|---|
-| Running `Ctrl+C` for an active prompt turn | `cancelled/user_cancel_running`, `scope = "turn"` | Append one runtime `cancellation_fact` only after the turn reaches a recovery boundary. | Session/run remain `running`; ownership remains held. |
+| Running `Ctrl+C` or `Esc` for an active prompt turn | `cancelled/user_cancel_running`, `scope = "turn"` | Append one runtime `cancellation_fact` only after the turn reaches a recovery boundary. | Session/run remain `running`; ownership remains held. |
 | Local main-model provider cancellation boundary closes | `cancelled/model_call_cancelled`, `scope = "provider"` | Do not append a separate assistant message. It may be metadata/source detail for the turn cancellation fact. The turn-scoped durable conversation append remains `cancelled/user_cancel_running`, `scope = "turn"`. | Late provider output is ignored. |
 | Brokered `view_image` provider cancellation boundary closes after an accepted assistant tool call | `cancelled/tool_call_cancelled`, `scope = "tool"` | Append the cancelled `tool` observation with the original `tool_call_id`, then append the turn-scoped runtime `cancellation_fact`. | Provider-layer details are metadata only. |
 | Active `shell_exec` is terminated by running cancellation after an accepted assistant tool call | `cancelled/tool_call_cancelled`, `scope = "tool"` | Append the cancelled `tool` observation after the command-runner boundary closes, then append the turn-scoped runtime `cancellation_fact`. | Partial shell output may be artifacted only after closure. |
-| Idle `Ctrl+C` | `cancelled/user_cancel_idle`, `scope = "session"` | Append a runtime `cancellation_fact` when terminalization accepts it as model-visible history. | Writes terminal recovery checkpoint when eligible and releases ownership. |
+| Idle `Ctrl+C` or `Esc` | `cancelled/user_cancel_idle`, `scope = "session"` | Append a runtime `cancellation_fact` when terminalization accepts it as model-visible history. | Writes terminal recovery checkpoint when eligible and releases ownership. |
 | Process-level interrupt before recovery boundary | `cancelled/user_cancel_process` when persistence is possible | No append unless a recovery boundary is reached. | Must not promote partial state to durable truth. |

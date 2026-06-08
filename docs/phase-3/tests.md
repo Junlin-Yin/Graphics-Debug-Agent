@@ -30,10 +30,12 @@ Phase 3 acceptance requires:
   but no terminal recovery checkpoint.
 - resume rejects startup/config/schema failure sessions from a structured
   lifecycle or terminal metadata marker, not event replay.
-- running `Ctrl+C` cancels only the active turn and returns REPL/TUI to input.
-- running `Ctrl+C` does not terminalize session/run or release ownership.
-- idle `Ctrl+C` terminalizes session/run, writes terminal recovery checkpoint,
-  releases ownership, and exits.
+- running `Ctrl+C` or `Esc` cancels only the active turn and returns REPL/TUI to
+  input.
+- running `Ctrl+C` or `Esc` does not terminalize session/run or release
+  ownership.
+- idle `Ctrl+C` or `Esc` terminalizes session/run, writes terminal recovery
+  checkpoint, releases ownership, and exits.
 - graceful `/exit` writes terminal recovery checkpoint when eligible and releases
   ownership.
 - zero-message `/exit` and normal graceful shutdown use a canonical empty
@@ -258,7 +260,7 @@ Phase 3 acceptance requires:
   durable conversation fact cut and empty projection snapshot.
 - zero-message normal graceful shutdown writes a `terminal_recovery` checkpoint
   with an empty durable conversation fact cut and empty projection snapshot.
-- idle `Ctrl+C` before any user prompt appends a session-scoped
+- idle `Ctrl+C` or `Esc` before any user prompt appends a session-scoped
   `cancellation_fact`, then writes a `terminal_recovery` checkpoint with
   terminal status `failed`, terminal reason `user_cancel_idle`, and terminal
   error `cancelled/user_cancel_idle`.
@@ -267,7 +269,7 @@ Phase 3 acceptance requires:
   error.
 - `/exit` and normal graceful shutdown write terminal status `completed`,
   terminal reason `user_exit`, and no terminal error.
-- idle `Ctrl+C` writes terminal status `failed`, terminal reason
+- idle `Ctrl+C` or `Esc` writes terminal status `failed`, terminal reason
   `user_cancel_idle`, and terminal error `cancelled/user_cancel_idle`.
 - terminal prompt failure writes terminal status `failed`, terminal reason
   `terminal_failure`, and the normalized terminal failure fact.
@@ -305,15 +307,16 @@ Phase 3 acceptance requires:
 
 ### Session Control
 
-- running `Ctrl+C` enters `cancelling`.
-- running `Ctrl+C` writes `cancelled/user_cancel_running` fact.
-- running `Ctrl+C` returns REPL/TUI to input.
-- running `Ctrl+C` leaves session/run lifecycle `running`.
-- running `Ctrl+C` keeps active ownership.
-- running `Ctrl+C` does not print a session close or cancelled terminal summary.
-- idle `Ctrl+C` writes `cancelled/user_cancel_idle` fact.
-- idle `Ctrl+C` terminalizes session/run.
-- idle `Ctrl+C` releases active ownership.
+- running `Ctrl+C` or `Esc` enters `cancelling`.
+- running `Ctrl+C` or `Esc` writes `cancelled/user_cancel_running` fact.
+- running `Ctrl+C` or `Esc` returns REPL/TUI to input.
+- running `Ctrl+C` or `Esc` leaves session/run lifecycle `running`.
+- running `Ctrl+C` or `Esc` keeps active ownership.
+- running `Ctrl+C` or `Esc` does not print a session close or cancelled terminal
+  summary.
+- idle `Ctrl+C` or `Esc` writes `cancelled/user_cancel_idle` fact.
+- idle `Ctrl+C` or `Esc` terminalizes session/run.
+- idle `Ctrl+C` or `Esc` releases active ownership.
 - ownership release failure after durable terminalization records
   `runtime_error/ownership_release_failed`, does not roll back terminal facts,
   and leaves active ownership blocked.
@@ -324,7 +327,8 @@ Phase 3 acceptance requires:
 - terminal prompt failure uses terminal reason `terminal_failure`.
 - one-shot normal completion uses terminal reason `terminal_completion`.
 - stale fail-close uses terminal reason `terminal_stale`.
-- double interrupt while `cancelling` does not accept partial state.
+- all user input, including `Ctrl+C` and `Esc`, is blocked while `cancelling`
+  and does not accept partial state.
 
 ### Resume
 
@@ -410,8 +414,8 @@ Phase 3 acceptance requires:
 - main model provider cancellation uses `cancelled/model_call_cancelled` with
   `scope = "provider"`.
 - main model provider cancellation records `cancelled/model_call_cancelled` only
-  as an internal/audit provider-boundary fact during running `Ctrl+C`; it does
-  not append a separate durable conversation cancellation message.
+  as an internal/audit provider-boundary fact during running `Ctrl+C` or `Esc`;
+  it does not append a separate durable conversation cancellation message.
 - cancelled `view_image` returns model-visible
   `cancelled/tool_call_cancelled`.
 - cancelled brokered tool observations use the existing `tool_call_failed`
@@ -447,9 +451,10 @@ Phase 3 acceptance requires:
 - after cleanup cannot close within the cancellation envelope, later startup or
   resume remains blocked by the last durable active ownership facts unless
   user-confirmed stale fail-close or manual cleanup resolves the blockage.
-- double `Ctrl+C` while `cancelling` exits or aborts the command path with
-  `INTERRUPTED`, does not return REPL/TUI to prompt input from the same
-  cancelling state, and does not accept partial provider/tool/shell state.
+- input while `cancelling`, including `Ctrl+C` and `Esc`, does not create a
+  double-interrupt process-abort path, does not queue prompt/command/approval
+  input, does not bypass the cleanup envelope, and does not accept partial
+  provider/tool/shell state.
 
 ### Stale Fail-Close
 
@@ -606,12 +611,12 @@ Phase 3 acceptance requires:
 Manual verification is required for TTY behaviors that are not reliably covered
 by automated tests:
 
-- running `Ctrl+C` while model call is visibly active.
-- running `Ctrl+C` while `shell_exec` is visibly active.
-- idle `Ctrl+C` terminalization and ownership release.
+- running `Ctrl+C` and `Esc` while model call is visibly active.
+- running `Ctrl+C` and `Esc` while `shell_exec` is visibly active.
+- idle `Ctrl+C` and `Esc` terminalization and ownership release.
 - `debug-agent resume <session_id>` into interactive REPL.
 - stale fail-close confirmation prompt.
-- double `Ctrl+C` presentation while cancelling.
+- input-lockout presentation while cancelling.
 
 Manual verification must record:
 

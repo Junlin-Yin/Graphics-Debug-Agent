@@ -114,9 +114,16 @@ class ReplController:
         command = line.strip()
         if not command:
             return True
+        if command == "\x1b":
+            if self.control_state == "cancelling":
+                return True
+            self.on_interrupt()
+            return self.control_state != "terminalizing"
         if command.startswith("/"):
             return self._handle_plain_slash_command(command, output)
-        if self.is_executing or self.control_state == "cancelling":
+        if self.control_state == "cancelling":
+            return True
+        if self.is_executing:
             print(BUSY_MESSAGE, file=output)
             return True
         self.is_executing = True
@@ -149,7 +156,6 @@ class ReplController:
         if not command:
             return
         if self.control_state == "cancelling":
-            self._append_system_message(BUSY_MESSAGE)
             return
         if self._approval_pending:
             self._handle_approval_response(command)
@@ -288,11 +294,8 @@ class ReplController:
 
     def on_interrupt(self) -> None:
         if self.control_state == "cancelling":
-            self.exit_code = INTERRUPTED
-            self.is_executing = False
             if self.view is not None:
                 self.view.set_input_enabled(False)
-            self._discard_pending_turn_results()
             return
         if self.is_executing:
             self.control_state = "cancelling"

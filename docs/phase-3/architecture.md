@@ -28,7 +28,7 @@ runtime truth.
 
 Responsibilities:
 
-- distinguish running turn `Ctrl+C` from idle `Ctrl+C`.
+- distinguish running turn `Ctrl+C`/`Esc` from idle `Ctrl+C`/`Esc`.
 - send running interruption to the runtime control path.
 - terminalize eligible idle sessions through the orchestrator.
 - present `cancelling` when provider cancellation is best-effort or uncertain.
@@ -304,7 +304,7 @@ They must not:
 
 ### Running Turn Interruption
 
-1. User sends `Ctrl+C` while a turn is running.
+1. User sends `Ctrl+C` or `Esc` while a turn is running.
 2. Controller signals runtime interruption.
 3. Runtime marks the current turn as cancelling.
 4. Runtime requests model/provider call cancellation through the runtime-owned
@@ -317,7 +317,7 @@ They must not:
 
 ### Idle Terminalization
 
-1. User sends idle `Ctrl+C`, `/exit`, or normal shutdown.
+1. User sends idle `Ctrl+C`, idle `Esc`, `/exit`, or normal shutdown.
 2. Orchestrator verifies there is no active turn/tool/shell mid-flight state
    being treated as resumable truth.
 3. Prompt Agent Runtime supplies durable conversation fact cut, current

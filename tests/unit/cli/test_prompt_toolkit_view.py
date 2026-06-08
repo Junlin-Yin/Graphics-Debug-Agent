@@ -1397,7 +1397,7 @@ def test_prompt_toolkit_view_ctrl_c_keeps_running_cancellation_alive() -> None:
     assert view._application_exit_requested is False
 
 
-def test_prompt_toolkit_view_second_ctrl_c_while_cancelling_exits() -> None:
+def test_prompt_toolkit_view_blocks_ctrl_c_while_cancelling() -> None:
     class Controller:
         def __init__(self) -> None:
             self.control_state = "cancelling"
@@ -1414,8 +1414,53 @@ def test_prompt_toolkit_view_second_ctrl_c_while_cancelling_exits() -> None:
 
     view.handle_interrupt_event(event)
 
-    assert controller.interrupts == 1
-    assert event.app.exit_calls == 1
+    assert controller.interrupts == 0
+    assert event.app.exit_calls == 0
+    assert view._application_exit_requested is False
+
+
+def test_prompt_toolkit_view_escape_uses_interrupt_path() -> None:
+    from prompt_toolkit.keys import Keys
+
+    from debug_agent.cli.prompt_toolkit_view import _key_bindings
+
+    calls: list[str] = []
+    bindings = _key_bindings(on_interrupt=lambda event: calls.append("interrupt"))
+    binding = next(
+        binding for binding in bindings.bindings if tuple(binding.keys) == (Keys.Escape,)
+    )
+
+    binding.handler(_FakeKeyEvent(buffer=None))
+
+    assert calls == ["interrupt"]
+    assert binding.eager()
+
+
+def test_prompt_toolkit_view_uses_short_escape_sequence_timeout() -> None:
+    view = _prompt_toolkit_view()
+
+    assert view._application.ttimeoutlen == 0.05
+
+
+def test_prompt_toolkit_view_blocks_approval_keys_while_cancelling() -> None:
+    class Controller:
+        def __init__(self) -> None:
+            self.control_state = "cancelling"
+            self.submitted: list[str] = []
+
+        def on_submit(self, text: str) -> None:
+            self.submitted.append(text)
+
+    controller = Controller()
+    view = _prompt_toolkit_view()
+    view._active_controller = controller
+    view.begin_inline_approval("Allow? [y]once, [a] session, [n] deny")
+    event = _FakeKeyEvent(view._input_buffer)
+
+    view.handle_approval_key_event(event, "a")
+
+    assert controller.submitted == []
+    assert view._input_buffer.text == ""
 
 
 def test_prompt_toolkit_view_drain_exits_on_fatal_interrupted_cancelling_state() -> None:

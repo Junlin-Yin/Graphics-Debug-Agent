@@ -112,7 +112,7 @@ cancellation fact, the manifest uses the same shape with
 `conversation.projection_snapshot.message_refs` list. The fact-cut and
 projection checksums are computed from the canonical empty cut/projection inputs
 defined in `durable-conversation.md`. This zero-message checkpoint shape is not
-allowed for idle `Ctrl+C` or terminal prompt failure.
+allowed for idle `Ctrl+C`/`Esc` or terminal prompt failure.
 
 A failed terminalization example uses the same manifest shape but carries failed
 terminal facts:
@@ -225,7 +225,7 @@ Allowed terminal reasons:
   terminalized with `terminal_status = "completed"` so the prompt session can
   later resume into REPL under the ordinary eligibility rules.
 - `user_exit`: explicit `/exit` or normal graceful REPL shutdown.
-- `user_cancel_idle`: idle `Ctrl+C`.
+- `user_cancel_idle`: idle `Ctrl+C` or `Esc`.
 - `terminal_failure`: terminal prompt failure that is not
   startup/config/schema failure and is not stale fail-close.
 - `terminal_stale`: later user-confirmed stale fail-close terminalized this
@@ -262,7 +262,7 @@ below.
 
 Runtime may write terminal recovery checkpoints for:
 
-- idle `Ctrl+C` terminalization.
+- idle `Ctrl+C` or `Esc` terminalization.
 - graceful `/exit`.
 - normal graceful shutdown of an eligible idle prompt session.
 - terminal prompt failure after a closed accepted durable conversation cut
@@ -284,7 +284,7 @@ Runtime must not write terminal recovery checkpoints for:
 - unknown-schema fail-closed startup.
 - legacy startup reset before Phase 3 session/run creation.
 - ordinary turn-scoped failure.
-- running turn `Ctrl+C` by itself.
+- running turn `Ctrl+C` or `Esc` by itself.
 - compression/context failure by itself.
 - tool failure by itself.
 - stream observation.
@@ -300,10 +300,10 @@ If no message has been accepted, runtime may still write a terminal recovery
 checkpoint using the canonical zero-message conversation cut and empty
 projection snapshot. This exception is limited to non-failure idle
 terminalization paths such as `/exit` and normal graceful shutdown. Idle
-`Ctrl+C` writes a session-scoped cancellation fact before checkpoint creation
-and therefore does not use the zero-message cut. Terminal prompt failure remains
-checkpoint-eligible only after a closed accepted durable conversation cut
-exists.
+`Ctrl+C`/`Esc` writes a session-scoped cancellation fact before checkpoint
+creation and therefore does not use the zero-message cut. Terminal prompt
+failure remains checkpoint-eligible only after a closed accepted durable
+conversation cut exists.
 
 For terminal prompt failure, a closed accepted durable conversation cut means
 there is at least one closed accepted `conversation_messages` group for the

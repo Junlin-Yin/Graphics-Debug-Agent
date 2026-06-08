@@ -102,7 +102,7 @@ Shell timeout does not make shell mid-flight state resumable.
 
 ## Cancellation Interaction
 
-Running `Ctrl+C` while shell is active uses cancellation behavior from
+Running `Ctrl+C` or `Esc` while shell is active uses cancellation behavior from
 `cancellation.md`.
 
 If cancellation and timeout race, runtime must record one primary normalized

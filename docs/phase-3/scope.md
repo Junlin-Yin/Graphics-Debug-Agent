@@ -102,13 +102,18 @@ retry.
   - `debug-agent resume <session_id>` must fail closed for these sessions.
 - Session control:
   - distinguish running turn interruption from idle session terminalization.
-  - running `Ctrl+C` cancels the current turn, persists a cancellation/failure
-    fact when it reaches a recovery boundary, and returns REPL/TUI to input.
+  - running `Ctrl+C` or `Esc` cancels the current turn, persists a
+    cancellation/failure fact when it reaches a recovery boundary, and returns
+    REPL/TUI to input.
   - define frozen `[execution].cancellation_timeout_seconds` as the local cleanup
     envelope for accepted running interruptions; invalid values are startup
     config failures.
-  - idle `Ctrl+C` terminalizes session/run, writes a terminal recovery
+  - idle `Ctrl+C` or `Esc` terminalizes session/run, writes a terminal recovery
     checkpoint, releases active ownership, and exits the interactive loop.
+  - while cancellation cleanup is already in progress, controllers must block
+    all user input, including `Ctrl+C` and `Esc`; runtime waits for the cleanup
+    envelope and uses the timeout fail-closed behavior if local boundaries do
+    not close.
   - graceful `/exit` and normal shutdown terminalize eligible idle prompt
     sessions with terminal recovery checkpoints and release ownership.
   - explicit `debug-agent resume <session_id>` may revive the same eligible
@@ -307,10 +312,12 @@ Phase 3 refines:
 2. Runtime initializes the Phase 3 database, validates schema version, freezes
    config/policy/skills/tool availability, and creates prompt session/run state.
 3. Runtime appends accepted conversation messages to `conversation_messages`.
-4. A running turn interrupted by `Ctrl+C` records a turn-scoped cancellation
-   fact and returns REPL/TUI to input without terminalizing the session.
-5. Idle `Ctrl+C` or `/exit` terminalizes the prompt session/run, writes a
-   terminal recovery checkpoint, and releases active workspace ownership.
+4. A running turn interrupted by `Ctrl+C` or `Esc` records a turn-scoped
+   cancellation fact and returns REPL/TUI to input without terminalizing the
+   session.
+5. Idle `Ctrl+C`, idle `Esc`, or `/exit` terminalizes the prompt session/run,
+   writes a terminal recovery checkpoint, and releases active workspace
+   ownership.
 6. `debug-agent resume <session_id>` validates eligibility, verifies the
    terminal checkpoint, durable conversation fact cut, and checkpoint-frozen
    projection snapshot, reacquires ownership, revives the same session/run
