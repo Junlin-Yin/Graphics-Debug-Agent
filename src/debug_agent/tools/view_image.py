@@ -10,7 +10,6 @@ from time import monotonic
 from typing import Any, Callable
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
-from openai import APITimeoutError
 from PIL import Image, UnidentifiedImageError
 
 from debug_agent.adapters.vision_client import (
@@ -175,7 +174,7 @@ class ViewImageTool:
                 cancellation_token=getattr(context, "cancellation_token", None),
             )
             provider_response = future.result(timeout=timeout_seconds)
-        except (TimeoutError, FutureTimeoutError, APITimeoutError):
+        except (TimeoutError, FutureTimeoutError):
             return ViewImageResult(
                 status="timeout",
                 error_message=f"Tool timed out after {timeout_seconds:g} seconds.",
@@ -194,6 +193,12 @@ class ViewImageTool:
         except ProviderBoundaryNotClosed:
             raise
         except Exception as exc:
+            if _is_openai_api_timeout(exc):
+                return ViewImageResult(
+                    status="timeout",
+                    error_message=f"Tool timed out after {timeout_seconds:g} seconds.",
+                    error_class="timeout",
+                )
             return ViewImageResult(
                 status="error",
                 error_message=str(exc),
@@ -456,3 +461,10 @@ def _display_path(path: Path, workspace_root: Path) -> str:
 def _redacted_output(analysis: str, metadata: list[dict[str, Any]]) -> str:
     names = ", ".join(item["path"] for item in metadata)
     return f"{analysis}\nImages: {names}"
+
+
+def _is_openai_api_timeout(exc: BaseException) -> bool:
+    return any(
+        cls.__module__.startswith("openai") and cls.__name__ == "APITimeoutError"
+        for cls in type(exc).mro()
+    )

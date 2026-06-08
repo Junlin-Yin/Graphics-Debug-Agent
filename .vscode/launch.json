@@ -16,7 +16,7 @@
         "normal"
       ],
       "console": "integratedTerminal",
-      "justMyCode": false
+      "justMyCode": true
     },
     {
       "name": "Debug REPL TUI (semi-auto)",
@@ -33,7 +33,7 @@
         "semi-auto"
       ],
       "console": "integratedTerminal",
-      "justMyCode": false
+      "justMyCode": true
     },
     {
       "name": "Debug REPL TUI (yolo)",
@@ -50,7 +50,7 @@
         "yolo"
       ],
       "console": "integratedTerminal",
-      "justMyCode": false
+      "justMyCode": true
     }
   ]
 }
