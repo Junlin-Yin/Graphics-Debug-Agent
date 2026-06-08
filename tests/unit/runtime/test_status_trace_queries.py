@@ -299,10 +299,13 @@ def test_status_trace_and_resume_fail_closed_for_legacy_schema_but_startup_reset
     workspace = tmp_path / "workspace"
     db_dir = workspace / ".sessions"
     db_dir.mkdir(parents=True)
-    with sqlite3.connect(db_dir / "runtime.db") as conn:
+    conn = sqlite3.connect(db_dir / "runtime.db")
+    try:
         conn.execute("CREATE TABLE sessions (session_id TEXT)")
         conn.execute("INSERT INTO sessions VALUES ('legacy_session')")
         conn.execute("PRAGMA user_version = 0")
+    finally:
+        conn.close()
 
     orchestrator = RuntimeOrchestrator(workspace_root=workspace)
 

@@ -399,6 +399,7 @@ def test_repl_runtime_stream_turn_uses_async_stream_cancellation_boundary(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     first_chunk_sent = threading.Event()
+    first_delta_observed = threading.Event()
     stream_cancelled = threading.Event()
     late_chunk_sent = threading.Event()
 
@@ -429,17 +430,23 @@ def test_repl_runtime_stream_turn_uses_async_stream_cancellation_boundary(
     runtime = start.runtime
     stream_events: list[AgentStreamEvent] = []
 
+    def record_stream_event(event: AgentStreamEvent) -> None:
+        stream_events.append(event)
+        if event.kind == "stream_text_delta":
+            first_delta_observed.set()
+
     try:
         result_box: dict[str, AgentRunResult] = {}
         turn_thread = threading.Thread(
             target=lambda: result_box.setdefault(
                 "result",
-                runtime.run_turn("hello", agent_stream_callback=stream_events.append),
+                runtime.run_turn("hello", agent_stream_callback=record_stream_event),
             ),
             daemon=True,
         )
         turn_thread.start()
         assert first_chunk_sent.wait(timeout=2)
+        assert first_delta_observed.wait(timeout=2)
 
         cancel_result = runtime.cancel_running_turn()
         turn_thread.join(timeout=2)

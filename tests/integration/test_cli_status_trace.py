@@ -314,7 +314,8 @@ def test_startup_status_and_trace_fail_closed_on_legacy_schema(tmp_path) -> None
     _write_fake_config(home)
     sessions_dir = workspace / ".sessions"
     sessions_dir.mkdir()
-    with sqlite3.connect(sessions_dir / "runtime.db") as conn:
+    conn = sqlite3.connect(sessions_dir / "runtime.db")
+    try:
         conn.execute("PRAGMA user_version = 0")
         conn.execute(
             "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, status TEXT)"
@@ -323,6 +324,8 @@ def test_startup_status_and_trace_fail_closed_on_legacy_schema(tmp_path) -> None
             "INSERT INTO sessions (session_id, status) VALUES ('sess_legacy', 'running')"
         )
         conn.commit()
+    finally:
+        conn.close()
 
     executable = str(Path(sys.executable).parent / "debug-agent")
     status_before_startup = subprocess.run(

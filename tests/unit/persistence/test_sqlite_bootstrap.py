@@ -322,10 +322,13 @@ def test_startup_legacy_user_version_resets_only_runtime_db(tmp_path) -> None:
     orphan = db_dir / "sess_legacy" / "artifacts" / "old.txt"
     orphan.parent.mkdir(parents=True)
     orphan.write_text("legacy artifact", encoding="utf-8")
-    with sqlite3.connect(db_dir / "runtime.db") as conn:
+    conn = sqlite3.connect(db_dir / "runtime.db")
+    try:
         conn.execute("CREATE TABLE sessions (session_id TEXT)")
         conn.execute("INSERT INTO sessions VALUES ('legacy')")
         conn.execute("PRAGMA user_version = 0")
+    finally:
+        conn.close()
 
     db = RuntimeDatabase.bootstrap(workspace)
     db.close()

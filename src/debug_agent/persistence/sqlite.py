@@ -348,15 +348,19 @@ class RuntimeDatabase:
 
 
 def _read_user_version(db_path: Path) -> int:
+    connection: sqlite3.Connection | None = None
     try:
-        with sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True) as connection:
-            row = connection.execute("PRAGMA user_version").fetchone()
+        connection = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
+        row = connection.execute("PRAGMA user_version").fetchone()
     except sqlite3.DatabaseError as exc:
         raise RuntimeBootstrapError(
             f"Runtime database schema validation failed: {exc}",
             error_class="persistence_error",
             reason="persistence_read_failed",
         ) from exc
+    finally:
+        if connection is not None:
+            connection.close()
     return int(row[0]) if row is not None else 0
 
 

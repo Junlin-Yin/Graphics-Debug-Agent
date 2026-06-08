@@ -64,13 +64,16 @@ def test_startup_legacy_database_resets_without_rewrite(
     db_dir = workspace / ".sessions"
     db_dir.mkdir(parents=True)
     db_path = db_dir / "runtime.db"
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    try:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, status TEXT)")
         conn.execute(
             "INSERT INTO sessions (session_id, status) VALUES ('sess_legacy', 'running')"
         )
         conn.execute(f"PRAGMA user_version = {user_version}")
         conn.commit()
+    finally:
+        conn.close()
     db = RuntimeDatabase.bootstrap(workspace)
     db.close()
 
