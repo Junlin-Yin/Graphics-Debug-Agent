@@ -2265,13 +2265,34 @@ def _conversation_from_checkpoint_projection(
                 "turn_id": row.turn_id,
                 "model_call_id": row.model_call_id,
                 "tool_call_id": row.tool_call_id,
-                "content": row.content,
+                "content": _restore_projected_conversation_content(
+                    role=row.role,
+                    kind=row.kind,
+                    content=row.content,
+                ),
                 "artifact_refs": [] if row.artifact_id is None else [row.artifact_id],
                 "metadata": dict(row.metadata),
                 "durable_message_index": row.message_index,
             }
         )
     return restored
+
+
+def _restore_projected_conversation_content(
+    *,
+    role: str,
+    kind: str,
+    content: Any,
+) -> Any:
+    if (
+        role in {"user", "assistant"}
+        and kind in {"user_input", "assistant_output"}
+        and isinstance(content, dict)
+        and set(content) == {"content"}
+        and isinstance(content["content"], str)
+    ):
+        return content["content"]
+    return content
 
 
 def _indexes_from_message_refs(message_refs: list[dict[str, int]]) -> list[int]:

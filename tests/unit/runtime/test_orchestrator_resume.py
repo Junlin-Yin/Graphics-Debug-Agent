@@ -82,6 +82,72 @@ def test_resume_revives_one_shot_same_lineage_without_conversation_append(
     ]
 
 
+def test_start_resumed_repl_restores_plain_user_and_assistant_text(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    captured_messages: list[object] = []
+
+    class CapturingModel:
+        def __init__(self, response: str) -> None:
+            self.response = response
+
+        def bind_tools(self, _tools):
+            return self
+
+        def invoke(self, messages):
+            captured_messages[:] = list(messages)
+            return type(
+                "Response",
+                (),
+                {"content": self.response, "tool_calls": [], "usage": {}},
+            )()
+
+    class CapturingModelFactory:
+        responses = ["first answer", "post resume answer"]
+
+        def create(self, _config):
+            response = self.responses.pop(0)
+            return ModelFactoryResult(model=CapturingModel(response), error=None)
+
+    monkeypatch.setattr(orchestrator_module, "ModelFactory", CapturingModelFactory)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    one_shot = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
+        "hello",
+        _config("unused"),
+    )
+    assert one_shot.exit_code == 0
+
+    resumed = RuntimeOrchestrator(workspace_root=workspace).start_resumed_repl(
+        one_shot.session_id
+    )
+
+    assert resumed.runtime is not None
+    try:
+        restored = [
+            (message["role"], message["kind"], message["content"])
+            for message in resumed.runtime.conversation
+        ]
+        assert restored == [
+            ("user", "user_input", "hello"),
+            ("assistant", "assistant_output", "first answer"),
+        ]
+
+        result = resumed.runtime.run_turn("continue")
+
+        assert result.status == "completed"
+        provider_text = "\n".join(
+            str(message.get("content", ""))
+            for message in captured_messages
+            if isinstance(message, dict)
+        )
+        assert '{"content": "hello"}' not in provider_text
+        assert '{"content": "first answer"}' not in provider_text
+    finally:
+        resumed.runtime.close()
+
+
 def test_resumed_repl_with_runtime_cancellation_fact_runs_next_prompt(
     tmp_path,
     monkeypatch,
