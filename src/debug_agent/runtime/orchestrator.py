@@ -24,7 +24,10 @@ from debug_agent.cli.exit_codes import (
     map_error_to_exit_code,
 )
 from debug_agent.observability.logging import write_runtime_log
-from debug_agent.observability.trace_writer import TraceWriter
+from debug_agent.observability.trace_writer import (
+    TraceWriter,
+    build_phase3_observability_summary,
+)
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.checkpoints import CheckpointStore
 from debug_agent.persistence.conversation import ConversationAppend, ConversationStore
@@ -52,6 +55,7 @@ from debug_agent.runtime.prompt_executor import (
     PromptAgentExecutor,
     make_compression_model_callable,
 )
+from debug_agent.runtime.provider_resources import close_provider_resource
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.runtime.workspace import resolve_workspace_root
 from debug_agent.skills.registry import SkillRegistry, SkillRegistryError
@@ -533,6 +537,7 @@ class ReplRuntime:
     def close(self) -> None:
         with self._lock:
             if not self.closed:
+                _close_executor_provider_resources(self.executor)
                 self.db.close()
                 self.closed = True
 
@@ -669,6 +674,7 @@ class RuntimeOrchestrator:
         if isinstance(policy_result, OneShotResult):
             return policy_result
         config_snapshot = _ensure_phase3_frozen_runtime_defaults(policy_result)
+        provider_model = None
         try:
             db = RuntimeDatabase.bootstrap(self.workspace_root)
         except RuntimeBootstrapError as exc:
@@ -822,6 +828,7 @@ class RuntimeOrchestrator:
                 )
 
             broker = ToolBroker(event_writer=events, artifact_store=artifacts)
+            provider_model = model_result.model
             adapter = LangChainAgentLoopAdapter(
                 model=model_result.model,
                 tool_broker=broker,
@@ -916,6 +923,8 @@ class RuntimeOrchestrator:
             )
             return failed
         finally:
+            if provider_model is not None:
+                close_provider_resource(provider_model)
             db.close()
 
     def status(self, session_id: str) -> StatusResult:
@@ -945,6 +954,9 @@ class RuntimeOrchestrator:
                     message=exc.message,
                 )
             latest_run = runs.latest_for_session(session.session_id)
+            events = EventWriter(db.connection, db.path.parent).list_for_session(
+                session.session_id
+            )
             fields = {
                 "session_id": session.session_id,
                 "workspace_root": session.workspace_root,
@@ -958,6 +970,14 @@ class RuntimeOrchestrator:
                 "updated_at": session.updated_at,
                 "error_summary": session.error_summary,
             }
+            fields.update(
+                build_phase3_observability_summary(
+                    db.connection,
+                    session=session,
+                    latest_run=latest_run,
+                    events=events,
+                )
+            )
             if latest_run is not None:
                 plan = TodoPlanStore(db.connection).get_current(latest_run.run_id)
                 if plan.version > 0:
@@ -1912,6 +1932,13 @@ def _next_approval_mode(current: str) -> str:
     except ValueError:
         return "normal"
     return modes[(index + 1) % len(modes)]
+
+
+def _close_executor_provider_resources(executor: PromptAgentExecutor) -> None:
+    adapter = getattr(executor, "adapter", None)
+    model = getattr(adapter, "model", None)
+    if model is not None:
+        close_provider_resource(model)
 
 
 def _mark_failed_terminal(

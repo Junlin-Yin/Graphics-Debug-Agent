@@ -98,6 +98,15 @@ def test_status_and_trace_commands_inspect_completed_one_shot(tmp_path) -> None:
     assert "session_status: completed" in status.stdout
     assert "latest_run_status: completed" in status.stdout
     assert "latest_checkpoint_id:" in status.stdout
+    assert "terminal_checkpoint:" in status.stdout
+    assert "terminal_completion" in status.stdout
+    assert "durable_conversation:" in status.stdout
+    assert "'high_watermark': 2" in status.stdout
+    assert "normalized_errors: []" in status.stdout
+    assert "retry: {'attempts': [], 'exhausted': []}" in status.stdout
+    assert "cancellation: []" in status.stdout
+    assert "resume: []" in status.stdout
+    assert "stale_fail_close: []" in status.stdout
 
     assert trace.returncode == 0
     assert "trace_path:" in trace.stdout
@@ -107,6 +116,14 @@ def test_status_and_trace_commands_inspect_completed_one_shot(tmp_path) -> None:
     assert trace_path.is_file()
     trace_text = trace_path.read_text(encoding="utf-8")
     assert "## Session Summary" in trace_text
+    assert "## Phase 3 Observability" in trace_text
+    assert "terminal_reason=terminal_completion" in trace_text
+    assert "conversation_high_watermark=2" in trace_text
+    assert "projection_high_watermark=2" in trace_text
+    assert "retry: none" in trace_text
+    assert "cancellation: none" in trace_text
+    assert "resume: none" in trace_text
+    assert "stale_fail_closed: none" in trace_text
     assert "model_call_started" in trace_text
     assert "checkpoint_written" in trace_text
     assert "session_completed" in trace_text

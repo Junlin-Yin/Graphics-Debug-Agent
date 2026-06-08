@@ -133,8 +133,9 @@ was already reacquired by another process.
 
 Interactive startup/resume:
 
-- present the blocked owner session/run id.
-- present concise stale evidence summary.
+- present the blocked owner session id.
+- do not present the blocked owner run id.
+- do not present stale evidence details.
 - ask for explicit confirmation.
 - proceed only on affirmative confirmation.
 - do not promise that the stale owner will be resumable after fail-close.

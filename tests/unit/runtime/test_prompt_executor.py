@@ -4190,3 +4190,62 @@ def test_provider_messages_to_conversation_preserves_tool_call_ids() -> None:
         "content": "file text",
         "tool_call_id": "read_file_0",
     }
+
+
+def test_provider_messages_to_conversation_splits_multiple_tool_calls() -> None:
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    from debug_agent.runtime.prompt_executor import _provider_messages_to_conversation
+
+    messages = [
+        AIMessage(
+            content="checking files",
+            tool_calls=[
+                {
+                    "id": "model_call_1_tool_1",
+                    "name": "shell_exec",
+                    "args": {"argv": ["git", "status"]},
+                },
+                {
+                    "id": "model_call_1_tool_3",
+                    "name": "shell_exec",
+                    "args": {"argv": ["git", "diff"]},
+                },
+            ],
+        ),
+        ToolMessage(content="status", tool_call_id="model_call_1_tool_1"),
+        ToolMessage(content="diff", tool_call_id="model_call_1_tool_3"),
+    ]
+
+    converted = _provider_messages_to_conversation(messages, turn_id="turn-1")
+
+    assert [message.seq for message in converted] == [1, 2, 3, 4]
+    assert [
+        (message.kind, message.model_call_id, message.tool_call_id)
+        for message in converted
+    ] == [
+        ("tool_call", "model_call_1", "model_call_1_tool_1"),
+        ("tool_call", "model_call_1", "model_call_1_tool_3"),
+        ("tool_result", "model_call_1", "model_call_1_tool_1"),
+        ("tool_result", "model_call_1", "model_call_1_tool_3"),
+    ]
+    assert converted[0].content == {
+        "content": "checking files",
+        "tool_calls": [
+            {
+                "id": "model_call_1_tool_1",
+                "name": "shell_exec",
+                "args": {"argv": ["git", "status"]},
+            }
+        ],
+    }
+    assert converted[1].content == {
+        "content": "checking files",
+        "tool_calls": [
+            {
+                "id": "model_call_1_tool_3",
+                "name": "shell_exec",
+                "args": {"argv": ["git", "diff"]},
+            }
+        ],
+    }

@@ -261,6 +261,53 @@ def test_client_async_analysis_uses_async_openai_client_path() -> None:
     assert calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
+def test_client_async_analysis_closes_async_provider_client_before_return() -> None:
+    closed_clients = []
+
+    class _AsyncCompletions:
+        async def create(self, **_kwargs):
+            class _Message:
+                content = '{"analysis":"closed"}'
+
+            class _Choice:
+                message = _Message()
+
+            class _Completion:
+                choices = [_Choice()]
+
+            return _Completion()
+
+    class _AsyncOpenAI:
+        def __init__(self, **_kwargs) -> None:
+            self.chat = type("Chat", (), {"completions": _AsyncCompletions()})()
+            self.closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+            closed_clients.append(self)
+
+    client = VisionModelClient(async_factory=_AsyncOpenAI)
+    config = VisionClientConfig(
+        provider="openai",
+        model="kimi-k2.5",
+        api_key="secret",
+        base_url="https://example.test/v1",
+        max_tokens=321,
+    )
+
+    response = client.analyze_async(
+        config=config,
+        images=[VisionImageInput(mime_type="image/png", data=b"abc")],
+        instruction="Return JSON.",
+        timeout_seconds=7.5,
+        cleanup_timeout_seconds=1,
+    ).result(timeout=1)
+
+    assert response.text == '{"analysis":"closed"}'
+    assert len(closed_clients) == 1
+    assert closed_clients[0].closed is True
+
+
 def test_client_async_analysis_cancels_blocked_async_provider_task_promptly() -> None:
     started = threading.Event()
     task_cancelled = threading.Event()

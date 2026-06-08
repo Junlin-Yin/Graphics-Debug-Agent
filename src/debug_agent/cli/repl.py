@@ -168,15 +168,11 @@ def _stale_confirmation_provider(
         return None
 
     def confirm(request: dict[str, Any]) -> bool:
-        evidence = request.get("evidence")
-        print("Active owner appears stale.", file=output_stream)
-        print(f"session: {request.get('session_id', '')}", file=output_stream)
-        print(f"run: {request.get('run_id', '')}", file=output_stream)
-        if isinstance(evidence, dict):
-            print(
-                "stale evidence: same host, owner pid absent, owner token captured",
-                file=output_stream,
-            )
+        print(
+            "Stale session is still taking the ownership: "
+            f"{request.get('session_id', '')}.",
+            file=output_stream,
+        )
         print("Fail-close the stale owner and continue? [y/N] ", end="", file=output_stream)
         output_stream.flush()
         response = input_stream.readline()

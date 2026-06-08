@@ -9,6 +9,8 @@ from typing import Any
 
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.checkpoints import CheckpointStore
+from debug_agent.persistence.conversation import ConversationStore
+from debug_agent.persistence.errors import StoreError
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
@@ -58,12 +60,15 @@ class TraceWriter:
         artifact_store = ArtifactStore(self.connection, self.sessions_root)
         artifacts = artifact_store.list_for_session(session_id)
         runs = RunStore(self.connection).list_for_session(session_id)
+        session = SessionStore(self.connection).get(session_id)
+        events = EventWriter(
+            self.connection, self.sessions_root
+        ).list_for_session(session_id)
+        latest_run = runs[-1] if runs else None
         return {
-            "session": SessionStore(self.connection).get(session_id),
+            "session": session,
             "runs": runs,
-            "events": EventWriter(
-                self.connection, self.sessions_root
-            ).list_for_session(session_id),
+            "events": events,
             "checkpoints": CheckpointStore(self.connection).list_for_session(session_id),
             "context_snapshots": _load_context_snapshots(self.connection, session_id),
             "todo_plans": _load_todo_plans(self.connection, runs),
@@ -75,6 +80,12 @@ class TraceWriter:
                 ).exists()
                 for artifact in artifacts
             },
+            "phase3_observability": build_phase3_observability_summary(
+                self.connection,
+                session=session,
+                latest_run=latest_run,
+                events=events,
+            ),
         }
 
 
@@ -144,6 +155,8 @@ def _render_trace(data: dict[str, Any], metadata: dict[str, Any]) -> str:
             f"kind={checkpoint.kind} run={checkpoint.run_id} "
             f"summary={checkpoint.summary or ''}"
         )
+    lines.extend(["", "## Phase 3 Observability"])
+    lines.extend(_render_phase3_observability(data["phase3_observability"]))
     lines.extend(["", "## Context Snapshots"])
     if data["context_snapshots"]:
         for snapshot in data["context_snapshots"]:
@@ -192,6 +205,335 @@ def _render_trace(data: dict[str, Any], metadata: dict[str, Any]) -> str:
         lines.append("- none")
     lines.append("")
     return "\n".join(lines)
+
+
+def build_phase3_observability_summary(
+    connection: sqlite3.Connection,
+    *,
+    session: Any,
+    latest_run: Any | None,
+    events: list[Any] | None = None,
+) -> dict[str, Any]:
+    run_id = latest_run.run_id if latest_run is not None else None
+    loaded_events = (
+        events
+        if events is not None
+        else EventWriter(connection, Path(".")).list_for_session(session.session_id)
+    )
+    return {
+        "terminal_checkpoint": _terminal_checkpoint_summary(
+            connection, session=session, latest_run=latest_run
+        ),
+        "durable_conversation": _durable_conversation_summary(
+            connection, run_id=run_id
+        ),
+        "normalized_errors": _normalized_error_summaries(loaded_events),
+        "retry": _retry_summaries(loaded_events),
+        "cancellation": _cancellation_summaries(loaded_events),
+        "resume": _resume_summaries(loaded_events),
+        "stale_fail_close": _stale_fail_close_summaries(loaded_events),
+    }
+
+
+def _terminal_checkpoint_summary(
+    connection: sqlite3.Connection,
+    *,
+    session: Any,
+    latest_run: Any | None,
+) -> dict[str, Any]:
+    checkpoint_id = session.latest_checkpoint_id or (
+        latest_run.latest_checkpoint_id if latest_run is not None else None
+    )
+    if not checkpoint_id:
+        return {
+            "checkpoint_id": None,
+            "terminal_reason": getattr(session, "terminal_reason", None),
+            "terminal_status": getattr(session, "status", None),
+            "checkpoint_valid": False,
+            "eligible": False,
+        }
+    summary: dict[str, Any] = {
+        "checkpoint_id": checkpoint_id,
+        "terminal_reason": getattr(session, "terminal_reason", None),
+        "terminal_status": getattr(session, "status", None),
+        "checkpoint_valid": False,
+        "eligible": False,
+    }
+    store = CheckpointStore(connection)
+    try:
+        checkpoint = store.get(checkpoint_id)
+    except StoreError as exc:
+        summary["validation_error"] = exc.message
+        return summary
+    try:
+        store.validate_terminal_recovery(checkpoint, validate_current_todo=False)
+        checkpoint_valid = True
+    except StoreError as exc:
+        checkpoint_valid = False
+        summary["validation_error"] = exc.message
+    payload = checkpoint.state if isinstance(checkpoint.state, dict) else {}
+    lifecycle_terminal = (
+        getattr(session, "status", None) in {"completed", "failed"}
+        and latest_run is not None
+        and getattr(latest_run, "status", None) in {"completed", "failed"}
+    )
+    checkpoint_refs_current = (
+        latest_run is not None
+        and session.latest_checkpoint_id == latest_run.latest_checkpoint_id
+        and checkpoint.checkpoint_id == session.latest_checkpoint_id
+    )
+    summary.update(
+        {
+            "kind": checkpoint.kind,
+            "terminal_reason": payload.get("terminal_reason")
+            or getattr(session, "terminal_reason", None),
+            "terminal_status": payload.get("terminal_status")
+            or getattr(session, "status", None),
+            "terminal_error": payload.get("terminal_error"),
+            "checkpoint_valid": checkpoint_valid,
+            "eligible": (
+                checkpoint_valid
+                and checkpoint.kind == "terminal_recovery"
+                and lifecycle_terminal
+                and checkpoint_refs_current
+                and latest_run is not None
+                and latest_run.run_type == "prompt"
+                and not getattr(session, "non_resumable_startup_failure", False)
+                and not getattr(latest_run, "non_resumable_startup_failure", False)
+            ),
+        }
+    )
+    return summary
+
+
+def _durable_conversation_summary(
+    connection: sqlite3.Connection, *, run_id: str | None
+) -> dict[str, Any]:
+    if run_id is None:
+        return {
+            "high_watermark": 0,
+            "message_count": 0,
+            "projection_high_watermark": 0,
+            "projection_ref_count": 0,
+            "projection_update_reason": None,
+        }
+    store = ConversationStore(connection)
+    messages = store.list_messages(run_id)
+    projection = store.get_projection(run_id)
+    return {
+        "high_watermark": max((row.message_index for row in messages), default=0),
+        "message_count": len(messages),
+        "projection_high_watermark": projection.source_high_watermark,
+        "projection_ref_count": len(projection.message_refs),
+        "projection_update_reason": projection.update_reason,
+    }
+
+
+def _normalized_error_summaries(events: list[Any]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for event in events:
+        error = _payload_error(event.payload)
+        if not isinstance(error, dict):
+            continue
+        artifact_ids = error.get("artifact_ids", [])
+        if not isinstance(artifact_ids, list):
+            artifact_ids = []
+        summaries.append(
+            {
+                "event_kind": event.kind,
+                "error_class": error.get("error_class"),
+                "reason": error.get("reason"),
+                "message": error.get("message"),
+                "scope": error.get("scope"),
+                "recoverability": error.get("recoverability"),
+                "model_visible_projection": {
+                    "error_class": error.get("error_class"),
+                    "reason": error.get("reason"),
+                    "message": error.get("message"),
+                    "artifact_ids": artifact_ids,
+                },
+            }
+        )
+    return summaries
+
+
+def _payload_error(payload: dict[str, Any]) -> dict[str, Any] | None:
+    error = payload.get("error")
+    if isinstance(error, dict):
+        return error
+    result = payload.get("result")
+    if isinstance(result, dict) and isinstance(result.get("error"), dict):
+        return result["error"]
+    return None
+
+
+def _retry_summaries(events: list[Any]) -> dict[str, list[dict[str, Any]]]:
+    attempts: list[dict[str, Any]] = []
+    exhausted: list[dict[str, Any]] = []
+    for event in events:
+        retry = event.payload.get("retry")
+        if not isinstance(retry, dict):
+            continue
+        item = {
+            "event_kind": event.kind,
+            "strategy": retry.get("strategy"),
+            "attempt": retry.get("attempt"),
+            "max_attempts": retry.get("max_attempts"),
+            "source_error_class": retry.get("source_error_class"),
+            "source_reason": retry.get("source_reason"),
+            "result_error_class": retry.get("result_error_class"),
+            "result_reason": retry.get("result_reason"),
+            "exhausted": bool(retry.get("exhausted", False)),
+        }
+        if item["exhausted"]:
+            exhausted.append(item)
+        else:
+            attempts.append(item)
+    return {"attempts": attempts, "exhausted": exhausted}
+
+
+def _cancellation_summaries(events: list[Any]) -> list[dict[str, Any]]:
+    cancellations: list[dict[str, Any]] = []
+    for event in events:
+        error = _payload_error(event.payload)
+        if not isinstance(error, dict) or error.get("error_class") != "cancelled":
+            continue
+        metadata = error.get("metadata", {})
+        metadata = metadata if isinstance(metadata, dict) else {}
+        cancellations.append(
+            {
+                "event_kind": event.kind,
+                "reason": error.get("reason"),
+                "scope": error.get("scope"),
+                "message": error.get("message"),
+                "remote_stop_confirmed": bool(
+                    metadata.get("remote_stop_confirmed", False)
+                ),
+                "billing_stop_confirmed": bool(
+                    metadata.get("billing_stop_confirmed", False)
+                ),
+            }
+        )
+    return cancellations
+
+
+def _resume_summaries(events: list[Any]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for event in events:
+        if event.kind not in {"session_resumed", "run_resumed"}:
+            continue
+        summaries.append(
+            {
+                "event_kind": event.kind,
+                "session_id": event.payload.get("session_id"),
+                "run_id": event.payload.get("run_id"),
+                "outcome": event.payload.get("outcome", "succeeded"),
+            }
+        )
+    return summaries
+
+
+def _stale_fail_close_summaries(events: list[Any]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for event in events:
+        if event.kind != "stale_fail_closed":
+            continue
+        summaries.append(
+            {
+                "session_id": event.payload.get("session_id"),
+                "run_id": event.payload.get("run_id"),
+                "terminal_reason": event.payload.get("terminal_reason"),
+                "stale_proof_summary": event.payload.get("stale_proof_summary", {}),
+                "has_normalized_error": isinstance(event.payload.get("error"), dict),
+            }
+        )
+    return summaries
+
+
+def _render_phase3_observability(summary: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    checkpoint = summary["terminal_checkpoint"]
+    lines.append(
+        "- terminal_checkpoint: "
+        f"checkpoint_id={checkpoint.get('checkpoint_id') or ''} "
+        f"terminal_reason={checkpoint.get('terminal_reason') or ''} "
+        f"terminal_status={checkpoint.get('terminal_status') or ''} "
+        f"checkpoint_valid={str(bool(checkpoint.get('checkpoint_valid'))).lower()} "
+        f"eligible={str(bool(checkpoint.get('eligible'))).lower()}"
+    )
+    conversation = summary["durable_conversation"]
+    lines.append(
+        "- durable_conversation: "
+        f"conversation_high_watermark={conversation['high_watermark']} "
+        f"message_count={conversation['message_count']} "
+        f"projection_high_watermark={conversation['projection_high_watermark']} "
+        f"projection_refs={conversation['projection_ref_count']} "
+        f"projection_update_reason={conversation['projection_update_reason'] or ''}"
+    )
+    if summary["normalized_errors"]:
+        for error in summary["normalized_errors"]:
+            lines.append(
+                "- normalized_error: "
+                f"{error.get('error_class')}/{error.get('reason')} "
+                f"scope={error.get('scope') or ''} "
+                f"recoverability={error.get('recoverability') or ''} "
+                f"message={_shorten(str(error.get('message') or ''))} "
+                f"model_visible_projection={error.get('model_visible_projection')}"
+            )
+    else:
+        lines.append("- normalized_error: none")
+    retry = summary["retry"]
+    for attempt in retry["attempts"]:
+        lines.append(
+            "- retry_attempt "
+            f"strategy={attempt.get('strategy')} "
+            f"attempt={attempt.get('attempt')}/{attempt.get('max_attempts')} "
+            f"source={attempt.get('source_error_class')}/{attempt.get('source_reason')}"
+        )
+    for item in retry["exhausted"]:
+        lines.append(
+            "- retry_exhausted "
+            f"strategy={item.get('strategy')} "
+            f"attempt={item.get('attempt')}/{item.get('max_attempts')} "
+            f"source={item.get('source_error_class')}/{item.get('source_reason')} "
+            f"result={item.get('result_error_class')}/{item.get('result_reason')}"
+        )
+    if not retry["attempts"] and not retry["exhausted"]:
+        lines.append("- retry: none")
+    for cancellation in summary["cancellation"]:
+        lines.append(
+            "- cancellation: "
+            f"{cancellation.get('reason')} "
+            f"scope={cancellation.get('scope') or ''} "
+            f"remote_stop_confirmed={str(cancellation.get('remote_stop_confirmed')).lower()} "
+            f"billing_stop_confirmed={str(cancellation.get('billing_stop_confirmed')).lower()}"
+        )
+    if not summary["cancellation"]:
+        lines.append("- cancellation: none")
+    for resume in summary["resume"]:
+        lines.append(
+            "- resume "
+            f"outcome={resume.get('outcome')} "
+            f"event={resume.get('event_kind')} "
+            f"session_id={resume.get('session_id') or ''} "
+            f"run_id={resume.get('run_id') or ''}"
+        )
+    if not summary["resume"]:
+        lines.append("- resume: none")
+    for stale in summary["stale_fail_close"]:
+        proof = stale.get("stale_proof_summary", {})
+        proof = proof if isinstance(proof, dict) else {}
+        lines.append(
+            "- stale_fail_closed "
+            f"terminal_reason={stale.get('terminal_reason') or ''} "
+            f"host_match={str(bool(proof.get('host_match'))).lower()} "
+            f"pid_absent={str(bool(proof.get('pid_absent'))).lower()} "
+            f"token_fenced={str(bool(proof.get('token_fenced'))).lower()} "
+            f"has_normalized_error={str(bool(stale.get('has_normalized_error'))).lower()}"
+        )
+    if not summary["stale_fail_close"]:
+        lines.append("- stale_fail_closed: none")
+    return lines
 
 
 def _trace_metadata(events: list[Any]) -> dict[str, Any]:

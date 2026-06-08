@@ -467,13 +467,66 @@ def _provider_messages_from_segments(
     segments: list[ConversationMessage],
 ) -> list[object]:
     duplicate_tool_call_ids = _duplicate_provider_tool_call_ids(segments)
-    if not duplicate_tool_call_ids:
-        return [_provider_message_from_segment(segment) for segment in segments]
-    remapped_segments = _remap_duplicate_provider_tool_call_ids(
-        segments,
-        duplicate_tool_call_ids,
+    projected_segments = (
+        segments
+        if not duplicate_tool_call_ids
+        else _remap_duplicate_provider_tool_call_ids(
+            segments,
+            duplicate_tool_call_ids,
+        )
     )
-    return [_provider_message_from_segment(segment) for segment in remapped_segments]
+    return _provider_messages_from_projected_segments(projected_segments)
+
+
+def _provider_messages_from_projected_segments(
+    segments: list[ConversationMessage],
+) -> list[object]:
+    messages: list[object] = []
+    index = 0
+    while index < len(segments):
+        segment = segments[index]
+        merged = _merged_assistant_tool_call_message(segments, index)
+        if merged is not None:
+            message, consumed = merged
+            messages.append(message)
+            index += consumed
+            continue
+        messages.append(_provider_message_from_segment(segment))
+        index += 1
+    return messages
+
+
+def _merged_assistant_tool_call_message(
+    segments: list[ConversationMessage],
+    start: int,
+) -> tuple[AIMessage, int] | None:
+    first = segments[start]
+    if first.role != "assistant" or not _is_assistant_tool_call_kind(first.kind):
+        return None
+    assistant_content, tool_calls = _assistant_tool_call_content(first.content)
+    if not tool_calls:
+        return None
+    group_key = (first.turn_id, first.model_call_id)
+    consumed = 1
+    merged_calls = list(tool_calls)
+    while start + consumed < len(segments):
+        current = segments[start + consumed]
+        if (
+            current.role != "assistant"
+            or not _is_assistant_tool_call_kind(current.kind)
+            or (current.turn_id, current.model_call_id) != group_key
+        ):
+            break
+        current_content, current_calls = _assistant_tool_call_content(current.content)
+        if not current_calls:
+            break
+        if not assistant_content and current_content:
+            assistant_content = current_content
+        merged_calls.extend(current_calls)
+        consumed += 1
+    if consumed == 1:
+        return None
+    return AIMessage(content=assistant_content, tool_calls=merged_calls), consumed
 
 
 def _duplicate_provider_tool_call_ids(

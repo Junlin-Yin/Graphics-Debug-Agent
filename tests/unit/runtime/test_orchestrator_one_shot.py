@@ -4,6 +4,7 @@ import json
 import sqlite3
 
 from debug_agent.runtime.contracts import AgentRunResult
+from debug_agent.adapters.model_factory import ModelFactoryResult
 from debug_agent.runtime import orchestrator as orchestrator_module
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
 
@@ -57,6 +58,81 @@ def _assert_normalized_terminal_errors(
         assert isinstance(error["metadata"], dict)
         assert isinstance(error["artifact_ids"], list)
         assert error["message"]
+
+
+def test_one_shot_closes_model_provider_resources(tmp_path, monkeypatch) -> None:
+    closed: list[str] = []
+
+    class _Client:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def close(self) -> None:
+            closed.append(self.name)
+
+    class _Model:
+        def __init__(self) -> None:
+            self._client = _Client("sync")
+            self._async_client = _Client("async")
+
+        def invoke(self, _messages):
+            return type(
+                "Response",
+                (),
+                {"content": "one shot answer", "tool_calls": [], "usage": {}},
+            )()
+
+    class _Factory:
+        def create(self, _config):
+            return ModelFactoryResult(model=_Model(), error=None)
+
+    monkeypatch.setattr(orchestrator_module, "ModelFactory", _Factory)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
+        "hello", _config()
+    )
+
+    assert result.exit_code == 0
+    assert closed == ["sync", "async"]
+
+
+def test_repl_close_closes_model_provider_resources(tmp_path, monkeypatch) -> None:
+    closed: list[str] = []
+
+    class _Client:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def close(self) -> None:
+            closed.append(self.name)
+
+    class _Model:
+        def __init__(self) -> None:
+            self._client = _Client("sync")
+            self._async_client = _Client("async")
+
+        def invoke(self, _messages):
+            return type(
+                "Response",
+                (),
+                {"content": "repl answer", "tool_calls": [], "usage": {}},
+            )()
+
+    class _Factory:
+        def create(self, _config):
+            return ModelFactoryResult(model=_Model(), error=None)
+
+    monkeypatch.setattr(orchestrator_module, "ModelFactory", _Factory)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    started = RuntimeOrchestrator(workspace_root=workspace).start_repl(_config())
+
+    assert started.runtime is not None
+    started.runtime.close()
+    assert closed == ["sync", "async"]
 
 
 def test_one_shot_success_persists_lifecycle_and_completes_session(

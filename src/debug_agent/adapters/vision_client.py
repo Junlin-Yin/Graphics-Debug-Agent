@@ -9,6 +9,7 @@ from debug_agent.runtime.provider_execution import (
     ProviderCancellationHandle,
     start_async_provider_call,
 )
+from debug_agent.runtime.provider_resources import close_provider_resource_async
 
 
 @dataclass(frozen=True)
@@ -160,22 +161,25 @@ class VisionModelClient:
             timeout=timeout_seconds,
             max_retries=0,
         )
-        projected = project_chat_completions_request(
-            model=config.model,
-            images=images,
-            instruction=instruction,
-            max_tokens=config.max_tokens,
-        )
-        completion = await client.chat.completions.create(
-            model=projected["model"],
-            messages=projected["messages"],
-            response_format=projected["response_format"],
-            max_tokens=projected["max_tokens"],
-            extra_body={"thinking": projected["thinking"]},
-            stream=False,
-        )
-        text = _completion_text(completion)
-        return VisionModelResponse(text=text, provider_metadata={})
+        try:
+            projected = project_chat_completions_request(
+                model=config.model,
+                images=images,
+                instruction=instruction,
+                max_tokens=config.max_tokens,
+            )
+            completion = await client.chat.completions.create(
+                model=projected["model"],
+                messages=projected["messages"],
+                response_format=projected["response_format"],
+                max_tokens=projected["max_tokens"],
+                extra_body={"thinking": projected["thinking"]},
+                stream=False,
+            )
+            text = _completion_text(completion)
+            return VisionModelResponse(text=text, provider_metadata={})
+        finally:
+            await close_provider_resource_async(client)
 
 
 def _completion_text(completion: Any) -> str:

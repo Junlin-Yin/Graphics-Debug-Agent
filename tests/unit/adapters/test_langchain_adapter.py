@@ -8,12 +8,13 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
 from debug_agent.adapters.langchain_adapter import (
     LangChainAgentLoopAdapter,
     MAX_TOOL_CALL_ITERATIONS,
     _langchain_tools,
+    _provider_messages_from_segments,
 )
 from debug_agent.adapters.model_factory import FakeChatModel
 from debug_agent.persistence.checkpoints import CheckpointStore
@@ -1781,6 +1782,102 @@ def test_langchain_adapter_preserves_runtime_tool_call_ids_after_context_refresh
 
     assert result.status == "completed"
     assert result.assistant_output == "a.txt contains file text"
+
+
+def test_provider_messages_from_segments_merges_split_assistant_tool_calls() -> None:
+    segments = [
+        ConversationMessage(
+            seq=1,
+            role="assistant",
+            kind="assistant_tool_call",
+            turn_id="turn-1",
+            model_call_id="model_call_1",
+            tool_call_id="model_call_1_tool_1",
+            content={
+                "content": "checking files",
+                "tool_calls": [
+                    {
+                        "id": "model_call_1_tool_1",
+                        "name": "shell_exec",
+                        "args": {"argv": ["git", "status"]},
+                    }
+                ],
+            },
+        ),
+        ConversationMessage(
+            seq=2,
+            role="assistant",
+            kind="assistant_tool_call",
+            turn_id="turn-1",
+            model_call_id="model_call_1",
+            tool_call_id="model_call_1_tool_3",
+            content={
+                "content": "checking files",
+                "tool_calls": [
+                    {
+                        "id": "model_call_1_tool_3",
+                        "name": "shell_exec",
+                        "args": {"argv": ["git", "diff"]},
+                    }
+                ],
+            },
+        ),
+        ConversationMessage(
+            seq=3,
+            role="tool",
+            kind="tool_result",
+            turn_id="turn-1",
+            model_call_id="model_call_1",
+            tool_call_id="model_call_1_tool_1",
+            content={
+                "message_type": "tool_result",
+                "content": "status",
+                "tool_call_id": "model_call_1_tool_1",
+            },
+        ),
+        ConversationMessage(
+            seq=4,
+            role="tool",
+            kind="tool_result",
+            turn_id="turn-1",
+            model_call_id="model_call_1",
+            tool_call_id="model_call_1_tool_3",
+            content={
+                "message_type": "tool_result",
+                "content": "diff",
+                "tool_call_id": "model_call_1_tool_3",
+            },
+        ),
+    ]
+
+    provider_messages = _provider_messages_from_segments(segments)
+
+    assert len(provider_messages) == 3
+    assert isinstance(provider_messages[0], AIMessage)
+    assert provider_messages[0].content == "checking files"
+    assert [
+        {
+            "id": call["id"],
+            "name": call["name"],
+            "args": call["args"],
+        }
+        for call in provider_messages[0].tool_calls
+    ] == [
+        {
+            "id": "model_call_1_tool_1",
+            "name": "shell_exec",
+            "args": {"argv": ["git", "status"]},
+        },
+        {
+            "id": "model_call_1_tool_3",
+            "name": "shell_exec",
+            "args": {"argv": ["git", "diff"]},
+        },
+    ]
+    assert isinstance(provider_messages[1], ToolMessage)
+    assert provider_messages[1].tool_call_id == "model_call_1_tool_1"
+    assert isinstance(provider_messages[2], ToolMessage)
+    assert provider_messages[2].tool_call_id == "model_call_1_tool_3"
 
 
 def test_langchain_adapter_namespaces_repeated_provider_tool_call_ids() -> None:

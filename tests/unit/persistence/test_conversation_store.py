@@ -253,6 +253,61 @@ def test_tool_call_pairing_requires_result_for_accepted_tool_call(tmp_path) -> N
     db.close()
 
 
+def test_tool_call_pairing_accepts_multiple_calls_in_closed_loop(tmp_path) -> None:
+    db, store, _artifacts, _session, run = _conversation_store(tmp_path)
+    store.append_closed_group(
+        session_id="sess_1",
+        run_id=run.run_id,
+        messages=[
+            _append(
+                role="assistant",
+                kind="assistant_tool_call",
+                content={"tool_call_id": "call_1", "name": "shell_exec", "arguments": {}},
+                message_group_id="grp_loop",
+                model_call_id="model_1",
+                group_position=0,
+                group_row_count=4,
+                tool_call_id="call_1",
+            ),
+            _append(
+                role="assistant",
+                kind="assistant_tool_call",
+                content={"tool_call_id": "call_2", "name": "shell_exec", "arguments": {}},
+                message_group_id="grp_loop",
+                model_call_id="model_1",
+                group_position=1,
+                group_row_count=4,
+                tool_call_id="call_2",
+            ),
+            _append(
+                role="tool",
+                kind="tool_result",
+                content={"tool_call_id": "call_1", "content": "ok"},
+                message_group_id="grp_loop",
+                model_call_id="model_1",
+                group_position=2,
+                group_row_count=4,
+                tool_call_id="call_1",
+            ),
+            _append(
+                role="tool",
+                kind="tool_result",
+                content={"tool_call_id": "call_2", "content": "ok"},
+                message_group_id="grp_loop",
+                model_call_id="model_1",
+                group_position=3,
+                group_row_count=4,
+                tool_call_id="call_2",
+            ),
+        ],
+    )
+
+    fact_cut = store.validate_fact_cut(run_id=run.run_id, highest_message_index=4)
+
+    assert fact_cut.message_count == 4
+    db.close()
+
+
 def test_artifact_backed_content_checksum_validation(tmp_path) -> None:
     db, store, artifacts, session, run = _conversation_store(tmp_path)
     artifact = artifacts.write_text(

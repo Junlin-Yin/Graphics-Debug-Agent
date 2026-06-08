@@ -170,9 +170,9 @@ def test_main_one_shot_interactive_stale_confirmation_is_passed_to_orchestrator(
     assert exit_code == 0
     assert seen == {"has_confirmation": True}
     output = stdout.getvalue()
-    assert "Active owner appears stale." in output
-    assert "session: sess_old" in output
-    assert "stale evidence: same host, owner pid absent, owner token captured" in output
+    assert "Stale session is still taking the ownership: sess_old." in output
+    assert "run: run_old" not in output
+    assert "stale evidence:" not in output
     assert "accepted" in output
 
 

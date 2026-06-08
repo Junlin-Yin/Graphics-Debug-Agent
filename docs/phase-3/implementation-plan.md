@@ -448,7 +448,7 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 - [x] Implement the documented `host-v1:sha256(<platform-stable-machine-id>)` host identity provider with fake test seam.
 - [x] Prove stale only when recorded host matches current host, recorded pid is absent, and owner token is present and captured.
 - [x] Fail closed when host id is unavailable/mismatched, pid is missing/live/unreliably checkable, or token is missing.
-- [x] Prompt interactive startup/resume users with blocked owner id and concise stale evidence summary; do not promise resumability.
+- [x] Prompt interactive startup/resume users with blocked owner session id only; do not show run id or stale evidence details; do not promise resumability.
 - [x] Fail closed when confirmation cannot be obtained.
 - [x] Implement owner-token-fenced stale fail-close transaction that compares workspace root, session id, run id, host id, pid, and owner token.
 - [x] For checkpoint-eligible stale owners, commit terminal checkpoint, terminal status `failed`, terminal reason `terminal_stale`, `latest_checkpoint_id`, `stale_fail_closed`, and ownership release in one fenced transaction.
@@ -467,11 +467,11 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
     `/private/tmp/myagent-m8-manual/workspace`, then ran
     `HOME=/private/tmp/myagent-m8-manual/home uv run --project /Users/xinzhu/Workspace/MyAgent debug-agent -p "manual stale confirmation"`,
     confirmed the prompt with `y`, and observed `manual stale ok`.
-  - Expected result: prompt shows blocked session/run and concise stale evidence,
-    confirmed stale owner is terminalized as `terminal_stale`, ownership is
-    released, and startup continues into a new one-shot session.
-  - Observed result: prompt rendered `sess_manual_stale` / `run_manual_stale`
-    with same-host/pid-absent/token-captured evidence; database showed old
+  - Expected result: prompt shows only the blocked session id, hides run id and
+    stale evidence details, confirmed stale owner is terminalized as
+    `terminal_stale`, ownership is released, and startup continues into a new
+    one-shot session.
+  - Observed result: prompt rendered only `sess_manual_stale`; database showed old
     session `failed` with `terminal_stale`, new session `completed`, and
     `stale_fail_closed` payload exactly
     `{"stale_proof_summary": {"host_match": true, "pid_absent": true, "token_fenced": true}}`.
@@ -531,20 +531,44 @@ After Milestone 4, the broad gate is removed for fresh Phase 3 workspaces. Narro
 
 **Runnable state:** Phase 3 acceptance is ready for review using the canonical operations contract.
 
-- [ ] Render normalized error class, reason, message, scope/recoverability where appropriate, and model-visible projection where appropriate.
-- [ ] Render terminal checkpoint id, terminal reason, terminal status, and eligibility without treating events as recovery truth.
-- [ ] Render durable conversation high-watermark and projection summaries.
-- [ ] Render retry attempts and exhaustion metadata.
-- [ ] Render cancellation facts and remote-stop/billing uncertainty metadata without claiming remote stop.
-- [ ] Render resume attempts and outcomes.
-- [ ] Render stale fail-close as administrative `terminal_stale` closure with redacted proof summary and no required `payload.error`.
-- [ ] Ensure `status`, `trace`, and `resume` missing-DB behavior matches Phase 3 compatibility contract.
-- [ ] Ensure legacy DB startup reset versus read-only fail-closed behavior is covered end-to-end.
-- [ ] Add broad integration coverage across schema, normalized errors, durable conversation, terminal checkpoints, one-shot/REPL resume, startup failure non-resumability, cancellation, stale fail-close, retry, and shell timeout.
-- [ ] Record manual verification evidence for running `Ctrl+C` in REPL/TUI, active shell cancellation, idle `Ctrl+C`, `debug-agent resume <session_id>`, stale fail-close confirmation, double interrupt while cancelling, and TUI terminal summary after alternate-screen exit.
-- [ ] Run `uv run pytest tests/unit -v`.
-- [ ] Run `uv run pytest tests/integration -v`.
-- [ ] Run `uv run pytest -v`.
+- [x] Render normalized error class, reason, message, scope/recoverability where appropriate, and model-visible projection where appropriate.
+- [x] Render terminal checkpoint id, terminal reason, terminal status, and eligibility without treating events as recovery truth.
+- [x] Render durable conversation high-watermark and projection summaries.
+- [x] Render retry attempts and exhaustion metadata.
+- [x] Render cancellation facts and remote-stop/billing uncertainty metadata without claiming remote stop.
+- [x] Render resume attempts and outcomes.
+- [x] Render stale fail-close as administrative `terminal_stale` closure with redacted proof summary and no required `payload.error`.
+- [x] Ensure `status`, `trace`, and `resume` missing-DB behavior matches Phase 3 compatibility contract.
+- [x] Ensure legacy DB startup reset versus read-only fail-closed behavior is covered end-to-end.
+- [x] Add broad integration coverage across schema, normalized errors, durable conversation, terminal checkpoints, one-shot/REPL resume, startup failure non-resumability, cancellation, stale fail-close, retry, and shell timeout.
+- [x] Record manual verification evidence for running `Ctrl+C` in REPL/TUI, active shell cancellation, idle `Ctrl+C`, `debug-agent resume <session_id>`, stale fail-close confirmation, double interrupt while cancelling, and TUI terminal summary after alternate-screen exit.
+  Manual TTY verification confirmed 2026-06-08: running `Ctrl+C` in
+  model call/model output/tool execution returns REPL/TUI to input without
+  terminalizing; active long-running shell/tool cancellation returns ownership;
+  idle `Ctrl+C` and `/exit` terminalize with trace/resume terminal summary;
+  `debug-agent resume <session_id>` restores history and continues execution;
+  stale fail-close confirmation writes administrative `terminal_stale`, redacts
+  raw proof details, releases ownership, and same-target resume succeeds when a
+  terminal recovery checkpoint is eligible; status/trace excerpts were manually
+  checked as observational only. Double `Ctrl+C` while cancelling is recorded
+  as manually timing-infeasible because running cancellation completes almost
+  immediately; a second interrupt reaches the idle `Ctrl+C` path. The
+  cancelling double-interrupt state-machine path remains covered by automated
+  tests.
+  Automated Milestone 10 deterministic status/trace excerpts verified by
+  `test_status_and_trace_render_phase3_observability_without_recovery_authority`
+  and `test_status_and_trace_commands_inspect_completed_one_shot`: status and
+  trace render terminal checkpoint id/reason/status/eligibility, durable
+  conversation high-watermark/projection, normalized errors with
+  model-visible projection, retry attempts/exhaustion, cancellation
+  remote-stop/billing uncertainty as false metadata only, resume outcomes, and
+  redacted `stale_fail_closed` proof summary without `payload.error`.
+- [x] Run `uv run pytest tests/unit -v`.
+  Result on 2026-06-08: 629 passed, 1 skipped.
+- [x] Run `uv run pytest tests/integration -v`.
+  Result on 2026-06-08: 53 passed.
+- [x] Run `uv run pytest -v`.
+  Result on 2026-06-08: 682 passed, 1 skipped.
 
 ## Verification Strategy
 

@@ -1869,7 +1869,8 @@ def _provider_messages_to_conversation(
     turn_id: str,
 ) -> list[ConversationMessage]:
     converted: list[ConversationMessage] = []
-    for index, message in enumerate(messages, start=1):
+    next_seq = 1
+    for message in messages:
         role = getattr(message, "type", None) or getattr(message, "role", None)
         if role == "ai":
             role = "assistant"
@@ -1885,8 +1886,21 @@ def _provider_messages_to_conversation(
         if role == "assistant" and kind == "tool_call":
             tool_calls = _message_tool_calls(message)
             if tool_calls:
-                content = {"content": content, "tool_calls": tool_calls}
-                model_call_id = _model_call_id_from_tool_calls(tool_calls)
+                for call in tool_calls:
+                    call_tool_id = call["id"]
+                    converted.append(
+                        ConversationMessage(
+                            seq=next_seq,
+                            role="assistant",
+                            kind=kind,
+                            turn_id=turn_id,
+                            model_call_id=_model_call_id_from_tool_call_id(call_tool_id),
+                            tool_call_id=call_tool_id,
+                            content={"content": content, "tool_calls": [call]},
+                        )
+                    )
+                    next_seq += 1
+                continue
         if role == "tool" and kind == "tool_result" and isinstance(tool_call_id, str):
             content = {
                 "message_type": "tool_result",
@@ -1898,7 +1912,7 @@ def _provider_messages_to_conversation(
             content = str(content)
         converted.append(
             ConversationMessage(
-                seq=index,
+                seq=next_seq,
                 role=str(role or "assistant"),
                 kind=kind,
                 turn_id=turn_id,
@@ -1907,6 +1921,7 @@ def _provider_messages_to_conversation(
                 content=content,
             )
         )
+        next_seq += 1
     return converted
 
 
