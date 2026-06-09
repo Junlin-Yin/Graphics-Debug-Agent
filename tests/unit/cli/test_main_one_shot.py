@@ -152,6 +152,8 @@ def test_main_one_shot_interactive_stale_confirmation_is_passed_to_orchestrator(
             return SimpleNamespace(
                 exit_code=0 if approved else 3,
                 message="accepted" if approved else "rejected",
+                error=None,
+                session_id=None,
             )
 
     monkeypatch.setattr(main_module, "RuntimeOrchestrator", FakeOrchestrator)
@@ -189,6 +191,8 @@ def test_main_one_shot_non_interactive_stale_confirmation_is_unavailable(
             return SimpleNamespace(
                 exit_code=3,
                 message="confirmation unavailable",
+                error=None,
+                session_id=None,
             )
 
     monkeypatch.setattr(main_module, "RuntimeOrchestrator", FakeOrchestrator)
@@ -204,3 +208,173 @@ def test_main_one_shot_non_interactive_stale_confirmation_is_unavailable(
 
     assert exit_code == 3
     assert seen == {"has_confirmation": False}
+
+
+def test_main_keyboard_interrupt_uses_raw_process_interrupt_fallback(
+    monkeypatch, capsys
+) -> None:
+    def raise_keyboard_interrupt(_args):
+        raise KeyboardInterrupt
+
+    class ForbiddenOrchestrator:
+        def __init__(self, **_kwargs):
+            raise AssertionError("top-level KeyboardInterrupt must not create orchestrator")
+
+    monkeypatch.setattr(main_module, "_main", raise_keyboard_interrupt)
+    monkeypatch.setattr(main_module, "RuntimeOrchestrator", ForbiddenOrchestrator)
+
+    exit_code = main([])
+
+    captured = capsys.readouterr()
+    assert exit_code == 130
+    assert captured.out == ""
+    assert captured.err == "Interrupted by Ctrl+C.\n"
+
+
+def test_main_one_shot_failure_without_session_uses_existing_error_path(
+    monkeypatch, capsys
+) -> None:
+    class FakeOrchestrator:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_one_shot(self, prompt, config_snapshot, *, approval_mode="normal"):
+            return SimpleNamespace(
+                exit_code=4,
+                message="startup failed",
+                error={
+                    "error_class": "config_error",
+                    "reason": "startup_schema_validation_failed",
+                    "message": "startup failed",
+                },
+                session_id=None,
+            )
+
+    monkeypatch.setattr(main_module, "RuntimeOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(
+        main_module,
+        "load_config_snapshot",
+        lambda: SimpleNamespace(error=None, snapshot={"provider": "fake"}),
+    )
+
+    exit_code = main(["-p", "hello"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 4
+    assert captured.out == ""
+    assert captured.err == "startup failed\n"
+
+
+def test_main_one_shot_failure_with_session_formats_summary(monkeypatch, capsys) -> None:
+    class FakeOrchestrator:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_one_shot(self, prompt, config_snapshot, *, approval_mode="normal"):
+            return SimpleNamespace(
+                exit_code=1,
+                message="legacy message must not be used",
+                error={
+                    "schema_version": 1,
+                    "error_class": "model_error",
+                    "reason": "model_call_timeout",
+                    "message": "model call timed out",
+                    "scope": "provider",
+                    "recoverability": "terminal_recoverable",
+                    "metadata": {},
+                    "artifact_ids": [],
+                },
+                session_id="sess_123",
+                terminal_failure_summary=True,
+            )
+
+    monkeypatch.setattr(main_module, "RuntimeOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(
+        main_module,
+        "load_config_snapshot",
+        lambda: SimpleNamespace(error=None, snapshot={"provider": "fake"}),
+    )
+
+    exit_code = main(["-p", "hello"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == (
+        "\n"
+        "One-shot session sess_123 failed.\n"
+        "model_error/model_call_timeout: model call timed out\n"
+        "trace: debug-agent trace sess_123\n"
+        "resume: debug-agent resume sess_123\n"
+    )
+
+
+def test_main_one_shot_active_session_conflict_with_session_uses_raw_error_path(
+    monkeypatch, capsys
+) -> None:
+    class FakeOrchestrator:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_one_shot(self, prompt, config_snapshot, *, approval_mode="normal"):
+            return SimpleNamespace(
+                exit_code=3,
+                message="active session conflict for sess_active",
+                error={
+                    "schema_version": 1,
+                    "error_class": "policy_error",
+                    "reason": "workspace_owner_active",
+                    "message": "active session conflict for sess_active",
+                    "scope": "startup",
+                    "recoverability": "non_recoverable",
+                    "metadata": {},
+                    "artifact_ids": [],
+                },
+                session_id="sess_active",
+                terminal_failure_summary=False,
+            )
+
+    monkeypatch.setattr(main_module, "RuntimeOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(
+        main_module,
+        "load_config_snapshot",
+        lambda: SimpleNamespace(error=None, snapshot={"provider": "fake"}),
+    )
+
+    exit_code = main(["-p", "hello"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 3
+    assert captured.out == ""
+    assert captured.err == "active session conflict for sess_active\n"
+
+
+def test_main_one_shot_summary_requires_complete_normalized_error_fields(
+    monkeypatch, capsys
+) -> None:
+    class FakeOrchestrator:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_one_shot(self, prompt, config_snapshot, *, approval_mode="normal"):
+            return SimpleNamespace(
+                exit_code=1,
+                message="raw failure message",
+                error={"error_class": "model_error", "message": "incomplete"},
+                session_id="sess_incomplete",
+                terminal_failure_summary=True,
+            )
+
+    monkeypatch.setattr(main_module, "RuntimeOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(
+        main_module,
+        "load_config_snapshot",
+        lambda: SimpleNamespace(error=None, snapshot={"provider": "fake"}),
+    )
+
+    exit_code = main(["-p", "hello"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == "raw failure message\n"

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from types import SimpleNamespace
 
 from debug_agent.runtime.contracts import AgentRunResult
+from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
 from debug_agent.adapters.model_factory import ModelFactoryResult
 from debug_agent.runtime import orchestrator as orchestrator_module
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
@@ -443,7 +445,8 @@ def test_one_shot_context_limit_exceeded_records_context_fact_before_terminal_fa
         "The current turn was aborted."
     )
     assert result.exit_code == 1
-    assert result.error["error_class"] == "context_limit_exceeded"
+    assert result.error["error_class"] == "model_error"
+    assert result.error["reason"] == "context_limit_exceeded"
     assert result.message == expected_message
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "failed"
@@ -517,7 +520,8 @@ def test_one_shot_compression_failed_records_context_fact_before_terminal_failur
         "fresh context window."
     )
     assert result.exit_code == 1
-    assert result.error["error_class"] == "compression_failed"
+    assert result.error["error_class"] == "model_error"
+    assert result.error["reason"] == "compression_failed"
     assert result.message == expected_message
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "failed"
@@ -559,6 +563,7 @@ def test_one_shot_invalid_skill_fails_before_model_call_and_releases_ownership(
     result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot("hello", _config())
 
     assert result.exit_code == 1
+    assert result.terminal_failure_summary is False
     assert result.error["error_class"] == "config_error"
     assert "Only prompt skills" in result.message
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
@@ -732,6 +737,86 @@ def test_one_shot_model_cancellation_marks_failed_and_releases_ownership(
     assert second.exit_code == 0
 
 
+
+def test_one_shot_keyboard_interrupt_cancels_without_collecting_provider_boundary(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    cancelled = {"called": False, "collected": False}
+
+    class Handle:
+        def cancel(self):
+            cancelled["called"] = True
+
+        def collect_boundary(self):
+            cancelled["collected"] = True
+
+    class InterruptingExecutor:
+        adapter = SimpleNamespace(model=None)
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run_turn(self, **kwargs):
+            registry = kwargs.get("provider_cancellation_registry")
+            assert callable(registry)
+            registry(Handle())
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        "debug_agent.runtime.orchestrator.PromptAgentExecutor",
+        InterruptingExecutor,
+    )
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
+        "hello",
+        _config(),
+    )
+
+    assert result.exit_code == 1
+    assert result.terminal_failure_summary is True
+    assert result.error["error_class"] == "cancelled"
+    assert result.error["reason"] == "user_cancel_running"
+    assert result.session_id is not None
+    assert cancelled == {"called": True, "collected": False}
+
+
+def test_one_shot_provider_boundary_not_closed_returns_interrupted_result(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    class BoundaryExecutor:
+        adapter = SimpleNamespace(model=None)
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run_turn(self, **kwargs):
+            raise ProviderBoundaryNotClosed("view_image async provider task did not close locally.")
+
+    monkeypatch.setattr(
+        "debug_agent.runtime.orchestrator.PromptAgentExecutor",
+        BoundaryExecutor,
+    )
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
+        "hello",
+        _config(),
+    )
+
+    assert result.exit_code == 130
+    assert result.terminal_failure_summary is False
+    assert result.error["error_class"] == "cancelled"
+    assert result.error["reason"] == "user_cancel_process"
+    assert "did not close locally" in result.message
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "running"
+        assert conn.execute("SELECT status FROM runs").fetchone()[0] == "running"
+
+
 def test_one_shot_model_timeout_marks_failed_and_releases_ownership(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -742,7 +827,9 @@ def test_one_shot_model_timeout_marks_failed_and_releases_ownership(tmp_path) ->
 
     assert result.exit_code == 1
     assert result.assistant_output is None
-    assert result.error["error_class"] == "timeout"
+    assert result.terminal_failure_summary is True
+    assert result.error["error_class"] == "model_error"
+    assert result.error["reason"] == "model_call_timeout"
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         session_status, active_run_id, session_error = conn.execute(
             "SELECT status, active_run_id, error_summary FROM sessions"
@@ -791,6 +878,7 @@ def test_one_shot_active_workspace_conflict_returns_policy_exit(tmp_path) -> Non
     conflict = RuntimeOrchestrator(workspace_root=workspace).run_one_shot("hello", _config())
 
     assert conflict.exit_code == 3
+    assert conflict.terminal_failure_summary is False
     assert conflict.error["error_class"] == "policy_error"
     assert conflict.error["reason"] == "workspace_owner_not_proven_stale"
     assert "An active debug-agent session already owns this workspace." in conflict.message

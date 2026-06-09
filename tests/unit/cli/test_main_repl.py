@@ -325,7 +325,7 @@ def test_repl_ctrl_c_after_session_creation_marks_failed_and_releases_ownership(
     assert second_exit == 0
 
 
-def test_main_ctrl_c_fallback_marks_active_session_failed_and_releases_ownership(
+def test_main_ctrl_c_fallback_is_raw_process_interrupt_without_terminalizing_active_session(
     tmp_path, monkeypatch, capsys
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -355,7 +355,7 @@ def test_main_ctrl_c_fallback_marks_active_session_failed_and_releases_ownership
 
     captured = capsys.readouterr()
     assert exit_code == INTERRUPTED
-    assert "Interrupted by Ctrl+C." in captured.err
+    assert captured.err == "Interrupted by Ctrl+C.\n"
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         session_status, active_run_id, session_error = conn.execute(
             "SELECT status, active_run_id, error_summary FROM sessions"
@@ -363,20 +363,24 @@ def test_main_ctrl_c_fallback_marks_active_session_failed_and_releases_ownership
         run_status, run_error = conn.execute(
             "SELECT status, error_summary FROM runs"
         ).fetchone()
-        failed_error_class = conn.execute(
+        session_failed = conn.execute(
             """
-            SELECT json_extract(payload_json, '$.error_class')
+            SELECT 1
             FROM run_events
             WHERE kind = 'session_failed'
             ORDER BY rowid DESC
             LIMIT 1
             """
-        ).fetchone()[0]
+        ).fetchone()
 
-    assert (session_status, active_run_id, run_status) == ("failed", None, "failed")
-    assert session_error == "Interrupted by Ctrl+C."
-    assert run_error == "Interrupted by Ctrl+C."
-    assert failed_error_class == "cancelled"
+    assert (session_status, active_run_id, run_status) == (
+        "running",
+        "run_interrupt",
+        "running",
+    )
+    assert session_error is None
+    assert run_error is None
+    assert session_failed is None
 
 
 def test_tty_repl_ctrl_c_marks_failed_and_releases_ownership(

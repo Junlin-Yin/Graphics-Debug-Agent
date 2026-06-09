@@ -21,6 +21,7 @@ from debug_agent.cli.exit_codes import (
     ERROR_LOOKUP_NOT_FOUND,
     ERROR_STARTUP_CONFIG,
     ERROR_USAGE,
+    INTERRUPTED,
     map_error_to_exit_code,
 )
 from debug_agent.observability.logging import write_runtime_log
@@ -55,6 +56,7 @@ from debug_agent.runtime.prompt_executor import (
     PromptAgentExecutor,
     make_compression_model_callable,
 )
+from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
 from debug_agent.runtime.provider_resources import close_provider_resource
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.runtime.workspace import resolve_workspace_root
@@ -72,6 +74,7 @@ class OneShotResult:
     message: str
     session_id: str | None
     run_id: str | None
+    terminal_failure_summary: bool = False
 
 
 @dataclass(frozen=True)
@@ -157,6 +160,8 @@ class ReplRuntime:
         self,
         user_input: str,
         agent_stream_callback: Callable[[AgentStreamEvent], None] | None = None,
+        *,
+        collect_provider_boundaries_on_interrupt: bool = True,
     ) -> AgentRunResult:
         with self._lock:
             self.turn_counter += 1
@@ -195,7 +200,9 @@ class ReplRuntime:
                 shell_process_registry=self._register_shell_process_handle,
             )
         except KeyboardInterrupt:
-            self.cancel_running_turn(collect_provider_boundaries=True)
+            self.cancel_running_turn(
+                collect_provider_boundaries=collect_provider_boundaries_on_interrupt
+            )
             result = _running_cancelled_result()
         finally:
             with self._lock:
@@ -684,6 +691,7 @@ class RuntimeOrchestrator:
             return policy_result
         config_snapshot = _ensure_phase3_frozen_runtime_defaults(policy_result)
         provider_model = None
+        runtime: ReplRuntime | None = None
         try:
             db = RuntimeDatabase.bootstrap(self.workspace_root)
         except RuntimeBootstrapError as exc:
@@ -858,12 +866,42 @@ class RuntimeOrchestrator:
                 run_store=runs,
                 compression_model=make_compression_model_callable(model_result.model),
             )
-            agent_result = executor.run_turn(
-                session=session,
-                run=run,
-                user_input=prompt,
-                workspace_root=str(self.workspace_root),
+            runtime = ReplRuntime(
+                db=db,
+                sessions=sessions,
+                runs=runs,
+                events=events,
+                checkpoints=checkpoints,
+                executor=executor,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                workspace_root=self.workspace_root,
+                owner_token=str(owner_facts["owner_token"]),
             )
+            runtime.set_approval_provider(NonInteractiveApprovalProvider())
+            try:
+                agent_result = runtime.run_turn(
+                    prompt,
+                    collect_provider_boundaries_on_interrupt=False,
+                )
+            except ProviderBoundaryNotClosed as exc:
+                return OneShotResult(
+                    exit_code=INTERRUPTED,
+                    assistant_output=None,
+                    error={
+                        "schema_version": 1,
+                        "error_class": "cancelled",
+                        "reason": "user_cancel_process",
+                        "message": str(exc),
+                        "scope": "session",
+                        "recoverability": "non_recoverable",
+                        "metadata": {"source": "runtime"},
+                        "artifact_ids": [],
+                    },
+                    message=str(exc),
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                )
             if agent_result.status == "completed":
                 terminal_checkpoint = checkpoints.terminalize_with_recovery_checkpoint(
                     checkpoint_id=f"chk_{uuid4().hex}",
@@ -932,9 +970,12 @@ class RuntimeOrchestrator:
             )
             return failed
         finally:
-            if provider_model is not None:
-                close_provider_resource(provider_model)
-            db.close()
+            if runtime is not None:
+                runtime.close()
+            else:
+                if provider_model is not None:
+                    close_provider_resource(provider_model)
+                db.close()
 
     def status(self, session_id: str) -> StatusResult:
         try:
@@ -2068,10 +2109,11 @@ def _mark_failed_terminal(
     return OneShotResult(
         exit_code=1,
         assistant_output=None,
-        error=error,
-        message=error["message"],
+        error=terminal_error,
+        message=str(terminal_error.get("message") or error["message"]),
         session_id=session.session_id,
         run_id=run.run_id,
+        terminal_failure_summary=not startup_failure,
     )
 
 
@@ -2962,6 +3004,8 @@ def _terminal_error_identity(error: dict[str, Any]) -> tuple[str, str, str]:
         return "model_error", "compression_failed", "turn"
     if error_class == "context_limit_exceeded":
         return "model_error", "context_limit_exceeded", "turn"
+    if error_class == "timeout":
+        return "model_error", "model_call_timeout", "provider"
     if error_class == "internal_error":
         return "runtime_error", "internal_invariant_failed", "run"
     if error_class == "model_error":

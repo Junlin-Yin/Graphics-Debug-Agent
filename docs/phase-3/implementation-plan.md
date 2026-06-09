@@ -700,31 +700,99 @@ normalized error fields carried by the one-shot result.
 the final assistant output to stdout, and terminal failure writes a stable
 diagnostic summary to stderr with trace and resume commands.
 
-- [ ] Add a one-shot terminal failure summary formatter with the exact four-line
+- [x] Add a one-shot terminal failure summary formatter with the exact four-line
   shape from `docs/phase-3/specs/session-control.md`.
-- [ ] Route one-shot terminal failures after session/run creation through the
+- [x] Route one-shot terminal failures after session/run creation through the
   summary formatter before printing to stderr.
-- [ ] Keep startup/bootstrap/config failures that do not create a session/run on
+- [x] Keep startup/bootstrap/config failures that do not create a session/run on
   their existing fail-closed error path unless a session id exists in the
   returned one-shot result.
-- [ ] Print the `resume:` line whenever the one-shot result has a `session_id`,
+- [x] Print the `resume:` line whenever the one-shot result has a `session_id`,
   including non-resumable startup/config/schema failures after session/run
   creation; rely on `debug-agent resume <session_id>` to fail closed when the
   session is not eligible.
-- [ ] Format the summary using only normalized error fields carried by the
+- [x] Format the summary using only normalized error fields carried by the
   one-shot result; do not read the runtime database, call `status`/`trace`,
   inspect checkpoints, or infer resumability.
-- [ ] Ensure one-shot failure stdout remains empty and never prints partial
+- [x] Ensure one-shot failure stdout remains empty and never prints partial
   assistant output.
-- [ ] Ensure successful one-shot stdout remains exactly the final accepted
+- [x] Ensure successful one-shot stdout remains exactly the final accepted
   assistant output plus the existing trailing newline.
-- [ ] Add or update integration tests for model cancellation, model timeout, and
+- [x] Add or update integration tests for model cancellation, model timeout, and
   non-interactive approval failure to assert the exact stderr summary and empty
   stdout.
-- [ ] Preserve existing tests that inspect normalized terminal errors,
+- [x] Preserve existing tests that inspect normalized terminal errors,
   terminal recovery checkpoints, event payloads, and trace/status observability.
-- [ ] Run canonical verification appropriate to the implementation diff and
+- [x] Run canonical verification appropriate to the implementation diff and
   record the result.
+  Result on 2026-06-09: `uv run pytest tests/unit/cli/test_main_one_shot.py
+  tests/unit/runtime/test_orchestrator_one_shot.py
+  tests/integration/test_cli_one_shot.py -v` passed 33 tests.
+
+## Post-Milestone 11 Repair: One-Shot Live Runtime Interrupt Boundary
+
+**Objective:** ensure running one-shot `Ctrl+C` uses the same live runtime
+cancellation boundary as REPL turns, instead of relying on a top-level CLI
+fallback that creates a separate orchestrator and can only inspect durable active
+session state.
+
+**Deliverables:** one-shot prompt execution through the live prompt runtime
+control layer, active cancellation token/provider handle/shell handle use for
+one-shot running interruption, top-level CLI `KeyboardInterrupt` fallback limited
+to pre-session or abnormal process-level interrupts, preserved four-line failure
+summary, and regression coverage for prompt/model/tool interruption paths.
+
+**Modified boundaries:** `src/debug_agent/runtime/orchestrator.py` one-shot
+execution path, `src/debug_agent/cli/main.py` top-level interrupt fallback,
+existing prompt runtime control helpers currently implemented by `ReplRuntime`,
+and focused one-shot runtime/CLI tests.
+
+**Invariants:** one-shot success stdout remains only final accepted assistant
+output; one-shot terminal failure stderr keeps the Milestone 11 four-line
+summary; runtime truth, checkpoint eligibility, durable conversation semantics,
+ToolBroker boundaries, and exit-code mapping remain unchanged; `debug-agent
+resume <session_id>` remains the only resume validator; no REPL UI/controller
+state becomes part of one-shot execution.
+
+**Verification steps:** run focused one-shot CLI/runtime/integration tests and
+any provider/tool cancellation tests touched by the refactor. Run broader unit or
+integration suites if shared runtime control code changes beyond the one-shot
+path.
+
+**Stop conditions:** stop if the repair requires adding new lifecycle statuses,
+new error reasons, new checkpoint kinds, non-terminal attach, background tasks,
+workflow runtime, or changing provider public adapter contracts.
+
+**Runnable state:** running one-shot `Ctrl+C` requests cancellation through the
+live runtime-owned cancellation handles, reaches the documented cleanup boundary,
+terminalizes once, prints the stable failure summary, and exits without waiting
+for unrelated non-daemon tool/provider worker cleanup outside that boundary.
+
+- [x] Add regression coverage proving top-level CLI fallback is not the normal
+  running one-shot cancellation path.
+- [x] Route one-shot execution through the live prompt runtime control layer
+  that owns the active cancellation token, provider handles, shell handles,
+  durable conversation append, and terminalization helpers.
+- [x] Ensure one-shot running interruption returns a `OneShotResult` carrying
+  the normalized `cancelled/user_cancel_running` terminal error and
+  `terminal_failure_summary = true` from the live runtime path.
+- [x] Limit `main()` top-level `KeyboardInterrupt` handling to raw pre-session or
+  abnormal process-level fallback behavior; do not create a separate
+  orchestrator to terminalize an active running one-shot session as the normal
+  path.
+- [x] Preserve raw fallback behavior when no live one-shot result exists or the
+  result lacks complete normalized error fields.
+- [x] Verify model-call and `view_image` running interruption both request
+  provider/tool cancellation through registered live handles and respect the
+  frozen cancellation cleanup envelope.
+- [x] Preserve existing one-shot success stdout, terminal failure stderr summary,
+  active ownership conflict presentation, startup/config failure behavior,
+  terminal checkpoint behavior, and same-lineage resume eligibility.
+- [x] Run canonical verification appropriate to the implementation diff and
+  record the result.
+  Result on 2026-06-09: `uv run pytest tests/unit/cli/test_main_one_shot.py
+  tests/unit/runtime/test_orchestrator_one_shot.py
+  tests/integration/test_cli_one_shot.py -v` passed 35 tests.
 
 ## Verification Strategy
 

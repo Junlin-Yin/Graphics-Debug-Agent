@@ -28,8 +28,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return _main(args)
     except KeyboardInterrupt:
-        result = RuntimeOrchestrator().cancel_active_session("Interrupted by Ctrl+C.")
-        print(result.message, file=sys.stderr)
+        print("Interrupted by Ctrl+C.", file=sys.stderr)
         return INTERRUPTED
     except RuntimeBootstrapError as exc:
         print(str(exc), file=sys.stderr)
@@ -86,8 +85,50 @@ def _main(args: list[str]) -> int:
     if result.exit_code == 0:
         print(result.message)
     else:
-        print(result.message, file=sys.stderr)
+        summary = _format_one_shot_terminal_failure(result)
+        print(summary if summary is not None else result.message, file=sys.stderr)
     return result.exit_code
+
+
+def _format_one_shot_terminal_failure(result) -> str | None:
+    if not getattr(result, "terminal_failure_summary", False):
+        return None
+    session_id = getattr(result, "session_id", None)
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    error = getattr(result, "error", None)
+    if not _has_complete_normalized_error_fields(error):
+        return None
+    return "\n" + "\n".join(
+        [
+            f"One-shot session {session_id} failed.",
+            f"{error['error_class']}/{error['reason']}: {error['message']}",
+            f"trace: debug-agent trace {session_id}",
+            f"resume: debug-agent resume {session_id}",
+        ]
+    )
+
+
+def _has_complete_normalized_error_fields(error: object) -> bool:
+    if not isinstance(error, dict):
+        return False
+    required = {
+        "schema_version": int,
+        "error_class": str,
+        "reason": str,
+        "message": str,
+        "scope": str,
+        "recoverability": str,
+        "metadata": dict,
+        "artifact_ids": list,
+    }
+    for field, expected_type in required.items():
+        value = error.get(field)
+        if not isinstance(value, expected_type):
+            return False
+        if expected_type is str and not value:
+            return False
+    return True
 
 
 def _parse_prompt_args(args: list[str]) -> tuple[str, str | None] | str:

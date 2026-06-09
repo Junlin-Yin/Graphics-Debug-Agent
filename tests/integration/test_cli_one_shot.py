@@ -11,6 +11,27 @@ def _subprocess_env(home: Path) -> dict[str, str]:
     return {**os.environ, "HOME": str(home)}
 
 
+def _single_session_id(workspace: Path) -> str:
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        return conn.execute("SELECT session_id FROM sessions").fetchone()[0]
+
+
+def _terminal_failure_summary(
+    *,
+    session_id: str,
+    error_class: str,
+    reason: str,
+    message: str,
+) -> str:
+    return (
+        "\n"
+        f"One-shot session {session_id} failed.\n"
+        f"{error_class}/{reason}: {message}\n"
+        f"trace: debug-agent trace {session_id}\n"
+        f"resume: debug-agent resume {session_id}\n"
+    )
+
+
 def test_debug_agent_one_shot_completes_with_fake_model(tmp_path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
@@ -168,6 +189,13 @@ fake_tool_calls = [
 
     assert result.returncode == 1
     assert result.stdout == ""
+    session_id = _single_session_id(workspace)
+    assert result.stderr == _terminal_failure_summary(
+        session_id=session_id,
+        error_class="policy_error",
+        reason="approval_required_non_interactive",
+        message="Interactive approval is unavailable.",
+    )
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "failed"
         assert conn.execute("SELECT status FROM runs").fetchone()[0] == "failed"
@@ -219,7 +247,14 @@ fake_cancelled = true
     )
 
     assert result.returncode == 1
-    assert "fake model cancelled" in result.stderr
+    assert result.stdout == ""
+    session_id = _single_session_id(workspace)
+    assert result.stderr == _terminal_failure_summary(
+        session_id=session_id,
+        error_class="cancelled",
+        reason="model_call_cancelled",
+        message="fake model cancelled",
+    )
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "failed"
         assert conn.execute("SELECT status FROM runs").fetchone()[0] == "failed"
@@ -254,7 +289,14 @@ fake_timeout = true
     )
 
     assert result.returncode == 1
-    assert "fake model timeout" in result.stderr
+    assert result.stdout == ""
+    session_id = _single_session_id(workspace)
+    assert result.stderr == _terminal_failure_summary(
+        session_id=session_id,
+        error_class="model_error",
+        reason="model_call_timeout",
+        message="fake model timeout",
+    )
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "failed"
         assert conn.execute("SELECT status FROM runs").fetchone()[0] == "failed"

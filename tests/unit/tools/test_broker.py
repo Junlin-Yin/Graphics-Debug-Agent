@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import pytest
 
 from debug_agent.persistence.approval_grants import ApprovalGrantStore
 from debug_agent.persistence.artifacts import ArtifactStore
@@ -70,6 +71,41 @@ def _invoke(runtime, tool_name, arguments, **context):
 
 def _event_kinds(runtime) -> list[str]:
     return [event.kind for event in runtime["events"].list_for_run("run_1")]
+
+
+def test_broker_keyboard_interrupt_shuts_down_executor(tmp_path, monkeypatch) -> None:
+    runtime = _runtime(tmp_path)
+    submitted = {"called": False}
+    shutdown_calls: list[dict] = []
+
+    class InterruptingFuture:
+        def result(self, timeout=None):
+            raise KeyboardInterrupt
+
+    class InterruptingExecutor:
+        def __init__(self, *, max_workers):
+            assert max_workers == 1
+
+        def submit(self, fn, *args):
+            submitted["called"] = True
+            return InterruptingFuture()
+
+        def shutdown(self, *, wait=True, cancel_futures=False):
+            shutdown_calls.append(
+                {"wait": wait, "cancel_futures": cancel_futures}
+            )
+
+    monkeypatch.setattr(
+        "debug_agent.tools.broker.ThreadPoolExecutor",
+        InterruptingExecutor,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        _invoke(runtime, "read_file", {"path": "notes.txt"})
+
+    assert submitted == {"called": True}
+    assert shutdown_calls == [{"wait": False, "cancel_futures": True}]
+    runtime["db"].close()
 
 
 def test_schema_validation_rejects_unknown_fields_and_invalid_limits(tmp_path) -> None:

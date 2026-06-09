@@ -196,8 +196,17 @@ Shared behavior:
 - Todo Plan persistence.
 - skill/context injection.
 - normalized errors.
+- running interruption through the live runtime cancellation token, provider
+  handles, shell handles, and cleanup envelope.
 - terminal recovery checkpoint creation.
 - resume eligibility.
+
+One-shot running `Ctrl+C` must be handled by the live prompt runtime that owns
+that turn's cancellation token and active provider/tool/shell handles. A top-level
+CLI `KeyboardInterrupt` fallback may handle pre-session or abnormal process-level
+interrupts, but it must not be the normal cancellation path for a running
+one-shot turn and must not terminalize a running one-shot by creating a separate
+runtime orchestrator that can only inspect durable active-session state.
 
 Controller-specific behavior:
 

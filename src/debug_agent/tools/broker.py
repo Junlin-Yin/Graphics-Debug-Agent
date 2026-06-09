@@ -597,6 +597,10 @@ class ToolBroker:
             if executor is not None:
                 executor.shutdown(wait=False, cancel_futures=True)
             raise
+        except KeyboardInterrupt:
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
+            raise
         except Exception as exc:
             if executor is not None:
                 executor.shutdown(wait=False, cancel_futures=True)
