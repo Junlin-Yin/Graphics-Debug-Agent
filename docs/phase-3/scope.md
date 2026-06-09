@@ -138,6 +138,15 @@ retry.
   - use the same durable conversation, terminal checkpoint, failure, approval,
     Todo Plan, and resume eligibility rules for one-shot and REPL prompt runs.
   - allow eligible one-shot terminal prompt sessions to resume into REPL.
+  - keep successful one-shot stdout stable as the final accepted assistant
+    output only; do not add default streaming, intermediate model text, tool
+    progress, or runtime event output to one-shot stdout or stderr.
+  - when one-shot exits with a terminal failure after a session/run exists,
+    print this stable terminal failure summary to stderr:
+    `One-shot session <session_id> failed.`,
+    `<error_class>/<reason>: <message>`,
+    `trace: debug-agent trace <session_id>`, and
+    `resume: debug-agent resume <session_id>`.
 - Stale running session fail-close:
   - only a user-triggered startup or resume workflow may attempt stale
     fail-close when active ownership blocks progress.

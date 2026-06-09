@@ -126,6 +126,23 @@ Phase 3 acceptance requires:
   depends on terminal checkpoint eligibility: eligible failures are
   `terminal_recoverable`, while failures before the first closed durable
   conversation cut are `terminal_non_resumable`.
+- successful one-shot stdout contains only the final accepted assistant output
+  and does not include default stream deltas, intermediate model text, tool
+  progress, runtime events, trace/status summaries, or warnings.
+- one-shot terminal failure after session/run creation writes no partial
+  assistant output to stdout and prints a stable stderr terminal failure summary
+  in this exact shape:
+  `One-shot session <session_id> failed.`,
+  `<error_class>/<reason>: <message>`,
+  `trace: debug-agent trace <session_id>`,
+  `resume: debug-agent resume <session_id>`.
+- one-shot terminal failure summary includes the `resume:` line whenever the
+  one-shot result has a `session_id`, including non-resumable
+  startup/config/schema failures after session/run creation; resume eligibility
+  is validated only by `debug-agent resume <session_id>`.
+- one-shot failure-summary formatting uses only normalized error fields carried
+  by the one-shot result and does not read the runtime database, call
+  `status`/`trace`, inspect checkpoints, or infer resumability.
 - retryable model/persistence reasons required by the Phase 3 retry registry are
   present in the centralized reason registry and map to the documented default
   recoverability when their preconditions hold.

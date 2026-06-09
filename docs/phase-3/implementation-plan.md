@@ -646,6 +646,86 @@ forced-abort fallback during running cancellation.
   60 tests; final `uv run pytest tests/unit -v` passed 633 tests with
   1 skipped.
 
+## Milestone 11: One-Shot Terminal Failure Summary
+
+**Objective:** make one-shot terminal failures actionable for automation users
+without changing successful one-shot stdout or adding default intermediate
+process output.
+
+**Deliverables:** stable four-line stderr summary for one-shot terminal failures
+after session/run creation, `resume:` line whenever the one-shot result carries
+a `session_id`, no partial assistant output on failure stdout, unchanged
+successful stdout, and CLI integration coverage for the exact presentation
+contract.
+
+**Modified boundaries:** one-shot CLI presentation in `src/debug_agent/cli/`,
+one-shot result/error formatting helpers in `src/debug_agent/runtime/` only if
+needed to expose existing normalized failure fields, and integration tests for
+one-shot success/failure output.
+
+**Invariants:** successful one-shot stdout contains only the final accepted
+assistant output; default one-shot mode does not print stream deltas,
+intermediate model text, tool progress, runtime events, trace summaries, or
+warnings; the failure summary is presentation only and must not alter
+normalized error payloads, durable conversation, terminal facts, terminal
+checkpoints, resume eligibility, run events, or trace/status truth; `debug-agent
+resume <session_id>` remains the only resume eligibility validator.
+
+**Failure summary format:**
+
+```text
+One-shot session <session_id> failed.
+<error_class>/<reason>: <message>
+trace: debug-agent trace <session_id>
+resume: debug-agent resume <session_id>
+```
+
+**Verification steps:** run the narrowest CLI one-shot tests that cover success
+stdout and terminal failure stderr. Run broader unit/integration tests if the
+implementation touches shared orchestrator result contracts or normalized error
+helpers.
+
+**Freeze/review checkpoint:** do not proceed to Phase 4 readiness work until
+the one-shot failure summary output contract is covered by deterministic CLI
+tests.
+
+**Stop conditions:** stop if implementation needs to synthesize resumability,
+reinterpret trace/status data, include `run_id`, print intermediate process
+output, or change the existing runtime truth contract to format the CLI
+summary; stop if formatting would require reading the runtime database,
+calling `status`/`trace`, inspecting checkpoints, or using anything other than
+normalized error fields carried by the one-shot result.
+
+**Runnable state:** one-shot remains automation-friendly: success writes only
+the final assistant output to stdout, and terminal failure writes a stable
+diagnostic summary to stderr with trace and resume commands.
+
+- [ ] Add a one-shot terminal failure summary formatter with the exact four-line
+  shape from `docs/phase-3/specs/session-control.md`.
+- [ ] Route one-shot terminal failures after session/run creation through the
+  summary formatter before printing to stderr.
+- [ ] Keep startup/bootstrap/config failures that do not create a session/run on
+  their existing fail-closed error path unless a session id exists in the
+  returned one-shot result.
+- [ ] Print the `resume:` line whenever the one-shot result has a `session_id`,
+  including non-resumable startup/config/schema failures after session/run
+  creation; rely on `debug-agent resume <session_id>` to fail closed when the
+  session is not eligible.
+- [ ] Format the summary using only normalized error fields carried by the
+  one-shot result; do not read the runtime database, call `status`/`trace`,
+  inspect checkpoints, or infer resumability.
+- [ ] Ensure one-shot failure stdout remains empty and never prints partial
+  assistant output.
+- [ ] Ensure successful one-shot stdout remains exactly the final accepted
+  assistant output plus the existing trailing newline.
+- [ ] Add or update integration tests for model cancellation, model timeout, and
+  non-interactive approval failure to assert the exact stderr summary and empty
+  stdout.
+- [ ] Preserve existing tests that inspect normalized terminal errors,
+  terminal recovery checkpoints, event payloads, and trace/status observability.
+- [ ] Run canonical verification appropriate to the implementation diff and
+  record the result.
+
 ## Verification Strategy
 
 Verification uses only canonical commands from `docs/phase-3/operations.md`:

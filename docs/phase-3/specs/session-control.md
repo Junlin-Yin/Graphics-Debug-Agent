@@ -204,6 +204,25 @@ Controller-specific behavior:
 - one-shot owns input/output binding and process exit-code mapping.
 - one-shot non-interactive approval unavailable behavior fails closed according
   to the same approval policy.
+- one-shot successful stdout contains only the final accepted assistant output.
+  Default one-shot mode must not print stream deltas, intermediate model text,
+  tool progress, runtime events, or trace/status summaries.
+- one-shot terminal failures after session/run creation print a stable stderr
+  summary in this exact shape:
+  `One-shot session <session_id> failed.`,
+  `<error_class>/<reason>: <message>`,
+  `trace: debug-agent trace <session_id>`,
+  `resume: debug-agent resume <session_id>`. The summary is presentation only;
+  normalized error payloads, durable conversation, terminal facts, checkpoints,
+  resume eligibility, and run events remain the runtime truth.
+- one-shot prints the `resume:` line for every terminal failure that has a
+  `session_id`, including non-resumable startup/config/schema failures after
+  session/run creation. `debug-agent resume <session_id>` remains responsible
+  for fail-closed eligibility validation.
+- one-shot CLI failure-summary formatting must use only normalized error fields
+  carried by the one-shot result. It must not read the runtime database, call
+  `status`/`trace`, inspect checkpoints, or infer resumability while formatting
+  stderr.
 - REPL owns interactive loop, TUI/plain input, slash command handling, and idle
   control actions.
 
