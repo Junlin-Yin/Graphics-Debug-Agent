@@ -6,7 +6,7 @@
 
 新的主线目标分为两段：
 
-- **v1: RenderDoc Debug Runtime**，覆盖 Phase 0-4。Phase 0/0.5/1 是已完成基础能力，Phase 2-4 补齐 `renderdoc-gpu-debug` 所需的平台能力。
+- **v1: RenderDoc Debug Runtime**，覆盖 Phase 0-4，其中 Phase 3.5 是 Phase 3 与 Phase 4 之间的 runtime framework hardening phase。Phase 0/0.5/1 是已完成基础能力，Phase 2-3 补齐 `renderdoc-gpu-debug` 所需的核心平台能力，Phase 3.5 补强通用 runtime ergonomics、native tooling 和 auditability，Phase 4 只保留 RenderDoc 业务 readiness。
 - **v2: Prompt-Skill Driven Shader Loop**，覆盖 Phase 5-6。v2 在 v1 平台能力上补齐基础 named subagent 能力，并让 `shader-debug-loop` 通过 fake Ralph Loop readiness 验证 prompt-skill 路线。
 
 项目必须保持两条边界：
@@ -107,11 +107,19 @@ Phase 3 的 provider cancellation 第一版保留 `AgentLoopAdapter.run()` / `st
 
 Phase 3 不做 `/cancel`、non-terminal session attach、startup/config/schema failure resume、generic step-level retry、已接受/已完成 model-call result replay、token-level resume、tool-mid-flight resume、默认 runtime-level automatic tool retry、subagent cancellation、PTY shell 或 long-running shell runtime。
 
+### Phase 3.5: Runtime Ergonomics, Native Tooling, And Audit Hardening
+
+集中完成与 v1 业务适配无直接绑定的 debug-agent framework 优化：归拢 runtime 常量并按模块集中定义，重新界定哪些常量允许通过 frozen `config.toml` 配置；扩展通用 native tools、优化 model-visible schema，并实现更精细的参数控制；优化 `engine.log` 和 `trace.md`，提高人工审计、失败回溯和长流程调试效率；持续优化 REPL/TUI 交互体验。
+
+Phase 3.5 只能补强通用 runtime、ToolBroker/native tool、observability/audit 和 REPL/TUI 层能力。它不得引入 RenderDoc、Ralph Loop 或 shader 专用 runtime 语义；不得把业务报告格式、RenderDoc 命令 allowlist、shader schema validator 或业务 trace 规则写入 runtime core；不得改变 TUI 和 streaming observation 的非权威地位。native tool 增强仍必须经过 ToolBroker、schema validation、path policy、approval、artifact handling 和 audit。新增或调整 config 项必须纳入 session frozen config snapshot；任何 runtime truth schema、event kind、tool result contract、error payload、artifact metadata 或 checkpoint 语义变化都必须按 Phase 2+ 兼容规则处理。
+
+Phase 3.5 不做 `renderdoc-gpu-debug` 业务适配、fake `rdc` CI scenario、Windows + real `rdc` smoke、`shader-debug-loop`、subagent、workflow、MCP、plugin、PTY shell 或 long-running shell runtime。
+
 ### Phase 4: RenderDoc Debug Readiness
 
-验证 runtime 能承载 `renderdoc-gpu-debug`。适配该 prompt skill，验证短时结构化 `rdc` 命令序列、fake `rdc` CI scenario，并通过 Windows + `rdc` real smoke 作为 v1 完成硬门槛。
+验证 runtime 能承载 `renderdoc-gpu-debug`。适配该 prompt skill，验证短时结构化 `rdc` 命令序列、fake `rdc` CI scenario，并通过 Windows + `rdc` real smoke 作为 v1 完成硬门槛。Phase 4 只处理 RenderDoc 业务 readiness 和业务层适配调试，不承担通用 framework hardening。
 
-Phase 4 不做 `shader-debug-loop`、subagent、workflow、shader patch loop、shader-specific runtime validators 或 long-running shell runtime。
+Phase 4 不做通用常量/config 重构、通用 native tool framework 扩展、通用 engine log/trace overhaul、通用 REPL/TUI 优化、`shader-debug-loop`、subagent、workflow、shader patch loop、shader-specific runtime validators 或 long-running shell runtime。
 
 ### Phase 5: Basic Subagent Framework
 

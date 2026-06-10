@@ -1,0 +1,311 @@
+# Phase 3.5 Scope
+
+## Goal
+
+Phase 3.5 delivers runtime ergonomics, native tooling, and audit hardening
+between Phase 3 session/failure control and Phase 4 RenderDoc readiness.
+
+This phase strengthens generic `debug-agent` framework behavior without adding
+RenderDoc, Ralph Loop, shader-specific, workflow, subagent, MCP, plugin, PTY, or
+long-running shell semantics.
+
+The native-tool portion of Phase 3.5 focuses on:
+
+- safer and more useful model-visible file tools.
+- line-oriented text search backed by controlled ripgrep execution.
+- consistent pagination and output shapes.
+- stricter ToolBroker schema validation and normalized error mapping.
+- volatile stale-write protection for model-visible file writes.
+- audit records that preserve normalized/redacted tool arguments without adding
+  a new call-signature mechanism.
+- compatibility handling for the changed model-visible tool schema and result
+  contracts.
+
+The trace observability portion of Phase 3.5 focuses on:
+
+- converting `trace.md` from a runtime event dump into a human-readable
+  conversation transcript rendered from durable `conversation_messages`.
+- moving trace output to `.sessions/<session_id>/logs/trace.md`.
+- renaming `logs/engine.log` to `logs/events.jsonl` while preserving its
+  non-authoritative observability stream role.
+- keeping trace and JSONL output outside runtime truth, checkpoint validation,
+  resume, and recovery.
+
+## Must Implement
+
+### Configuration And Constants
+
+- add `specs/configuration.md` as the authoritative Phase 3.5 configuration and
+  constants contract.
+- centralize runtime constants into directory-level settings modules without
+  making a constant configurable unless a phase config spec explicitly allows it.
+- add `[agent_loop].max_tool_call_iterations` to frozen runtime config with
+  default `1000` and positive-integer validation.
+- add `[execution].default_tool_timeout_seconds` to the Phase 3 frozen execution
+  config group with default `30` and positive-integer validation.
+- keep Phase 3 startup/config ordering. Invalid Phase 3.5 `[agent_loop]` or
+  `[execution]` config must fail through the existing startup config failure
+  boundary before runtime database bootstrap or startup legacy schema reset.
+- keep `agent.toml` as the path and shell policy declaration channel; do not move
+  path policy or shell policy into `config.toml`.
+- keep project-local `config.toml` unsupported.
+- keep `view_image` image count, image edge, image pixel, and request body limits
+  as fixed runtime constants rather than `[multimodal.defaults]` fields.
+- do not add global unknown-key fail-closed behavior for `config.toml` in Phase
+  3.5.
+
+### Compatibility
+
+- identify fresh Phase 3.5 runtime databases with
+  `PHASE_3_5_SCHEMA_USER_VERSION = 4` and SQLite `PRAGMA user_version = 4`.
+- before startup, active ownership checks, `status`, `trace`, or `resume`
+  interpret runtime truth, read existing `.sessions/runtime.db`
+  `PRAGMA user_version`.
+- for startup paths that will create a new REPL or one-shot session/run, delete
+  missing-version, `0`, or legacy `< 4` `.sessions/runtime.db` before
+  interpreting any rows, then create a fresh Phase 3.5 database.
+- startup legacy reset deletes only `.sessions/runtime.db`; legacy artifact,
+  log, trace, checkpoint-payload, and session subdirectories under `.sessions/`
+  may remain on disk for manual cleanup but must not be interpreted as runtime
+  truth or referenced by the fresh database.
+- `status`, `trace`, and `resume` must never reset or create a runtime database.
+  They fail closed for missing-version, `0`, legacy `< 4`, unknown future
+  version `> 4`, or non-startup schema mismatch before interpreting runtime
+  truth.
+- do not migrate, reinterpret, preserve, or rewrite legacy rows into Phase 3.5
+  shape.
+- schema-version fail-closed failures use the Phase 3 normalized
+  `config_error/{legacy_schema_version,unknown_schema_version,schema_version_missing}`
+  reasons and existing CLI mapping rules.
+- user-facing messages must explain that Phase 3.5 does not support older
+  runtime databases. Startup reset messages must say the old runtime database
+  was deleted and mention that legacy files under `.sessions/` may remain but
+  are not interpreted.
+
+### Native Tools
+
+- keep all model-visible tools behind ToolBroker, schema validation, path
+  policy, approval, artifact handling, timeout handling, result normalization,
+  and audit.
+- extend ToolBroker schema validation to support the JSON schema features needed
+  by Phase 3.5 tool schemas: `boolean`, `enum`, `minimum`, `maximum`, default
+  injection, `minItems`, `maxItems`, arrays, and nested objects.
+- model-visible path fields keep the existing `path` style, accepting relative
+  or absolute input. Runtime canonicalizes paths before policy, approval,
+  handler execution, and audit.
+- explicitly exclude `view_image` ordinary model-visible output from the
+  Phase 3.5 canonical-absolute-path result rule. `view_image` keeps its Phase 2
+  display-path output behavior while approval, policy, and audit use canonical
+  paths internally.
+- add `find_file` as a model-visible native read tool.
+- enhance `read_file` with `offset`, fixed default and maximum line limits, and
+  structured output.
+- enhance `list_dir` with `ignore`, `offset`, `include_hidden`, pagination, and
+  structured output.
+- change `search_text` from the Phase 1 literal `query` schema to a
+  line-oriented `pattern` schema backed by controlled ripgrep execution.
+- enhance `edit_file` with `replace_all`, uniqueness semantics, structured
+  output, and stale-write guard.
+- enhance `write_file` output and require stale-write guard when overwriting an
+  existing file.
+- enhance successful `shell_exec` output with `argv`, canonical `cwd`,
+  `stdout`, `stderr`, `returncode`, `signal`, and `duration_seconds`.
+- preserve `shell_exec` structured argv execution. Do not add raw shell strings,
+  `command`, `directory`, `description`, background execution, interactive
+  execution, PTY, or long-running shell runtime.
+- preserve `view_image` as image-only. Do not add video, audio, URL, base64,
+  artifact-id, or general multimedia inputs.
+- preserve existing `activate_skill`, `load_skill_resource`, and `todo`
+  runtime-control tools from earlier phases. Phase 3.5 does not update or
+  tighten their schemas, target validation, behavior semantics, approval
+  exceptions, runtime truth, persistence, checkpoint facts, or result contracts.
+
+### Trace Observability
+
+- add `specs/observability.md` as the authoritative Phase 3.5 trace/events
+  contract.
+- generate conversation trace at `.sessions/<session_id>/logs/trace.md`.
+- stop generating `.sessions/<session_id>/trace.md`.
+- rename `.sessions/<session_id>/logs/engine.log` to
+  `.sessions/<session_id>/logs/events.jsonl`.
+- do not implement legacy trace/log path compatibility, migration, symlink, or
+  copy.
+- render trace body only from accepted closed durable conversation rows ordered
+  by `conversation_messages.message_index ASC`.
+- include user messages, assistant final messages, assistant tool-call messages
+  with paired tool results, and durable runtime failure/cancellation facts.
+- exclude ordinary run event timelines, checkpoint internals, approval
+  internals, context compression internals, and `context_summary` rows from
+  trace.
+- preserve original durable user and assistant message content as-is for human
+  reading, without Markdown escaping or sanitization.
+- allow emoji section headings and other non-ASCII trace output; do not provide
+  an ASCII-only trace format.
+- treat `trace.md` as human-readable conversation history, not audit truth,
+  runtime truth, checkpoint input, resume input, or recovery input.
+- after terminal checkpoint success, automatic trace generation failure must not
+  roll back checkpoint creation, block terminalization, block ownership release,
+  write runtime truth, write audit/run events, or change the original workflow
+  exit code.
+- manual `debug-agent trace <session_id>` must fully rebuild trace from the
+  database, may run against a running session, must not claim active ownership,
+  and must not start, resume, terminalize, fail-close, model-call, or tool-call
+  anything.
+- automatic and manual trace writes must use same-directory temporary files and
+  atomic replace so the final trace is never partial or interleaved.
+- `events.jsonl` keeps the same authority as the old `engine.log`: a
+  non-authoritative JSONL stream for run-event observations and runtime
+  diagnostics.
+
+### Pagination And Limits
+
+- `read_file`: `offset + limit`, default `limit = 2000`, hard maximum `2000`,
+  offset unit is 0-based line number.
+- `list_dir`: `offset + limit`, default `limit = 200`, hard maximum `1000`,
+  offset unit is sorted entry item.
+- `find_file`: `offset + maxResults`, default `maxResults = 100`, hard maximum
+  `1000`, offset unit is sorted file match item.
+- `search_text`: `offset + maxResults`, default `maxResults = 100`, hard
+  maximum `1000`, offset unit is result item for the selected output mode.
+- requested page sizes above hard maximum return
+  `tool_error/tool_schema_invalid`; they are not silently capped.
+- `total_returned` is the number of result items returned on this page, not a
+  full result-set count.
+- `truncated=true` means the same normalized parameter set has another page at
+  `next_offset`; otherwise `truncated=false` and `next_offset=null`.
+
+### ToolBroker Volatile File Metadata Cache
+
+- maintain a session-runtime-local, in-process file metadata cache for
+  stale-write guard.
+- cache entries are keyed by canonical absolute path and include `sha256`,
+  `size`, `mtime_ns`, `observed_at`, and `source_tool`.
+- successful `read_file` must compute whole-file raw byte SHA-256 and update the
+  cache even when returning only a paginated slice.
+- successful guarded `edit_file` and overwrite `write_file` advance the cache to
+  the new revision.
+- successful create-new-file `write_file` creates a cache entry after writing.
+- `search_text`, `list_dir`, `find_file`, and `view_image` do not create cache
+  entries usable for write guard.
+- cache is not persisted runtime truth. It must not be written to SQLite,
+  checkpoints, artifacts, or events as recoverable state. Resume or process
+  restart starts with an empty cache.
+
+### Approval And Audit
+
+- keep `approval_scope_signature` as the only reusable approval signature
+  mechanism.
+- do not add a separate deterministic call/audit signature.
+- ToolBroker audit events must persist normalized or redacted tool arguments
+  sufficient to explain each call. `view_image` keeps Phase 2 query redaction and
+  records only `effective_query_source`, not query text or query length.
+- approval reusable grant scope is defined per tool in
+  `specs/native-tools.md`. Pagination parameters are excluded from reusable
+  approval scope.
+
+### Tool Availability In Terminal Recovery Checkpoints
+
+- do not add a complete per-tool schema/result hash contract.
+- extend the existing terminal recovery checkpoint `tool_availability` manifest
+  with the dynamic facts needed to restore Phase 3.5 tool bindings and a native
+  tool contract marker.
+- use `PRAGMA user_version = 4` as the cross-version compatibility boundary;
+  do not rely on per-tool schema hashes to migrate or accept older sessions.
+
+## Must Not Implement
+
+- `renderdoc-gpu-debug` business adaptation.
+- fake `rdc` CI scenario.
+- Windows + real `rdc` smoke.
+- RenderDoc command allowlists, Ralph Loop state machines, shader-specific
+  validators, shader patch tools, or business report schemas.
+- subagents, workflow runtime, MCP, plugin packaging, background tasks, or task
+  graph.
+- PTY shell, interactive terminal execution, background shell execution, or
+  long-running shell runtime.
+- deterministic call/audit signature.
+- complete per-tool schema hash or result-contract hash.
+- full node minimatch compatibility, brace expansion, extglob, or glob behavior
+  outside the Phase 3.5 portable subset.
+- `search_text.multiline`.
+- Python dependency additions for glob matching.
+- Python regex fallback for `search_text` when `rg` is missing.
+- persistent file metadata cache, revision-token schema, or model-visible
+  `expected_sha256` fields.
+- `view_image` video, audio, URL, base64, or artifact-id input.
+- changing `view_image` ordinary output path display behavior.
+- legacy `.sessions/<session_id>/trace.md` compatibility.
+- legacy `.sessions/<session_id>/logs/engine.log` compatibility.
+- trace-to-runtime-truth reconstruction.
+- trace audit persistence or trace failure audit events.
+- ASCII-only trace output variant.
+
+## Runtime Contract Additions
+
+Phase 3.5 changes the model-visible native tool schemas and native tool result
+contracts. These changes are runtime truth and require schema version 4.
+
+Phase 3.5 adds `find_file` to the model-visible native tool set.
+
+Phase 3.5 changes `search_text` from Phase 1 literal `query` search to
+line-oriented ripgrep-backed `pattern` search. The old `query` field is not an
+alias.
+
+Phase 3.5 preserves `activate_skill`, `load_skill_resource`, and `todo` as
+model-visible runtime-control tools. Their absence from the native-tool
+comparison draft's enhancement list is not removal, deprecation, or behavior
+change.
+
+Phase 3.5 adds a volatile ToolBroker file metadata cache. This cache is runtime
+execution state only, not recovery truth.
+
+Phase 3.5 extends terminal recovery checkpoint `tool_availability` with a native
+tool marker and dynamic tool facts. It does not introduce a separate complete
+tool-contract hash system.
+
+Phase 3.5 changes observability file paths and trace rendering behavior:
+
+- `trace.md` is now derived from durable conversation rows and written under
+  `logs/trace.md`.
+- `events.jsonl` replaces `engine.log` as the JSONL observability stream.
+- these files remain non-authoritative observability outputs and are not runtime
+  truth.
+
+Phase 3.5 adds `ui_error/trace_render_failed` for trace Markdown render/write
+failures. Durable conversation validation failures remain
+`persistence_error/conversation_cut_invalid`.
+
+## Minimum Runnable Slice
+
+1. User starts a fresh Phase 3.5 REPL or one-shot session.
+2. Runtime creates a schema version 4 database, freezes config and policy, and
+   exposes the Phase 3.5 model-visible tool set.
+3. The model calls `find_file`, `read_file`, `list_dir`, and `search_text` with
+   authorized roots and receives structured paginated results.
+4. The model calls `read_file` on an existing file, then successfully uses
+   `edit_file` or overwrite `write_file` guarded by the volatile cache.
+5. A direct overwrite of an existing file without a prior valid cache entry
+   fails with `tool_error/tool_execution_failed`.
+6. Successful `shell_exec` returns structured shell metadata without expanding
+   shell capabilities.
+7. Terminalization writes a terminal recovery checkpoint whose
+   `tool_availability` contains Phase 3.5 dynamic tool facts.
+8. Runtime fully rebuilds `.sessions/<session_id>/logs/trace.md` from durable
+   conversation rows after terminal checkpoint success, and writes
+   `.sessions/<session_id>/logs/events.jsonl` instead of legacy `engine.log`.
+9. `resume` validates the checkpoint tool availability against the frozen
+   session config and starts with an empty volatile file metadata cache.
+
+## Completion Definition
+
+Phase 3.5 native-tool spec work is complete when:
+
+- this phase document set defines scope, architecture, native tool contracts,
+  configuration contracts, observability contracts, compatibility, tests, and
+  operations.
+- `native-tools-comparison.md` is updated as a source draft reflecting the final
+  Phase 3.5 decisions.
+- no `docs/phase-3.5/implementation-plan.md` is created as part of this spec
+  task.
+- implementation work does not begin until a future approved
+  `implementation-plan.md` exists for Phase 3.5.

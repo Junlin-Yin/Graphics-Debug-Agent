@@ -55,11 +55,17 @@ They must not include raw policy files, full allow/deny lists, approval prompt
 contents, or other policy internals that are not needed for audit. The
 model-visible projection never includes policy metadata.
 
-`view_image` normalized error metadata, audit payloads, status, trace, and
-engine-log diagnostics inherit the Phase 2 query redaction rule. Runtime-authored
-fields must not include the concrete effective query text, raw `query`
-argument, query preview, or query length. They may record only the redacted
-query source, such as `effective_query_source = "assistant"` or `"default"`.
+`view_image` normalized error metadata, audit payloads, status output, and
+events/log diagnostics inherit the Phase 2 query redaction rule.
+Runtime-authored fields must not include the concrete effective query text, raw
+`query` argument, query preview, or query length. They may record only the
+redacted query source, such as `effective_query_source = "assistant"` or
+`"default"`.
+Phase 3.5 conversation trace is the explicit exception for assistant-authored
+transcript content: it may render `query` when the query appears in accepted raw
+tool-call arguments. This exception does not allow runtime-authored metadata,
+events JSONL, status, error metadata, audit payloads, approval scope, or
+`ToolResult.metadata` to copy query text, preview, or length.
 
 ## Error Classes
 
@@ -182,6 +188,7 @@ facts and tests must not use them interchangeably.
 
 - `tui_init_failed`
 - `stream_render_failed`
+- `trace_render_failed`
 - `prompt_input_failed`
 
 ### `cancelled`
@@ -382,6 +389,7 @@ mapping is defined below:
 | `runtime_error/internal_invariant_failed`, `runtime_error/adapter_contract_violation`, `runtime_error/terminal_transition_invalid`, or `runtime_error/retry_rule_invalid` | `ERROR_INTERNAL_INVARIANT` |
 | `runtime_error/resume_not_eligible` or `runtime_error/resume_checkpoint_required` | `ERROR_EXECUTION_FAILED` |
 | `ui_error/stream_render_failed` after trace lookup succeeds | `ERROR_TRACE_RENDER` |
+| `ui_error/trace_render_failed` after trace lookup succeeds | `ERROR_TRACE_RENDER` |
 | Other `ui_error/*` | `ERROR_EXECUTION_FAILED` |
 | `cancelled/user_cancel_process` or process-level interrupt | `INTERRUPTED` |
 | Other accepted runtime failures after entering a session/run execution path | `ERROR_EXECUTION_FAILED` |

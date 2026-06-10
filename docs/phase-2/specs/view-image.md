@@ -90,9 +90,12 @@ always receive an effective query:
 
 Assistant-authored raw tool-call arguments may contain `query`. The immediate
 tool-loop transcript may also contain the raw tool call because provider tool
-protocols need the model's tool invocation to pair with the tool result. Runtime
-must not copy the concrete query text into runtime-authored normalized audit,
-trace, engine-log, context-snapshot metadata, or `ToolResult.metadata` fields.
+protocols need the model's tool invocation to pair with the tool result.
+Starting in Phase 3.5, the human-readable conversation trace may render this
+assistant-authored raw tool-call argument as transcript content. Runtime must
+not copy the concrete query text into runtime-authored normalized audit,
+events/log metadata, status output, error metadata, context-snapshot metadata,
+or `ToolResult.metadata` fields.
 
 Runtime trims `query` before semantic validation. `query` has a frozen maximum
 length from multimodal configuration, defaulting to 8192 characters after
@@ -377,7 +380,7 @@ Image bytes, base64, and provider image content parts must not be written to:
 - SQLite run event payloads.
 - context snapshots.
 - trace output.
-- engine log.
+- events/log output.
 - ordinary tool output.
 
 Phase 2 does not persist image bytes or base64 in `ArtifactStore` merely because
@@ -442,14 +445,16 @@ assistant-provided tool input.
 
 `view_image` overrides the generic ToolBroker audit convention that normally
 persists normalized arguments. Runtime-authored persisted `view_image` audit
-metadata, trace output, engine log entries, context snapshot metadata, and
-`ToolResult.metadata` must not include the concrete effective query text, raw
-`query` argument, query previews, or query length facts. They may record only
-`effective_query_source` as `assistant` or `default`. This restriction does not
-forbid assistant-authored raw tool-call arguments or the immediate tool-loop
-transcript from containing `query`. Human-readable diagnostics must follow the
-same rule and must never include image bytes, base64, or provider image content
-parts.
+metadata, events/log entries, status output, error metadata, context snapshot
+metadata, and `ToolResult.metadata` must not include the concrete effective
+query text, raw `query` argument, query previews, or query length facts. They
+may record only `effective_query_source` as `assistant` or `default`. This
+restriction does not forbid assistant-authored raw tool-call arguments or the
+immediate tool-loop transcript from containing `query`. Starting in Phase 3.5,
+the conversation trace may render those assistant-authored raw tool-call
+arguments as transcript content. Runtime-authored human-readable diagnostics
+must follow the redaction rule and must never include image bytes, base64, or
+provider image content parts.
 
 ## Error Handling
 
