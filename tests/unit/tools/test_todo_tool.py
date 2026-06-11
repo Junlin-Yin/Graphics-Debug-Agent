@@ -118,10 +118,10 @@ def test_todo_schema_rejects_invalid_shape_before_routing(tmp_path, arguments) -
 
     result = _invoke(runtime, arguments)
 
-    assert result.status == "denied"
+    assert result.status == "error"
     assert result.error["error_class"] == "tool_error"
     assert result.error["reason"] == "tool_schema_invalid"
-    assert _event_kinds(runtime) == ["tool_call_denied"]
+    assert _event_kinds(runtime) == ["tool_call_failed"]
     event = runtime["events"].list_for_run("run_1")[0]
     assert event.payload["error"]["error_class"] == "tool_error"
     assert event.payload["error"]["reason"] == "tool_schema_invalid"
@@ -145,10 +145,10 @@ def test_todo_semantic_validation_denies_invalid_items(tmp_path, item) -> None:
 
     result = _invoke(runtime, {"items": [item]})
 
-    assert result.status == "denied"
+    assert result.status == "error"
     assert result.error["error_class"] == "tool_error"
     assert result.error["reason"] == "tool_schema_invalid"
-    assert _event_kinds(runtime) == ["tool_call_denied"]
+    assert _event_kinds(runtime) == ["tool_call_failed"]
     assert runtime["context"]["todo_plan_store"].get_current("run_1").version == 0
     runtime["db"].close()
 
@@ -166,10 +166,10 @@ def test_todo_rejects_multiple_in_progress_items(tmp_path) -> None:
         },
     )
 
-    assert result.status == "denied"
+    assert result.status == "error"
     assert result.error["error_class"] == "tool_error"
     assert result.error["reason"] == "tool_schema_invalid"
-    assert _event_kinds(runtime) == ["tool_call_denied"]
+    assert _event_kinds(runtime) == ["tool_call_failed"]
     runtime["db"].close()
 
 

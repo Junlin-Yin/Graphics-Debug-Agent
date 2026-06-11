@@ -1903,11 +1903,7 @@ def _provider_messages_to_conversation(
                     next_seq += 1
                 continue
         if role == "tool" and kind == "tool_result" and isinstance(tool_call_id, str):
-            content = {
-                "message_type": "tool_result",
-                "content": content,
-                "tool_call_id": tool_call_id,
-            }
+            content = _tool_result_observation_content(content, tool_call_id=tool_call_id)
             model_call_id = _model_call_id_from_tool_call_id(tool_call_id)
         if not isinstance(content, (str, dict)):
             content = str(content)
@@ -1924,6 +1920,92 @@ def _provider_messages_to_conversation(
         )
         next_seq += 1
     return converted
+
+
+def _tool_result_observation_content(
+    content: object,
+    *,
+    tool_call_id: str | None,
+) -> dict[str, Any]:
+    if isinstance(content, dict) and content.get("message_type") == "tool_result":
+        normalized = dict(content)
+        normalized.setdefault("tool_call_id", tool_call_id)
+        normalized.setdefault("tool_name", "")
+        normalized.setdefault("status", "ok" if normalized.get("error") is None else "error")
+        normalized.setdefault("artifact_ids", [])
+        normalized.setdefault("metadata", {})
+        normalized.setdefault("content", None)
+        normalized.setdefault("error", None)
+        if normalized.get("status") != "ok":
+            normalized["content"] = None
+        return normalized
+    decoded: object = content
+    if isinstance(content, str):
+        try:
+            decoded = json.loads(content)
+        except json.JSONDecodeError:
+            decoded = content
+    if isinstance(decoded, dict) and decoded.get("message_type") == "tool_result":
+        return _tool_result_observation_content(decoded, tool_call_id=tool_call_id)
+    if _is_model_visible_tool_error(decoded):
+        return {
+            "message_type": "tool_result",
+            "tool_name": "",
+            "tool_call_id": tool_call_id,
+            "status": "error",
+            "content": None,
+            "error": {
+                "error_class": str(decoded.get("error_class") or "tool_error"),
+                "reason": str(decoded.get("reason") or "tool_execution_failed"),
+                "message": str(decoded.get("message") or "Tool failed."),
+                "artifact_ids": decoded.get("artifact_ids")
+                if isinstance(decoded.get("artifact_ids"), list)
+                else [],
+            },
+            "artifact_ids": decoded.get("artifact_ids")
+            if isinstance(decoded.get("artifact_ids"), list)
+            else [],
+            "metadata": {},
+        }
+    artifact_ids = _artifact_ids_from_tool_content(decoded)
+    return {
+        "message_type": "tool_result",
+        "tool_name": "",
+        "tool_call_id": tool_call_id,
+        "status": "ok",
+        "content": decoded,
+        "error": None,
+        "artifact_ids": artifact_ids,
+        "metadata": {},
+    }
+
+
+def _artifact_ids_from_tool_content(content: object) -> list[str]:
+    found: list[str] = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            artifact_id = value.get("artifact_id")
+            relative_path = value.get("relative_path")
+            if isinstance(artifact_id, str) and isinstance(relative_path, str):
+                found.append(artifact_id)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(content)
+    return list(dict.fromkeys(found))
+
+
+def _is_model_visible_tool_error(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("error_class"), str)
+        and isinstance(value.get("reason"), str)
+        and isinstance(value.get("message"), str)
+    )
 
 
 def _message_tool_calls(message: object) -> list[dict[str, Any]]:

@@ -595,7 +595,7 @@ def test_langchain_adapter_stream_reconstructs_tool_call_chunks_before_invocatio
                 error=None,
                 artifacts=[],
                 metadata={},
-                redacted_output=None,
+                redacted_output="[redacted preview]",
             )
 
     result = LangChainAgentLoopAdapter(
@@ -740,7 +740,7 @@ def test_langchain_adapter_stream_ignores_empty_name_tool_calls() -> None:
                 error=None,
                 artifacts=[],
                 metadata={},
-                redacted_output=None,
+                redacted_output="[redacted preview]",
             )
 
     result = LangChainAgentLoopAdapter(
@@ -1538,6 +1538,84 @@ def test_langchain_adapter_feeds_tool_results_back_to_model() -> None:
         )
     ]
 
+
+def test_langchain_adapter_projects_shell_nonzero_exit_reason_to_tool_observation() -> None:
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="error",
+                output=None,
+                error={
+                    "schema_version": 1,
+                    "error_class": "tool_error",
+                    "reason": "shell_nonzero_exit",
+                    "message": "err (exit code 7)",
+                    "scope": "tool",
+                    "recoverability": "turn_recoverable",
+                    "metadata": {},
+                    "artifact_ids": [],
+                },
+                artifacts=[],
+                metadata={"tool_name": "shell_exec"},
+                redacted_output=None,
+            )
+
+    class ToolLoopModel:
+        def __init__(self) -> None:
+            self.messages_by_call = []
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            self.messages_by_call.append(messages)
+            if len(self.messages_by_call) == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "shell_exec_0",
+                                "name": "shell_exec",
+                                "args": {"argv": ["false"]},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "saw failure", "tool_calls": [], "usage": {}},
+            )()
+
+    request = replace(
+        _request(),
+        tools=[
+            {
+                "name": "shell_exec",
+                "description": "Run shell",
+                "input_schema": {"type": "object", "properties": {}, "required": []},
+            }
+        ],
+    )
+    model = ToolLoopModel()
+
+    result = LangChainAgentLoopAdapter(
+        model=model,
+        tool_broker=RecordingBroker(),
+    ).run(request, _context())
+
+    assert result.status == "completed"
+    observation = json.loads(model.messages_by_call[1][-1].content)
+    assert observation == {
+        "error_class": "tool_error",
+        "reason": "shell_nonzero_exit",
+        "message": "err (exit code 7)",
+        "artifact_ids": [],
+    }
 
 def test_langchain_adapter_sends_full_todo_output_back_to_model() -> None:
     full_output = {

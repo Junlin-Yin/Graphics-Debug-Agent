@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from hashlib import sha256
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass
@@ -38,6 +39,16 @@ from debug_agent.tools.settings import (
 )
 from debug_agent.tools.shell import ShellHandlerResult
 from debug_agent.tools.view_image import ViewImageResult
+
+
+_FIELD_ARTIFACT_ORDER = (
+    ("read_file", "content"),
+    ("search_text", "matches"),
+    ("search_text", "paths"),
+    ("search_text", "counts"),
+    ("shell_exec", "stdout"),
+    ("shell_exec", "stderr"),
+)
 
 
 @dataclass(frozen=True)
@@ -188,7 +199,7 @@ class ToolBroker:
         approval_wait_duration_ms = 0
         tool_audit_recorder = context.get("tool_audit_recorder")
         if not isinstance(arguments, dict):
-            result = _denied_result(
+            result = _error_result(
                 "Tool arguments must be an object.",
                 error_class="tool_error",
                 reason="tool_schema_invalid",
@@ -197,7 +208,7 @@ class ToolBroker:
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
-                kind="tool_call_denied",
+                kind="tool_call_failed",
                 audit_recorder=tool_audit_recorder,
                 payload=_audit_payload(
                     tool_name=tool_name,
@@ -215,7 +226,7 @@ class ToolBroker:
 
         definition = self._definitions.get(tool_name)
         if definition is None or not tool_name.strip():
-            result = _denied_result(
+            result = _error_result(
                 "Invalid tool name." if not tool_name.strip() else f"Unknown tool: {tool_name}",
                 error_class="tool_error",
                 reason="unknown_tool",
@@ -224,7 +235,7 @@ class ToolBroker:
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
-                kind="tool_call_denied",
+                kind="tool_call_failed",
                 audit_recorder=tool_audit_recorder,
                 payload=_audit_payload(
                     tool_name=tool_name,
@@ -240,7 +251,7 @@ class ToolBroker:
         raw_argument_keys = frozenset(normalized_arguments)
         schema_error = _validate_schema(definition, normalized_arguments)
         if schema_error is not None:
-            result = _denied_result(
+            result = _error_result(
                 schema_error,
                 error_class="tool_error",
                 reason="tool_schema_invalid",
@@ -249,7 +260,7 @@ class ToolBroker:
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
-                kind="tool_call_denied",
+                kind="tool_call_failed",
                 audit_recorder=tool_audit_recorder,
                 payload=_audit_payload(
                     tool_name=tool_name,
@@ -267,7 +278,7 @@ class ToolBroker:
             raw_argument_keys=raw_argument_keys,
         )
         if search_semantic_error is not None:
-            result = _denied_result(
+            result = _error_result(
                 search_semantic_error,
                 error_class="tool_error",
                 reason="tool_schema_invalid",
@@ -276,7 +287,7 @@ class ToolBroker:
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
-                kind="tool_call_denied",
+                kind="tool_call_failed",
                 audit_recorder=tool_audit_recorder,
                 payload=_audit_payload(
                     tool_name=tool_name,
@@ -294,7 +305,7 @@ class ToolBroker:
             frozen_config=context.get("frozen_config", {}),
         )
         if semantic_error is not None:
-            result = _denied_result(
+            result = _error_result(
                 semantic_error,
                 error_class="tool_error",
                 reason="tool_schema_invalid",
@@ -303,7 +314,7 @@ class ToolBroker:
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
-                kind="tool_call_denied",
+                kind="tool_call_failed",
                 audit_recorder=tool_audit_recorder,
                 payload=_audit_payload(
                     tool_name=tool_name,
@@ -321,7 +332,7 @@ class ToolBroker:
             frozen_config=context.get("frozen_config", {}),
         )
         if shell_timeout_error is not None:
-            result = _denied_result(
+            result = _error_result(
                 shell_timeout_error,
                 error_class="tool_error",
                 reason="tool_schema_invalid",
@@ -330,7 +341,7 @@ class ToolBroker:
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
-                kind="tool_call_denied",
+                kind="tool_call_failed",
                 audit_recorder=tool_audit_recorder,
                 payload=_audit_payload(
                     tool_name=tool_name,
@@ -347,7 +358,7 @@ class ToolBroker:
             frozen_config=context.get("frozen_config", {}),
         )
         if view_image_denial is not None:
-            result = _denied_result(
+            result = _error_result(
                 view_image_denial,
                 error_class="config_error",
                 reason="tool_unavailable",
@@ -356,7 +367,7 @@ class ToolBroker:
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
-                kind="tool_call_denied",
+                kind="tool_call_failed",
                 audit_recorder=tool_audit_recorder,
                 payload=_audit_payload(
                     tool_name=tool_name,
@@ -383,7 +394,7 @@ class ToolBroker:
         )
         normalized_arguments = normalized.arguments
         if not normalized.runtime_control_valid:
-            result = _denied_result(
+            result = _error_result(
                 normalized.runtime_control_error_message
                 or "Invalid runtime-control target.",
                 error_class=normalized.runtime_control_error_class,
@@ -395,7 +406,7 @@ class ToolBroker:
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
-                kind="tool_call_denied",
+                kind="tool_call_failed",
                 audit_recorder=tool_audit_recorder,
                 payload=_audit_payload(
                     tool_name=tool_name,
@@ -654,12 +665,31 @@ class ToolBroker:
             if executor is not None:
                 executor.shutdown(wait=True)
 
-        result = self._handler_result(
-            session_id=session_id,
-            run_id=run_id,
-            tool_name=tool_name,
-            output=handler_output,
-        )
+        try:
+            result = self._handler_result(
+                session_id=session_id,
+                run_id=run_id,
+                tool_name=tool_name,
+                output=handler_output,
+            )
+        except Exception as exc:
+            result = tool_error_result(str(exc), source=tool_name)
+            self._write_event(
+                session_id=session_id,
+                run_id=run_id,
+                kind="tool_call_failed",
+                audit_recorder=tool_audit_recorder,
+                payload=_audit_payload(
+                    tool_name=tool_name,
+                    arguments=normalized_arguments,
+                    result=result,
+                    duration_seconds=monotonic() - execution_start,
+                    target=normalized.target,
+                    approval_wait_duration_ms=approval_wait_duration_ms,
+                    include_execution_duration=True,
+                ),
+            )
+            return result
         event_kind = "tool_call_completed" if result.status == "ok" else "tool_call_failed"
         self._write_event(
             session_id=session_id,
@@ -698,8 +728,9 @@ class ToolBroker:
                     output.error_message or "Tool failed.",
                     source=tool_name,
                     metadata=output.metadata or {},
+                    reason=output.reason or "tool_execution_failed",
                 )
-            return self._ok_result(
+            return self._native_ok_result(
                 session_id=session_id,
                 run_id=run_id,
                 tool_name=tool_name,
@@ -762,8 +793,9 @@ class ToolBroker:
                     output.error_message or "Tool failed.",
                     source=tool_name,
                     metadata=output.metadata or {},
+                    reason=output.reason or "tool_execution_failed",
                 )
-            return self._shell_ok_result(
+            return self._native_ok_result(
                 session_id=session_id,
                 run_id=run_id,
                 tool_name=tool_name,
@@ -863,7 +895,7 @@ class ToolBroker:
             redacted_output=None,
         )
 
-    def _shell_ok_result(
+    def _native_ok_result(
         self,
         *,
         session_id: str,
@@ -872,45 +904,108 @@ class ToolBroker:
         output: dict[str, Any],
         metadata: dict[str, Any],
     ) -> ToolResult:
-        normalized = dict(output)
-        artifacts: list[str] = []
-        for stream_name in ("stdout", "stderr"):
-            content = str(normalized.get(stream_name, ""))
-            output_size = len(content.encode("utf-8"))
-            if output_size <= LARGE_OUTPUT_THRESHOLD_BYTES:
-                continue
-            artifact = self.artifact_store.write_text(
+        artifacted_output, artifacts = self._field_artifacted_native_output(
+            session_id=session_id,
+            run_id=run_id,
+            tool_name=tool_name,
+            output=output,
+        )
+        if artifacted_output is None:
+            return tool_error_result(
+                (
+                    "Native tool output exceeded the durable inline threshold after "
+                    "field-level artifacting; narrow the request or reduce pagination."
+                ),
+                source=tool_name,
+                metadata=metadata,
+            )
+        for artifact in artifacts:
+            self._write_artifact_registered_event(
                 session_id=session_id,
                 run_id=run_id,
-                artifact_id=f"art_{uuid4().hex}",
-                filename=f"{tool_name}_{stream_name}.txt",
-                content=content,
-                metadata={
-                    "tool_name": tool_name,
-                    "stream": stream_name,
-                    "bytes": output_size,
-                },
+                artifact=artifact,
             )
-            self._write_event(
-                session_id=session_id,
-                run_id=run_id,
-                kind="artifact_registered",
-                payload={
-                    "artifact_id": artifact.artifact_id,
-                    "artifact_type": artifact.artifact_type,
-                    "relative_path": artifact.relative_path,
-                    "metadata": artifact.metadata,
-                },
-            )
-            artifacts.append(artifact.artifact_id)
-            normalized[stream_name] = None
         return ToolResult(
             status="ok",
-            output=normalized,
+            output=artifacted_output,
             error=None,
-            artifacts=artifacts,
+            artifacts=[artifact.artifact_id for artifact in artifacts],
             metadata=metadata,
-            redacted_output=None if not artifacts else "[shell stream output stored as artifact]",
+            redacted_output=None,
+        )
+
+    def _field_artifacted_native_output(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        tool_name: str,
+        output: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, list[Any]]:
+        normalized = deepcopy(output)
+        if _observation_size(normalized) <= LARGE_OUTPUT_THRESHOLD_BYTES:
+            return normalized, []
+        artifacts: list[Any] = []
+        for field_tool, field_name in _FIELD_ARTIFACT_ORDER:
+            if field_tool != tool_name or field_name not in normalized:
+                continue
+            artifact = self._write_field_artifact(
+                session_id=session_id,
+                run_id=run_id,
+                tool_name=tool_name,
+                field_name=field_name,
+                value=normalized[field_name],
+            )
+            normalized[field_name] = _artifact_reference(artifact)
+            artifacts.append(artifact)
+            if _observation_size(normalized) <= LARGE_OUTPUT_THRESHOLD_BYTES:
+                return normalized, artifacts
+        if _observation_size(normalized) > LARGE_OUTPUT_THRESHOLD_BYTES:
+            return None, []
+        return normalized, artifacts
+
+    def _write_field_artifact(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        tool_name: str,
+        field_name: str,
+        value: Any,
+    ):
+        content = _artifact_text(value)
+        content_bytes = content.encode("utf-8")
+        artifact = self.artifact_store.write_text(
+            session_id=session_id,
+            run_id=run_id,
+            artifact_id=f"art_{uuid4().hex}",
+            filename=f"{tool_name}_{field_name}.txt",
+            content=content,
+            metadata={
+                "tool_name": tool_name,
+                "field": field_name,
+                "bytes": len(content_bytes),
+            },
+        )
+        return artifact
+
+    def _write_artifact_registered_event(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        artifact: Any,
+    ) -> None:
+        self._write_event(
+            session_id=session_id,
+            run_id=run_id,
+            kind="artifact_registered",
+            payload={
+                "artifact_id": artifact.artifact_id,
+                "artifact_type": artifact.artifact_type,
+                "relative_path": artifact.relative_path,
+                "metadata": artifact.metadata,
+            },
         )
 
     def _write_event(
@@ -1849,10 +1944,51 @@ def _approval_request(
     )
 
 
-def _artifact_text(output: str | dict[str, Any]) -> str:
+def _observation_size(output: dict[str, Any]) -> int:
+    return len(_artifact_text(output).encode("utf-8"))
+
+
+def _artifact_reference(artifact: Any) -> dict[str, Any]:
+    metadata = artifact.metadata if isinstance(artifact.metadata, dict) else {}
+    payload_sha256 = metadata.get("payload_sha256")
+    return {
+        "artifact_id": artifact.artifact_id,
+        "relative_path": artifact.relative_path,
+        "preview": metadata.get("preview"),
+        "truncated": True,
+        "bytes": int(metadata.get("bytes", 0)),
+        "sha256": payload_sha256 if isinstance(payload_sha256, str) else "",
+    }
+
+
+def _artifact_text(output: Any) -> str:
     if isinstance(output, str):
         return output
     return json.dumps(output, ensure_ascii=False, sort_keys=True)
+
+
+def _error_result(
+    message: str,
+    *,
+    error_class: str,
+    reason: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> ToolResult:
+    normalized = _normalized_error(
+        error_class=error_class,
+        reason=reason,
+        message=message,
+        scope="tool",
+        metadata=metadata or {},
+    )
+    return ToolResult(
+        status="error",
+        output=None,
+        error=normalized.to_dict(),
+        artifacts=[],
+        metadata=metadata or {},
+        redacted_output=None,
+    )
 
 
 def _denied_result(

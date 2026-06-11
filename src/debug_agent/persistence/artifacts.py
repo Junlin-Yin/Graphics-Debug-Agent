@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,7 +31,15 @@ class ArtifactStore:
         relative_path = Path(session_id) / "artifacts" / Path(filename).name
         absolute_path = self._sessions_root() / relative_path
         absolute_path.parent.mkdir(parents=True, exist_ok=True)
-        absolute_path.write_text(content, encoding="utf-8")
+        temp_path = absolute_path.with_name(
+            f".{absolute_path.name}.{uuid4().hex}.tmp"
+        )
+        try:
+            temp_path.write_text(content, encoding="utf-8")
+            os.replace(temp_path, absolute_path)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
         payload_sha256 = _payload_sha256(content.encode("utf-8"))
         return self._insert(
             artifact_id=artifact_id,

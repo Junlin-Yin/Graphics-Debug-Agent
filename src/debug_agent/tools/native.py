@@ -303,15 +303,22 @@ def tool_error_result(
     *,
     source: str,
     metadata: dict[str, Any] | None = None,
+    reason: str = "tool_execution_failed",
 ) -> ToolResult:
     return ToolResult(
         status="error",
         output=None,
         error={
+            "schema_version": 1,
             "error_class": "tool_error",
+            "reason": reason,
             "message": message,
+            "scope": "tool",
             "source": source,
             "recoverable": True,
+            "recoverability": "turn_recoverable",
+            "metadata": metadata or {},
+            "artifact_ids": [],
         },
         artifacts=[],
         metadata=metadata or {},

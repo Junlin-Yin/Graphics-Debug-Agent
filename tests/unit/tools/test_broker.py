@@ -19,6 +19,7 @@ from debug_agent.runtime.policy import (
     policy_facts_to_snapshot,
 )
 from debug_agent.tools.broker import FakeApprovalProvider, NonInteractiveApprovalProvider, ToolBroker
+from debug_agent.tools.native import NativeHandlerResult
 from debug_agent.tools.shell import FakeShellRunner
 
 
@@ -29,6 +30,46 @@ class _RecordingTimeoutRouter:
     def route(self, context, arguments):
         self.effective_timeout_seconds = context.effective_timeout_seconds
         return "ok"
+
+
+class _NativeResultRouter:
+    def __init__(self, result):
+        self.result = result
+
+    def route(self, context, arguments):
+        return self.result
+
+
+class _FailingArtifactWriteStore:
+    def __init__(self, delegate):
+        self.delegate = delegate
+        self.sessions_root = delegate.sessions_root
+
+    def write_text(self, **_kwargs):
+        raise OSError("artifact write failed")
+
+    def __getattr__(self, name):
+        return getattr(self.delegate, name)
+
+
+class _FailingArtifactRegistrationStore:
+    def __init__(self, delegate):
+        self.delegate = delegate
+        self.sessions_root = delegate.sessions_root
+
+    def write_text(self, **kwargs):
+        artifact_id = kwargs.get("artifact_id")
+        if isinstance(artifact_id, str):
+            content = kwargs.get("content", "")
+            session_id = kwargs.get("session_id", "")
+            filename = kwargs.get("filename", "orphan.txt")
+            path = self.sessions_root / session_id / "artifacts" / Path(filename).name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(str(content), encoding="utf-8")
+        raise RuntimeError("artifact registration failed")
+
+    def __getattr__(self, name):
+        return getattr(self.delegate, name)
 
 
 def _runtime(tmp_path, *, approval_mode: str = "normal", policy_facts=None):
@@ -176,22 +217,22 @@ def test_schema_validation_rejects_unknown_fields_and_invalid_limits(tmp_path) -
     old_query = _invoke(runtime, "search_text", {"query": "hello"})
     boolean_limit = _invoke(runtime, "read_file", {"path": "notes.txt", "limit": True})
 
-    assert extra.status == "denied"
-    assert zero.status == "denied"
-    assert missing.status == "denied"
-    assert old_query.status == "denied"
-    assert boolean_limit.status == "denied"
+    assert extra.status == "error"
+    assert zero.status == "error"
+    assert missing.status == "error"
+    assert old_query.status == "error"
+    assert boolean_limit.status == "error"
     assert extra.error["error_class"] == "tool_error"
     assert extra.error["reason"] == "tool_schema_invalid"
     assert zero.error["message"] == "limit must be a positive integer."
     assert old_query.error["message"] == "Unknown field: query"
     assert boolean_limit.error["message"] == "limit must be an integer."
     assert _event_kinds(runtime) == [
-        "tool_call_denied",
-        "tool_call_denied",
-        "tool_call_denied",
-        "tool_call_denied",
-        "tool_call_denied",
+        "tool_call_failed",
+        "tool_call_failed",
+        "tool_call_failed",
+        "tool_call_failed",
+        "tool_call_failed",
     ]
     runtime["db"].close()
 
@@ -233,9 +274,9 @@ def test_present_path_strings_are_trimmed_and_empty_paths_are_schema_invalid(
     ][0]
     assert trimmed.status == "ok"
     assert completed["arguments"]["path"] == str((workspace / "notes.txt").resolve())
-    assert empty.status == "denied"
+    assert empty.status == "error"
     assert empty.error["reason"] == "tool_schema_invalid"
-    assert shell_empty.status == "denied"
+    assert shell_empty.status == "error"
     assert shell_empty.error["reason"] == "tool_schema_invalid"
 
 
@@ -621,16 +662,43 @@ def test_list_dir_lists_immediate_entries_sorted_with_limit(tmp_path) -> None:
     runtime["db"].close()
 
 
-def test_large_output_is_written_to_text_artifact_by_broker(tmp_path) -> None:
+def test_structured_native_large_field_is_artifacted_without_row_fallback(tmp_path) -> None:
     runtime = _runtime(tmp_path, approval_mode="normal")
     content = "x" * (16 * 1024 + 1)
-    (runtime["workspace"] / "large.txt").write_text(content, encoding="utf-8")
+    target = runtime["workspace"] / "large.txt"
+    target.write_text("small", encoding="utf-8")
+    runtime["broker"] = ToolBroker(
+        event_writer=runtime["events"],
+        artifact_store=runtime["artifacts"],
+        router=_NativeResultRouter(
+            NativeHandlerResult(
+                status="ok",
+                output={
+                    "path": str(target.resolve()),
+                    "content": content,
+                    "offset": 0,
+                    "limit": 2000,
+                    "total_returned": 1,
+                    "truncated": False,
+                    "next_offset": None,
+                    "sha256": "0" * 64,
+                    "bytes": len(content.encode("utf-8")),
+                },
+                metadata={"tool_name": "read_file"},
+            )
+        ),
+    )
 
     result = _invoke(runtime, "read_file", {"path": "large.txt"})
 
     assert result.status == "ok"
-    assert result.output is None
+    assert result.output["path"] == str(target.resolve())
+    assert result.output["sha256"] == "0" * 64
+    assert result.output["bytes"] == len(content.encode("utf-8"))
     assert len(result.artifacts) == 1
+    assert result.output["content"]["artifact_id"] == result.artifacts[0]
+    assert result.output["content"]["relative_path"].startswith("sess_1/artifacts/")
+    assert result.output["content"]["sha256"].startswith("sha256:")
     assert runtime["artifacts"].resolve_path(result.artifacts[0]).read_text(
         encoding="utf-8"
     ) == content
@@ -639,6 +707,86 @@ def test_large_output_is_written_to_text_artifact_by_broker(tmp_path) -> None:
         "artifact_registered",
         "tool_call_completed",
     ]
+    runtime["db"].close()
+
+
+def test_structured_native_oversize_after_field_artifacting_returns_error_without_exposed_artifact_ids(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    target = runtime["workspace"] / "large.txt"
+    target.write_text("small", encoding="utf-8")
+    runtime["broker"] = ToolBroker(
+        event_writer=runtime["events"],
+        artifact_store=runtime["artifacts"],
+        router=_NativeResultRouter(
+            NativeHandlerResult(
+                status="ok",
+                output={
+                    "path": str(target.resolve()),
+                    "content": "x" * (16 * 1024 + 1),
+                    "unartifactable_metadata": "y" * (16 * 1024 + 1),
+                },
+                metadata={"tool_name": "read_file"},
+            )
+        ),
+    )
+
+    result = _invoke(runtime, "read_file", {"path": "large.txt"})
+
+    assert result.status == "error"
+    assert result.output is None
+    assert result.artifacts == []
+    assert result.error["reason"] == "tool_execution_failed"
+    assert _event_kinds(runtime) == ["tool_call_started", "tool_call_failed"]
+    runtime["db"].close()
+
+
+@pytest.mark.parametrize(
+    "store_factory",
+    [_FailingArtifactWriteStore, _FailingArtifactRegistrationStore],
+)
+def test_structured_native_field_artifact_failure_returns_error_without_exposed_artifact_ids(
+    tmp_path,
+    store_factory,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    content = "x" * (16 * 1024 + 1)
+    target = runtime["workspace"] / "large.txt"
+    target.write_text("small", encoding="utf-8")
+    artifact_store = store_factory(runtime["artifacts"])
+    runtime["broker"] = ToolBroker(
+        event_writer=runtime["events"],
+        artifact_store=artifact_store,
+        router=_NativeResultRouter(
+            NativeHandlerResult(
+                status="ok",
+                output={
+                    "path": str(target.resolve()),
+                    "content": content,
+                    "offset": 0,
+                    "limit": 2000,
+                    "total_returned": 1,
+                    "truncated": False,
+                    "next_offset": None,
+                    "sha256": "0" * 64,
+                    "bytes": len(content.encode("utf-8")),
+                },
+                metadata={"tool_name": "read_file"},
+            )
+        ),
+    )
+
+    result = _invoke(runtime, "read_file", {"path": "large.txt"})
+
+    assert result.status == "error"
+    assert result.output is None
+    assert result.artifacts == []
+    assert result.error["reason"] == "tool_execution_failed"
+    assert _event_kinds(runtime) == ["tool_call_started", "tool_call_failed"]
+    failed_event = runtime["events"].list_for_run("run_1")[-1]
+    assert failed_event.payload["artifact_ids"] == []
+    assert runtime["artifacts"].list_for_session(runtime["session"].session_id) == []
     runtime["db"].close()
 
 
@@ -751,7 +899,7 @@ def test_search_text_context_presence_is_checked_before_default_injection(tmp_pa
     assert only_context.status == "ok"
     assert completed["arguments"]["before_context_effective"] == 2
     assert completed["arguments"]["after_context_effective"] == 2
-    assert conflict.status == "denied"
+    assert conflict.status == "error"
     assert conflict.error["reason"] == "tool_schema_invalid"
 
 

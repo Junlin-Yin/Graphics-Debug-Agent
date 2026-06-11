@@ -235,12 +235,12 @@ def test_disabled_view_image_is_known_tool_denied_by_config_without_routing(
 
     result = _invoke(runtime, "view_image", {"paths": ["image.png"]})
 
-    assert result.status == "denied"
+    assert result.status == "error"
     assert result.error["error_class"] == "config_error"
     assert result.error["reason"] == "tool_unavailable"
     assert result.error["message"] == "view_image is disabled: missing_multimodal_config"
     assert [event.kind for event in runtime["events"].list_for_run("run_1")] == [
-        "tool_call_denied"
+        "tool_call_failed"
     ]
     event = runtime["events"].list_for_run("run_1")[0]
     assert event.payload["tool_name"] == "view_image"
@@ -254,7 +254,7 @@ def test_unknown_tool_behavior_is_unchanged(tmp_path) -> None:
 
     result = _invoke(runtime, "view_video", {"paths": ["video.mp4"]})
 
-    assert result.status == "denied"
+    assert result.status == "error"
     assert result.error["error_class"] == "tool_error"
     assert result.error["reason"] == "unknown_tool"
     assert result.error["message"] == "Unknown tool: view_video"
@@ -506,11 +506,11 @@ def test_view_image_schema_failure_is_user_error_denial(tmp_path) -> None:
 
     result = _invoke_enabled(runtime, {"paths": [], "extra": True})
 
-    assert result.status == "denied"
+    assert result.status == "error"
     assert result.error["error_class"] == "tool_error"
     assert result.error["reason"] == "tool_schema_invalid"
     assert [event.kind for event in runtime["events"].list_for_run("run_1")] == [
-        "tool_call_denied"
+        "tool_call_failed"
     ]
     event = runtime["events"].list_for_run("run_1")[0]
     assert event.payload["error"]["error_class"] == "tool_error"
@@ -525,11 +525,11 @@ def test_disabled_view_image_malformed_call_returns_schema_denial_first(
 
     result = _invoke(runtime, "view_image", {"paths": []})
 
-    assert result.status == "denied"
+    assert result.status == "error"
     assert result.error["error_class"] == "tool_error"
     assert result.error["reason"] == "tool_schema_invalid"
     assert [event.kind for event in runtime["events"].list_for_run("run_1")] == [
-        "tool_call_denied"
+        "tool_call_failed"
     ]
     runtime["db"].close()
 
@@ -542,7 +542,7 @@ def test_view_image_rejects_remote_and_structured_artifact_inputs(tmp_path) -> N
 
     assert remote.status == "error"
     assert remote.error["error_class"] == "tool_error"
-    assert artifact.status == "denied"
+    assert artifact.status == "error"
     assert artifact.error["error_class"] == "tool_error"
     assert artifact.error["reason"] == "tool_schema_invalid"
     runtime["db"].close()
@@ -647,11 +647,11 @@ def test_query_validation_and_provider_json_validation(tmp_path, monkeypatch) ->
         vision_client=_FakeVisionClient("not json"),
     )
 
-    assert empty.status == "denied"
+    assert empty.status == "error"
     assert empty.error["error_class"] == "tool_error"
     assert empty.error["reason"] == "tool_schema_invalid"
-    assert runtime["events"].list_for_run("run_1")[-3].kind == "tool_call_denied"
-    assert too_long.status == "denied"
+    assert runtime["events"].list_for_run("run_1")[-3].kind == "tool_call_failed"
+    assert too_long.status == "error"
     assert too_long.error["error_class"] == "tool_error"
     assert too_long.error["reason"] == "tool_schema_invalid"
     assert invalid_json.status == "error"

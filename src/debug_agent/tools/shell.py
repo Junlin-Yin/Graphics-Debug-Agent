@@ -21,6 +21,7 @@ class ShellHandlerResult:
     output: dict[str, Any] | None = None
     error_message: str | None = None
     metadata: dict[str, Any] | None = None
+    reason: str | None = None
 
 
 class ShellTimeout(Exception):
@@ -186,6 +187,7 @@ def shell_exec(context: Any, arguments: dict[str, Any]) -> ShellHandlerResult:
             status="error",
             error_message=_nonzero_exit_message(result),
             metadata={"effective_timeout_seconds": timeout_seconds},
+            reason="shell_nonzero_exit",
         )
     return ShellHandlerResult(
         status="ok",

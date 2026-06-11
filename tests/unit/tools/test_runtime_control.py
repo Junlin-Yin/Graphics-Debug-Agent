@@ -139,10 +139,10 @@ def test_runtime_control_schema_rejects_missing_and_unknown_fields(
 
     result = _invoke(runtime, tool_name, arguments)
 
-    assert result.status == "denied"
+    assert result.status == "error"
     assert result.error["error_class"] == "tool_error"
     assert result.error["reason"] == "tool_schema_invalid"
-    assert _event_kinds(runtime) == ["tool_call_denied"]
+    assert _event_kinds(runtime) == ["tool_call_failed"]
     runtime["db"].close()
 
 
@@ -216,8 +216,8 @@ def test_activate_skill_denies_unknown_and_corrupt_snapshot_before_approval(tmp_
     runtime["db"].connection.commit()
     corrupt = _invoke(runtime, "activate_skill", {"name": "alpha"}, approval_provider=provider)
 
-    assert unknown.status == "denied"
-    assert corrupt.status == "denied"
+    assert unknown.status == "error"
+    assert corrupt.status == "error"
     assert unknown.error["error_class"] == "config_error"
     assert corrupt.error["error_class"] == "config_error"
     assert provider.requests == []
@@ -260,7 +260,7 @@ def test_load_skill_resource_requires_active_skill_and_valid_relative_resource(t
         {"skill_name": "alpha", "path": str(runtime["workspace"] / "x.txt")},
     )
 
-    assert inactive.status == "denied"
+    assert inactive.status == "error"
     assert inactive.error["error_class"] == "config_error"
     assert loaded.status == "ok"
     assert loaded.output["content"] == "guide text"
@@ -269,11 +269,11 @@ def test_load_skill_resource_requires_active_skill_and_valid_relative_resource(t
     assert loaded.output["content_hash"].startswith("sha256:")
     assert loaded_asset.output["resource_kind"] == "asset"
     assert loaded_script.output["resource_kind"] == "script"
-    assert traversal.status == "denied"
-    assert absolute.status == "denied"
+    assert traversal.status == "error"
+    assert absolute.status == "error"
     assert not runtime["context"]["approval_provider"].requests
     assert _event_kinds(runtime) == [
-        "tool_call_denied",
+        "tool_call_failed",
         "tool_call_started",
         "tool_call_completed",
         "skill_activated",
@@ -286,8 +286,8 @@ def test_load_skill_resource_requires_active_skill_and_valid_relative_resource(t
         "tool_call_started",
         "tool_call_completed",
         "skill_resource_loaded",
-        "tool_call_denied",
-        "tool_call_denied",
+        "tool_call_failed",
+        "tool_call_failed",
     ]
     runtime["db"].close()
 
@@ -351,8 +351,8 @@ def test_load_skill_resource_denies_missing_and_hash_mismatch_before_approval(tm
         approval_provider=provider,
     )
 
-    assert missing.status == "denied"
-    assert corrupt.status == "denied"
+    assert missing.status == "error"
+    assert corrupt.status == "error"
     assert missing.error["error_class"] == "config_error"
     assert corrupt.error["error_class"] == "config_error"
     assert provider.requests == []

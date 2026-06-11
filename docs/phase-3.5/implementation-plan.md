@@ -311,18 +311,18 @@ After Milestone 9 completes, trace/events integration verification passes, and t
 
 **Freeze/review checkpoint:** do not add ToolBroker timeout/cache/write-lock mechanics until durable serialization and artifacting behavior are reviewed.
 
-- [ ] Implement the exact Phase 3.5 ToolResult statuses: `ok`, `error`, `denied`, `timeout`, and `cancelled`.
-- [ ] Serialize successful structured native outputs through `ToolResult.output` and durable `tool_result.content_json.content`.
-- [ ] Serialize non-success tool results with `content=null`, normalized `error`, and mirrored diagnostic `artifact_ids`.
-- [ ] Ensure provider-visible observations for successful structured native tools are derived from `ToolResult.output`, not `redacted_output`.
-- [ ] Implement deterministic field-level artifacting triggered by the complete native-tool observation exceeding the durable inline threshold.
-- [ ] Externalize only eligible fields in documented stable order: `read_file.content`, `search_text.matches`, `search_text.paths`, `search_text.counts`, `shell_exec.stdout`, `shell_exec.stderr`.
-- [ ] Preserve inline control metadata such as path identity, pagination, guard data, status, checksum, and byte counts when field-level artifacting occurs.
-- [ ] Return `status="error"` with `tool_error/tool_execution_failed` when a successful native observation remains too large after field-level artifacting.
-- [ ] Prevent row-level artifact-backed conversation fallback for successful Phase 3.5 native tool results.
-- [ ] Ensure artifact temp files are atomically finalized and accepted ArtifactStore records exist before artifact ids are exposed in `ToolResult`, durable conversation content, or audit.
-- [ ] Verify timeout, cancellation, write failure, or registration failure cannot expose incomplete artifact ids or accepted conversation references.
-- [ ] Run `uv run pytest tests/unit -v`.
+- [x] Implement the exact Phase 3.5 ToolResult statuses: `ok`, `error`, `denied`, `timeout`, and `cancelled`.
+- [x] Serialize successful structured native outputs through `ToolResult.output` and durable `tool_result.content_json.content`.
+- [x] Serialize non-success tool results with `content=null`, normalized `error`, and mirrored diagnostic `artifact_ids`.
+- [x] Ensure provider-visible observations for successful structured native tools are derived from `ToolResult.output`, not `redacted_output`.
+- [x] Implement deterministic field-level artifacting triggered by the complete native-tool observation exceeding the durable inline threshold.
+- [x] Externalize only eligible fields in documented stable order: `read_file.content`, `search_text.matches`, `search_text.paths`, `search_text.counts`, `shell_exec.stdout`, `shell_exec.stderr`.
+- [x] Preserve inline control metadata such as path identity, pagination, guard data, status, checksum, and byte counts when field-level artifacting occurs.
+- [x] Return `status="error"` with `tool_error/tool_execution_failed` when a successful native observation remains too large after field-level artifacting.
+- [x] Prevent row-level artifact-backed conversation fallback for successful Phase 3.5 native tool results.
+- [x] Ensure artifact temp files are atomically finalized and accepted ArtifactStore records exist before artifact ids are exposed in `ToolResult`, durable conversation content, or audit.
+- [x] Verify timeout, cancellation, write failure, or registration failure cannot expose incomplete artifact ids or accepted conversation references.
+- [x] Run `uv run pytest tests/unit -v`.
 
 ## Milestone 4C: ToolBroker Timeout, Volatile Cache, And Write Locks
 

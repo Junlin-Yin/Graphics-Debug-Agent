@@ -1205,19 +1205,17 @@ def _tool_loop_conversation_messages(
     ]
     for index, (call, result) in enumerate(invoked_results):
         tool_call_id = str(call.get("id") or f"{call['name']}_{index}")
+        result_dict = result.to_dict()
+        observation = _tool_observation(result_dict, tool_call_id=tool_call_id)
         messages.append(
             {
                 "role": "tool",
                 "kind": "tool_result",
                 "model_call_id": _model_call_id_from_tool_call_id(tool_call_id),
                 "tool_call_id": tool_call_id,
-                "content": {
-                    "message_type": "tool_result",
-                    "content": _tool_message_content(result.to_dict()),
-                    "tool_call_id": tool_call_id,
-                },
-                "artifact_refs": list(result.to_dict().get("artifacts", [])),
-                "metadata": dict(result.to_dict().get("metadata", {})),
+                "content": observation,
+                "artifact_refs": list(result_dict.get("artifacts", [])),
+                "metadata": dict(result_dict.get("metadata", {})),
             }
         )
     return messages
@@ -1267,16 +1265,66 @@ def _provider_visible_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[
 
 
 def _tool_message_content(result: dict[str, Any]) -> str:
+    observation = _tool_observation(result, tool_call_id=None)
+    if result.get("status") != "ok":
+        return json.dumps(observation["error"], ensure_ascii=False, sort_keys=True)
+    content = observation["content"]
+    if isinstance(content, str):
+        return content
+    return json.dumps(content, ensure_ascii=False, sort_keys=True)
+
+
+def _tool_observation(
+    result: dict[str, Any],
+    *,
+    tool_call_id: str | None,
+) -> dict[str, Any]:
+    status = str(result.get("status") or "error")
+    artifacts = result.get("artifacts")
+    artifact_ids = list(artifacts) if isinstance(artifacts, list) else []
     metadata = result.get("metadata")
-    if isinstance(metadata, dict) and metadata.get("tool_name") == "todo":
-        output = result.get("output")
+    tool_name = ""
+    if isinstance(metadata, dict):
+        tool_name = str(metadata.get("tool_name") or "")
+    if status == "ok":
+        content = result.get("output")
+        error = None
     else:
-        output = result.get("redacted_output") or result.get("output")
-    if isinstance(output, str):
-        return output
-    if output is not None:
-        return json.dumps(output, ensure_ascii=False, sort_keys=True)
-    return json.dumps(result, ensure_ascii=False, sort_keys=True)
+        content = None
+        error = _model_visible_tool_error(result.get("error"), artifact_ids=artifact_ids)
+    return {
+        "message_type": "tool_result",
+        "tool_name": tool_name,
+        "tool_call_id": tool_call_id,
+        "status": status,
+        "content": content,
+        "error": error,
+        "artifact_ids": artifact_ids,
+        "metadata": {},
+    }
+
+
+def _model_visible_tool_error(
+    error: object,
+    *,
+    artifact_ids: list[str],
+) -> dict[str, Any]:
+    if not isinstance(error, dict):
+        return {
+            "error_class": "tool_error",
+            "reason": "tool_execution_failed",
+            "message": "Tool failed.",
+            "artifact_ids": artifact_ids,
+        }
+    exposed_artifacts = error.get("artifact_ids")
+    return {
+        "error_class": str(error.get("error_class") or "tool_error"),
+        "reason": str(error.get("reason") or "tool_execution_failed"),
+        "message": str(error.get("message") or "Tool failed."),
+        "artifact_ids": exposed_artifacts
+        if isinstance(exposed_artifacts, list)
+        else artifact_ids,
+    }
 
 
 def _displayable_chunk_text(chunk: object) -> str:

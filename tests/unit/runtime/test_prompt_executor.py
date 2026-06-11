@@ -654,6 +654,16 @@ def test_prompt_executor_appends_accepted_tool_call_and_tool_result_messages(
     ]
     assert rows[1].tool_call_id == "model_call_1_tool_1"
     assert rows[2].tool_call_id == "model_call_1_tool_1"
+    assert rows[2].content == {
+        "message_type": "tool_result",
+        "tool_name": "",
+        "tool_call_id": "model_call_1_tool_1",
+        "status": "ok",
+        "content": "hello",
+        "error": None,
+        "artifact_ids": [],
+        "metadata": {},
+    }
     assert store.validate_fact_cut(run_id=run.run_id, highest_message_index=4).message_count == 4
     db.close()
 
@@ -4189,8 +4199,53 @@ def test_provider_messages_to_conversation_preserves_tool_call_ids() -> None:
     assert converted[1].tool_call_id == "read_file_0"
     assert converted[1].content == {
         "message_type": "tool_result",
-        "content": "file text",
+        "tool_name": "",
         "tool_call_id": "read_file_0",
+        "status": "ok",
+        "content": "file text",
+        "error": None,
+        "artifact_ids": [],
+        "metadata": {},
+    }
+
+
+def test_provider_messages_to_conversation_preserves_shell_nonzero_error_projection() -> None:
+    from langchain_core.messages import ToolMessage
+
+    from debug_agent.runtime.prompt_executor import _provider_messages_to_conversation
+
+    messages = [
+        ToolMessage(
+            content=json.dumps(
+                {
+                    "error_class": "tool_error",
+                    "reason": "shell_nonzero_exit",
+                    "message": "err (exit code 7)",
+                    "artifact_ids": [],
+                },
+                sort_keys=True,
+            ),
+            tool_call_id="model_call_1_tool_1",
+        )
+    ]
+
+    converted = _provider_messages_to_conversation(messages, turn_id="turn-1")
+
+    assert converted[0].kind == "tool_result"
+    assert converted[0].content == {
+        "message_type": "tool_result",
+        "tool_name": "",
+        "tool_call_id": "model_call_1_tool_1",
+        "status": "error",
+        "content": None,
+        "error": {
+            "error_class": "tool_error",
+            "reason": "shell_nonzero_exit",
+            "message": "err (exit code 7)",
+            "artifact_ids": [],
+        },
+        "artifact_ids": [],
+        "metadata": {},
     }
 
 

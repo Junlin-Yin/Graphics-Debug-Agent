@@ -141,10 +141,10 @@ def test_shell_schema_rejects_raw_strings_empty_argv_and_unknown_fields(
 
     result = _invoke(runtime, arguments)
 
-    assert result.status == "denied"
+    assert result.status == "error"
     assert result.error["error_class"] == "tool_error"
     assert result.error["reason"] == "tool_schema_invalid"
-    assert _event_kinds(runtime) == ["tool_call_denied"]
+    assert _event_kinds(runtime) == ["tool_call_failed"]
     runtime["db"].close()
 
 
@@ -155,6 +155,8 @@ def test_shell_nonzero_exit_code_is_tool_failure_with_concrete_message(tmp_path)
     result = _invoke(runtime, {"argv": ["echo", "ok"], "timeout_seconds": 99})
 
     assert result.status == "error"
+    assert result.error["error_class"] == "tool_error"
+    assert result.error["reason"] == "shell_nonzero_exit"
     assert result.error["message"] == "err (exit code 7)"
     assert result.metadata["effective_timeout_seconds"] == 99
     assert runner.calls == [
@@ -220,12 +222,12 @@ def test_shell_explicit_timeout_above_frozen_maximum_is_schema_denied(tmp_path) 
 
     result = _invoke(runtime, {"argv": ["echo", "ok"], "timeout_seconds": 21})
 
-    assert result.status == "denied"
+    assert result.status == "error"
     assert result.error["error_class"] == "tool_error"
     assert result.error["reason"] == "tool_schema_invalid"
     assert "maximum" in result.error["message"]
     assert runner.calls == []
-    assert _event_kinds(runtime) == ["tool_call_denied"]
+    assert _event_kinds(runtime) == ["tool_call_failed"]
     runtime["db"].close()
 
 
@@ -491,7 +493,9 @@ def test_shell_large_stdout_stderr_are_artifacted_separately(tmp_path) -> None:
     result = _invoke(runtime, {"argv": ["echo", "large"]})
 
     assert result.status == "ok"
-    assert result.output == {"stdout": None, "stderr": None, "returncode": 0}
+    assert result.output["returncode"] == 0
+    assert result.output["stdout"]["artifact_id"] == result.artifacts[0]
+    assert result.output["stderr"]["artifact_id"] == result.artifacts[1]
     assert len(result.artifacts) == 2
     artifact_texts = [
         runtime["artifacts"].resolve_path(artifact_id).read_text(encoding="utf-8")
