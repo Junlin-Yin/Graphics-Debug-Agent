@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hashlib import sha256
 import json
 from pathlib import Path
 import pytest
@@ -171,20 +172,71 @@ def test_schema_validation_rejects_unknown_fields_and_invalid_limits(tmp_path) -
 
     extra = _invoke(runtime, "read_file", {"path": "notes.txt", "extra": True})
     zero = _invoke(runtime, "read_file", {"path": "notes.txt", "limit": 0})
-    missing = _invoke(runtime, "search_text", {"query": "hello"})
+    missing = _invoke(runtime, "search_text", {"path": "."})
+    old_query = _invoke(runtime, "search_text", {"query": "hello"})
+    boolean_limit = _invoke(runtime, "read_file", {"path": "notes.txt", "limit": True})
 
     assert extra.status == "denied"
     assert zero.status == "denied"
     assert missing.status == "denied"
+    assert old_query.status == "denied"
+    assert boolean_limit.status == "denied"
     assert extra.error["error_class"] == "tool_error"
     assert extra.error["reason"] == "tool_schema_invalid"
     assert zero.error["message"] == "limit must be a positive integer."
+    assert old_query.error["message"] == "Unknown field: query"
+    assert boolean_limit.error["message"] == "limit must be an integer."
     assert _event_kinds(runtime) == [
+        "tool_call_denied",
+        "tool_call_denied",
         "tool_call_denied",
         "tool_call_denied",
         "tool_call_denied",
     ]
     runtime["db"].close()
+
+
+def test_schema_defaults_and_nested_validation_are_injected_before_handler_and_audit(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    workspace = runtime["workspace"]
+    (workspace / "notes.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+
+    result = _invoke(runtime, "read_file", {"path": "notes.txt"})
+
+    completed = [
+        event.payload
+        for event in runtime["events"].list_for_run("run_1")
+        if event.kind == "tool_call_completed"
+    ][0]
+    assert result.status == "ok"
+    assert completed["arguments"]["offset"] == 0
+    assert completed["arguments"]["limit"] == 2000
+
+
+def test_present_path_strings_are_trimmed_and_empty_paths_are_schema_invalid(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    workspace = runtime["workspace"]
+    (workspace / "notes.txt").write_text("hello", encoding="utf-8")
+
+    trimmed = _invoke(runtime, "read_file", {"path": " notes.txt "})
+    empty = _invoke(runtime, "read_file", {"path": "   "})
+    shell_empty = _invoke(runtime, "shell_exec", {"argv": ["pwd"], "cwd": "   "})
+
+    completed = [
+        event.payload
+        for event in runtime["events"].list_for_run("run_1")
+        if event.kind == "tool_call_completed"
+    ][0]
+    assert trimmed.status == "ok"
+    assert completed["arguments"]["path"] == str((workspace / "notes.txt").resolve())
+    assert empty.status == "denied"
+    assert empty.error["reason"] == "tool_schema_invalid"
+    assert shell_empty.status == "denied"
+    assert shell_empty.error["reason"] == "tool_schema_invalid"
 
 
 def test_read_file_auto_allows_trusted_workspace_under_normal(tmp_path) -> None:
@@ -506,13 +558,13 @@ def test_search_text_skips_denied_dirs_and_has_no_explicit_denied_dir_exception(
     default_search = _invoke(
         runtime,
         "search_text",
-        {"query": "needle", "path": ".", "limit": 5},
+        {"pattern": "needle", "path": ".", "maxResults": 5},
         permission_evaluator=PermissionEvaluator(facts),
     )
     explicit_denied = _invoke(
         runtime,
         "search_text",
-        {"query": "needle", "path": "secret"},
+        {"pattern": "needle", "path": "secret"},
         permission_evaluator=PermissionEvaluator(facts),
     )
 
@@ -536,7 +588,7 @@ def test_search_text_outside_workspace_returns_absolute_paths_when_allowed(
     result = _invoke(
         runtime,
         "search_text",
-        {"path": str(outside_dir), "query": "needle"},
+        {"path": str(outside_dir), "pattern": "needle"},
     )
 
     assert result.status == "ok"
@@ -615,7 +667,7 @@ def test_tool_audit_payload_includes_broker_normalized_target_for_native_search_
     (workspace / "src" / "app.py").write_text("needle\n", encoding="utf-8")
 
     read = _invoke(runtime, "read_file", {"path": "src/app.py"})
-    search = _invoke(runtime, "search_text", {"path": "src", "query": "needle"})
+    search = _invoke(runtime, "search_text", {"path": "src", "pattern": "needle"})
     shell = _invoke(
         runtime,
         "shell_exec",
@@ -635,6 +687,107 @@ def test_tool_audit_payload_includes_broker_normalized_target_for_native_search_
     assert completed[1]["target"] == f"needle in {(workspace / 'src').resolve()}"
     assert completed[2]["target"] == "pytest tests"
     runtime["db"].close()
+
+
+def test_phase_3_5_search_defaults_participate_in_scope_and_audit_but_pagination_does_not(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    search_root = tmp_path / "outside-src"
+    search_root.mkdir()
+    (search_root / "app.txt").write_text("needle\n", encoding="utf-8")
+    provider = FakeApprovalProvider("approved_for_session")
+
+    result = _invoke(
+        runtime,
+        "search_text",
+        {"path": str(search_root), "pattern": "needle", "maxResults": 1},
+        approval_provider=provider,
+    )
+
+    completed = [
+        event.payload
+        for event in runtime["events"].list_for_run("run_1")
+        if event.kind == "tool_call_completed"
+    ][0]
+    request_facts = provider.requests[0][1]
+    assert result.status == "ok"
+    assert f"read:{search_root.resolve()}" in request_facts["scope_signature"]
+    assert "pattern:needle" in request_facts["scope_signature"]
+    assert "glob:**" in request_facts["scope_signature"]
+    assert "before_context_effective:0" in request_facts["scope_signature"]
+    assert "maxResults" not in request_facts["scope_signature"]
+    assert completed["arguments"] == {
+        "path": str(search_root.resolve()),
+        "pattern": "needle",
+        "glob": "**",
+        "offset": 0,
+        "maxResults": 1,
+        "output_mode": "content",
+        "fixed_strings": False,
+        "case_sensitive": True,
+        "include_hidden": False,
+        "before_context_effective": 0,
+        "after_context_effective": 0,
+    }
+
+
+def test_search_text_context_presence_is_checked_before_default_injection(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    (runtime["workspace"] / "notes.txt").write_text("needle\n", encoding="utf-8")
+
+    only_context = _invoke(runtime, "search_text", {"pattern": "needle", "context": 2})
+    conflict = _invoke(
+        runtime,
+        "search_text",
+        {"pattern": "needle", "context": 2, "before_context": 1},
+    )
+
+    completed = [
+        event.payload
+        for event in runtime["events"].list_for_run("run_1")
+        if event.kind == "tool_call_completed"
+    ][0]
+    assert only_context.status == "ok"
+    assert completed["arguments"]["before_context_effective"] == 2
+    assert completed["arguments"]["after_context_effective"] == 2
+    assert conflict.status == "denied"
+    assert conflict.error["reason"] == "tool_schema_invalid"
+
+
+def test_write_and_edit_audit_arguments_are_redacted_without_changing_approval_scope(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="semi-auto")
+    workspace = runtime["workspace"]
+    target = workspace / "notes.txt"
+    target.write_text("old", encoding="utf-8")
+
+    write = _invoke(runtime, "write_file", {"path": "new.txt", "content": "secret"})
+    edit = _invoke(
+        runtime,
+        "edit_file",
+        {"path": "notes.txt", "old_text": "old", "new_text": "new", "replace_all": True},
+    )
+
+    completed = [
+        event.payload
+        for event in runtime["events"].list_for_run("run_1")
+        if event.kind == "tool_call_completed"
+    ]
+    assert write.status == "ok"
+    assert edit.status == "ok"
+    write_args = completed[0]["arguments"]
+    edit_args = completed[1]["arguments"]
+    assert "content" not in write_args
+    assert write_args["content_sha256"] == sha256(b"secret").hexdigest()
+    assert write_args["content_bytes"] == len(b"secret")
+    assert "old_text" not in edit_args
+    assert "new_text" not in edit_args
+    assert edit_args["old_text_sha256"] == sha256(b"old").hexdigest()
+    assert edit_args["old_text_bytes"] == len(b"old")
+    assert edit_args["new_text_sha256"] == sha256(b"new").hexdigest()
+    assert edit_args["new_text_bytes"] == len(b"new")
 
 
 def test_broker_restores_policy_from_frozen_config_when_policy_facts_are_absent(

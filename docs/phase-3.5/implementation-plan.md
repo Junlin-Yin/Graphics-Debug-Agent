@@ -282,20 +282,20 @@ After Milestone 9 completes, trace/events integration verification passes, and t
 
 **Freeze/review checkpoint:** do not implement ToolResult serialization changes until schema/default injection, raw field-presence tracking, path normalization, and audit argument tests are reviewed.
 
-- [ ] Extend schema validation for object, string, integer, `boolean`, arrays, nested objects, required fields, `enum`, `minimum`, `maximum`, default injection, `minItems`, and `maxItems`.
-- [ ] Reject unknown fields with `tool_error/tool_schema_invalid`.
-- [ ] Reject JSON booleans for integer fields.
-- [ ] Preserve raw argument field presence for `search_text.context` conflict detection before default injection.
-- [ ] Apply common non-empty trimmed string validation to native filesystem `path`, `shell_exec.cwd`, and `view_image.paths[]`.
-- [ ] Keep `load_skill_resource.path` excluded from workspace path canonicalization and test that it still follows skill-local target rules.
-- [ ] Canonicalize native filesystem paths before policy, approval, handler execution, and audit.
-- [ ] Build normalized approval-scope inputs for read/write/search/shell/view_image/runtime-control tools without adding a second call-signature mechanism.
-- [ ] Store normalized or redacted behavior-affecting arguments in ToolBroker audit events for started, completed, failed, and denied calls.
-- [ ] Redact `write_file.content` audit arguments to `content_sha256` and `content_bytes`.
-- [ ] Redact `edit_file.old_text` and `edit_file.new_text` audit arguments to SHA-256 and UTF-8 byte counts.
-- [ ] Preserve `view_image` audit redaction by recording only `effective_query_source`, never query text, query preview, or query length.
-- [ ] Add tests proving default-injected fields participate in approval scope and audit, while pagination exclusions and runtime-control approval exceptions remain as documented.
-- [ ] Run `uv run pytest tests/unit -v`.
+- [x] Extend schema validation for object, string, integer, `boolean`, arrays, nested objects, required fields, `enum`, `minimum`, `maximum`, default injection, `minItems`, and `maxItems`.
+- [x] Reject unknown fields with `tool_error/tool_schema_invalid`.
+- [x] Reject JSON booleans for integer fields.
+- [x] Preserve raw argument field presence for `search_text.context` conflict detection before default injection.
+- [x] Apply common non-empty trimmed string validation to native filesystem `path`, `shell_exec.cwd`, and `view_image.paths[]`.
+- [x] Keep `load_skill_resource.path` excluded from workspace path canonicalization and test that it still follows skill-local target rules.
+- [x] Canonicalize native filesystem paths before policy, approval, handler execution, and audit.
+- [x] Build normalized approval-scope inputs for read/write/search/shell/view_image/runtime-control tools without adding a second call-signature mechanism.
+- [x] Store normalized or redacted behavior-affecting arguments in ToolBroker audit events for started, completed, failed, and denied calls.
+- [x] Redact `write_file.content` audit arguments to `content_sha256` and `content_bytes`.
+- [x] Redact `edit_file.old_text` and `edit_file.new_text` audit arguments to SHA-256 and UTF-8 byte counts.
+- [x] Preserve `view_image` audit redaction by recording only `effective_query_source`, never query text, query preview, or query length.
+- [x] Add tests proving default-injected fields participate in approval scope and audit, while pagination exclusions and runtime-control approval exceptions remain as documented.
+- [x] Run `uv run pytest tests/unit -v`.
 
 ## Milestone 4B: ToolResult Serialization And Field-Level Artifacting
 

@@ -1215,7 +1215,7 @@ def test_tool_loop_followup_runs_omission_before_second_model_call(tmp_path) -> 
             "config_snapshot": {
                 **session.config_snapshot,
                 "context": {
-                    "window_tokens": 1000,
+                    "window_tokens": 1500,
                     "omit_old_tool_results_at_ratio": 0.9,
                     "retain_recent_model_calls": 1,
                 },
@@ -1613,7 +1613,7 @@ def test_tool_loop_followup_omission_then_compression_failure_does_not_write_bac
             "config_snapshot": {
                 **session.config_snapshot,
                 "context": {
-                    "window_tokens": 1000,
+                    "window_tokens": 1500,
                     "omit_old_tool_results_at_ratio": 0.95,
                     "compress_history_at_ratio": 0.7,
                     "retain_recent_model_calls": 1,

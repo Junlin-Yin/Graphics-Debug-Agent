@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass
 from pathlib import Path
@@ -236,10 +237,38 @@ class ToolBroker:
             )
             return result
 
+        raw_argument_keys = frozenset(normalized_arguments)
         schema_error = _validate_schema(definition, normalized_arguments)
         if schema_error is not None:
             result = _denied_result(
                 schema_error,
+                error_class="tool_error",
+                reason="tool_schema_invalid",
+                metadata={"tool_name": tool_name},
+            )
+            self._write_event(
+                session_id=session_id,
+                run_id=run_id,
+                kind="tool_call_denied",
+                audit_recorder=tool_audit_recorder,
+                payload=_audit_payload(
+                    tool_name=tool_name,
+                    arguments=normalized_arguments,
+                    result=result,
+                    duration_seconds=monotonic() - start,
+                    target="",
+                    approval_wait_duration_ms=0,
+                ),
+            )
+            return result
+        search_semantic_error = _validate_search_text_semantics(
+            definition=definition,
+            arguments=normalized_arguments,
+            raw_argument_keys=raw_argument_keys,
+        )
+        if search_semantic_error is not None:
+            result = _denied_result(
+                search_semantic_error,
                 error_class="tool_error",
                 reason="tool_schema_invalid",
                 metadata={"tool_name": tool_name},
@@ -954,45 +983,244 @@ class ToolBroker:
 
 
 def _validate_schema(definition: ToolDefinition, arguments: dict[str, Any]) -> str | None:
-    schema = definition.input_schema
-    allowed = set(schema.get("properties", {}))
-    for key in arguments:
-        if key not in allowed:
-            return f"Unknown field: {key}"
+    return _validate_object_schema(
+        definition.name,
+        arguments,
+        _schema_for_validation(definition),
+        path="",
+    )
+
+
+def _validate_object_schema(
+    tool_name: str,
+    value: Any,
+    schema: dict[str, Any],
+    *,
+    path: str,
+) -> str | None:
+    if schema.get("type") == "object" and not isinstance(value, dict):
+        return f"{path or 'arguments'} must be an object."
+    properties = schema.get("properties", {})
+    allowed = set(properties)
+    if schema.get("additionalProperties") is False:
+        for key in value:
+            if key not in allowed:
+                return f"Unknown field: {_join_schema_path(path, key)}"
     for key in schema.get("required", []):
-        if key not in arguments:
-            return f"Missing required field: {key}"
-    for key, field_schema in schema.get("properties", {}).items():
-        if key not in arguments:
+        if key not in value:
+            return f"Missing required field: {_join_schema_path(path, key)}"
+    for key, field_schema in properties.items():
+        child_path = _join_schema_path(path, key)
+        if key not in value:
+            if "default" in field_schema:
+                value[key] = _copy_schema_default(field_schema["default"])
             continue
-        value = arguments[key]
-        expected_type = field_schema.get("type")
-        if expected_type == "string" and not isinstance(value, str):
-            return f"{key} must be a string."
-        if expected_type == "integer":
-            if not isinstance(value, int) or isinstance(value, bool):
-                return f"{key} must be an integer."
-            if field_schema.get("minimum") == 1 and value < 1:
-                return f"{key} must be a positive integer."
-        if expected_type == "array":
-            if not isinstance(value, list):
-                return f"{key} must be an array."
-            min_items = field_schema.get("minItems")
-            if min_items is not None and len(value) < min_items:
-                return f"{key} must contain at least {min_items} item."
-            item_schema = field_schema.get("items", {})
-            if item_schema.get("type") == "string" and not all(
-                isinstance(item, str) for item in value
-            ):
-                return f"{key} items must be strings."
-            max_items = field_schema.get("maxItems")
-            if max_items is not None and len(value) > max_items:
-                return f"{key} must contain at most {max_items} items."
-            if item_schema.get("type") == "object":
-                item_error = _validate_object_array_items(key, value, item_schema)
-                if item_error is not None:
-                    return item_error
+        error = _validate_schema_value(tool_name, value[key], field_schema, path=child_path)
+        if error is not None:
+            return error
     return None
+
+
+def _validate_schema_value(
+    tool_name: str,
+    value: Any,
+    schema: dict[str, Any],
+    *,
+    path: str,
+) -> str | None:
+    expected_type = schema.get("type")
+    if expected_type == "object":
+        if not isinstance(value, dict):
+            return f"{path} must be an object."
+        return _validate_object_schema(tool_name, value, schema, path=path)
+    if expected_type == "string":
+        if not isinstance(value, str):
+            return f"{path} must be a string."
+        if _is_trimmed_path_field(tool_name, path):
+            trimmed = value.strip()
+            if not trimmed:
+                return f"{path} must be a non-empty string."
+        enum = schema.get("enum")
+        if enum is not None and value not in enum:
+            return f"{path} must be one of: {', '.join(str(item) for item in enum)}."
+        return None
+    if expected_type == "integer":
+        if not isinstance(value, int) or isinstance(value, bool):
+            return f"{path} must be an integer."
+        minimum = schema.get("minimum")
+        if minimum is not None and value < minimum:
+            if minimum == 1:
+                return f"{path} must be a positive integer."
+            return f"{path} must be greater than or equal to {minimum}."
+        maximum = schema.get("maximum")
+        if maximum is not None and value > maximum:
+            return f"{path} must be less than or equal to {maximum}."
+        return None
+    if expected_type == "boolean":
+        if not isinstance(value, bool):
+            return f"{path} must be a boolean."
+        return None
+    if expected_type == "array":
+        if not isinstance(value, list):
+            return f"{path} must be an array."
+        min_items = schema.get("minItems")
+        if min_items is not None and len(value) < min_items:
+            return f"{path} must contain at least {min_items} item."
+        max_items = schema.get("maxItems")
+        if max_items is not None and len(value) > max_items:
+            return f"{path} must contain at most {max_items} items."
+        item_schema = schema.get("items", {})
+        for index, item in enumerate(value, start=1):
+            item_path = f"{path}[{index}]"
+            error = _validate_schema_value(tool_name, item, item_schema, path=item_path)
+            if error is not None:
+                return error
+        return None
+    enum = schema.get("enum")
+    if enum is not None and value not in enum:
+        return f"{path} must be one of: {', '.join(str(item) for item in enum)}."
+    return None
+
+
+def _copy_schema_default(default: Any) -> Any:
+    if isinstance(default, (dict, list)):
+        return json.loads(json.dumps(default))
+    return default
+
+
+def _join_schema_path(prefix: str, key: str) -> str:
+    return f"{prefix}.{key}" if prefix else key
+
+
+def _schema_for_validation(definition: ToolDefinition) -> dict[str, Any]:
+    if definition.name == "read_file":
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2000,
+                    "default": 2000,
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        }
+    if definition.name == "list_dir":
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "ignore": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 100,
+                    "default": [],
+                },
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "default": 200,
+                },
+                "include_hidden": {"type": "boolean", "default": False},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        }
+    if definition.name == "search_text":
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "default": "."},
+                "pattern": {"type": "string"},
+                "glob": {"type": "string", "default": "**"},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "maxResults": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "default": 100,
+                },
+                "output_mode": {
+                    "type": "string",
+                    "enum": ["content", "files_with_matches", "count"],
+                    "default": "content",
+                },
+                "fixed_strings": {"type": "boolean", "default": False},
+                "case_sensitive": {"type": "boolean", "default": True},
+                "type": {
+                    "type": "string",
+                    "enum": [
+                        "c",
+                        "cpp",
+                        "csharp",
+                        "css",
+                        "go",
+                        "html",
+                        "java",
+                        "javascript",
+                        "json",
+                        "markdown",
+                        "python",
+                        "rust",
+                        "shell",
+                        "text",
+                        "toml",
+                        "typescript",
+                        "yaml",
+                    ],
+                },
+                "include_hidden": {"type": "boolean", "default": False},
+                "before_context": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                    "default": 0,
+                },
+                "after_context": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                    "default": 0,
+                },
+                "context": {"type": "integer", "minimum": 0, "maximum": 10},
+            },
+            "required": ["pattern"],
+            "additionalProperties": False,
+        }
+    if definition.name == "edit_file":
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+                "replace_all": {"type": "boolean", "default": False},
+            },
+            "required": ["path", "old_text", "new_text"],
+            "additionalProperties": False,
+        }
+    return definition.input_schema
+
+
+def _is_trimmed_path_field(tool_name: str, path: str) -> bool:
+    if tool_name == "view_image" and path.startswith("paths["):
+        return True
+    if path == "cwd" and tool_name == "shell_exec":
+        return True
+    return path == "path" and tool_name in {
+        "read_file",
+        "list_dir",
+        "find_file",
+        "search_text",
+        "write_file",
+        "edit_file",
+    }
 
 
 def _validate_object_array_items(
@@ -1069,6 +1297,34 @@ def _validate_view_image_semantics(
     return None
 
 
+def _validate_search_text_semantics(
+    *,
+    definition: ToolDefinition,
+    arguments: dict[str, Any],
+    raw_argument_keys: frozenset[str],
+) -> str | None:
+    if definition.name != "search_text":
+        return None
+    pattern = arguments.get("pattern")
+    if isinstance(pattern, str):
+        if not pattern.strip():
+            return "pattern must be non-empty."
+        if "\r" in pattern or "\n" in pattern:
+            return "pattern must not contain CR or LF characters."
+    if "context" in raw_argument_keys and (
+        "before_context" in raw_argument_keys or "after_context" in raw_argument_keys
+    ):
+        return "context is mutually exclusive with before_context and after_context."
+    context = arguments.get("context")
+    if context is not None:
+        arguments["before_context_effective"] = context
+        arguments["after_context_effective"] = context
+    else:
+        arguments["before_context_effective"] = arguments.get("before_context", 0)
+        arguments["after_context_effective"] = arguments.get("after_context", 0)
+    return None
+
+
 def _policy_facts_from_context(context: dict[str, Any], workspace_root: Path) -> PolicyFacts:
     policy_facts = context.get("policy_facts")
     if isinstance(policy_facts, PolicyFacts):
@@ -1130,14 +1386,47 @@ def _normalize_tool_arguments(
             arguments=arguments,
             workspace_root=workspace_root,
         )
-    canonical_path = canonicalize_path(arguments["path"], workspace_root)
     normalized_arguments = dict(arguments)
+    if "path" in normalized_arguments:
+        normalized_arguments["path"] = normalized_arguments["path"].strip()
+    if definition.name == "search_text":
+        normalized_arguments["query"] = normalized_arguments["pattern"]
+    canonical_path = canonicalize_path(normalized_arguments["path"], workspace_root)
     normalized_arguments["path"] = str(canonical_path)
-    scope_signature = scope_signature_for_tool(
-        definition.name,
-        risk_level=definition.risk_level,
-        paths=[canonical_path],
-    )
+    if definition.name == "search_text":
+        scope_signature = _phase_3_5_scope_signature(
+            definition.name,
+            risk_level=definition.risk_level,
+            canonical_path=canonical_path,
+            arguments=normalized_arguments,
+        )
+    elif definition.name == "list_dir":
+        scope_signature = _phase_3_5_scope_signature(
+            definition.name,
+            risk_level=definition.risk_level,
+            canonical_path=canonical_path,
+            arguments=normalized_arguments,
+        )
+    elif definition.name == "edit_file":
+        scope_signature = _phase_3_5_scope_signature(
+            definition.name,
+            risk_level=definition.risk_level,
+            canonical_path=canonical_path,
+            arguments=normalized_arguments,
+        )
+    elif definition.name == "write_file":
+        scope_signature = _phase_3_5_scope_signature(
+            definition.name,
+            risk_level=definition.risk_level,
+            canonical_path=canonical_path,
+            arguments=normalized_arguments,
+        )
+    else:
+        scope_signature = scope_signature_for_tool(
+            definition.name,
+            risk_level=definition.risk_level,
+            paths=[canonical_path],
+        )
     return NormalizedBrokerArguments(
         arguments=normalized_arguments,
         paths=(canonical_path,),
@@ -1153,11 +1442,12 @@ def _normalize_view_image_arguments(
     arguments: dict[str, Any],
     workspace_root: Path,
 ) -> NormalizedBrokerArguments:
-    canonical_paths = [canonicalize_path(path, workspace_root) for path in arguments["paths"]]
+    trimmed_paths = [path.strip() for path in arguments["paths"]]
+    canonical_paths = [canonicalize_path(path, workspace_root) for path in trimmed_paths]
     normalized_arguments = dict(arguments)
     normalized_arguments["paths"] = [str(path) for path in canonical_paths]
     symlink_escapes: list[str] = []
-    for raw_path, canonical_path in zip(arguments["paths"], canonical_paths, strict=True):
+    for raw_path, canonical_path in zip(trimmed_paths, canonical_paths, strict=True):
         lexical_path = Path(raw_path)
         if not lexical_path.is_absolute():
             lexical_path = workspace_root / lexical_path
@@ -1299,6 +1589,9 @@ def _normalize_shell_arguments(
 ) -> NormalizedBrokerArguments:
     normalized_arguments = dict(arguments)
     cwd_argument = normalized_arguments.get("cwd")
+    if isinstance(cwd_argument, str):
+        normalized_arguments["cwd"] = cwd_argument.strip()
+    cwd_argument = normalized_arguments.get("cwd")
     policy_cwd = canonicalize_path(
         cwd_argument if cwd_argument is not None else str(workspace_root),
         workspace_root,
@@ -1339,8 +1632,54 @@ def _target_for_path_tool(
     tool_name: str, arguments: dict[str, Any], canonical_path: Path
 ) -> str:
     if tool_name == "search_text":
-        return f"{arguments['query']} in {canonical_path}"
+        return f"{arguments['pattern']} in {canonical_path}"
     return str(canonical_path)
+
+
+def _phase_3_5_scope_signature(
+    tool_name: str,
+    *,
+    risk_level: str,
+    canonical_path: Path,
+    arguments: dict[str, Any],
+) -> str:
+    access = "read" if risk_level == "read" else "write"
+    path = str(canonical_path.resolve())
+    if tool_name == "list_dir":
+        ignore = ",".join(arguments.get("ignore") or [])
+        return (
+            f"list_dir|read|read:{path}|ignore:{ignore}|"
+            f"include_hidden:{bool(arguments.get('include_hidden'))}"
+        )
+    if tool_name == "search_text":
+        return (
+            f"search_text|read|read:{path}|pattern:{arguments.get('pattern', '')}|"
+            f"glob:{arguments.get('glob', '')}|"
+            f"case_sensitive:{bool(arguments.get('case_sensitive'))}|"
+            f"fixed_strings:{bool(arguments.get('fixed_strings'))}|"
+            f"type:{arguments.get('type', '')}|"
+            f"output_mode:{arguments.get('output_mode', '')}|"
+            f"before_context_effective:{arguments.get('before_context_effective', 0)}|"
+            f"after_context_effective:{arguments.get('after_context_effective', 0)}|"
+            f"include_hidden:{bool(arguments.get('include_hidden'))}"
+        )
+    if tool_name == "edit_file":
+        return (
+            f"edit_file|write|write:{path}|"
+            f"replace_all:{bool(arguments.get('replace_all'))}"
+        )
+    if tool_name == "write_file":
+        parent = canonical_path.parent
+        planned: list[str] = []
+        cursor = parent
+        while not cursor.exists():
+            planned.append(str(cursor.resolve()))
+            if cursor.parent == cursor:
+                break
+            cursor = cursor.parent
+        planned_part = ",".join(reversed(planned))
+        return f"write_file|write|write:{path}|planned_parents:{planned_part}"
+    return f"{tool_name}|{risk_level}|{access}:{path}"
 
 
 def _target_for_shell(argv: list[str], policy_cwd: Path, workspace_root: Path) -> str:
@@ -1684,6 +2023,47 @@ def _approval_denial_reason(is_interactive_prompt: bool) -> str:
 
 
 def _audit_arguments(*, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    if tool_name == "write_file":
+        redacted = {key: value for key, value in arguments.items() if key != "content"}
+        content = arguments.get("content", "")
+        if isinstance(content, str):
+            encoded = content.encode("utf-8")
+            redacted["content_sha256"] = sha256(encoded).hexdigest()
+            redacted["content_bytes"] = len(encoded)
+        return redacted
+    if tool_name == "edit_file":
+        redacted = {
+            key: value
+            for key, value in arguments.items()
+            if key not in {"old_text", "new_text"}
+        }
+        for field in ("old_text", "new_text"):
+            text = arguments.get(field, "")
+            if isinstance(text, str):
+                encoded = text.encode("utf-8")
+                redacted[f"{field}_sha256"] = sha256(encoded).hexdigest()
+                redacted[f"{field}_bytes"] = len(encoded)
+        return redacted
+    if tool_name == "search_text":
+        return {
+            key: value
+            for key, value in arguments.items()
+            if key
+            in {
+                "path",
+                "pattern",
+                "glob",
+                "offset",
+                "maxResults",
+                "output_mode",
+                "fixed_strings",
+                "case_sensitive",
+                "type",
+                "include_hidden",
+                "before_context_effective",
+                "after_context_effective",
+            }
+        }
     if tool_name != "view_image":
         return arguments
     redacted: dict[str, Any] = {}
