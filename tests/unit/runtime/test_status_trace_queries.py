@@ -6,6 +6,8 @@ from debug_agent.runtime.orchestrator import RuntimeOrchestrator
 from debug_agent.cli.exit_codes import ERROR_LOOKUP_NOT_FOUND, ERROR_STARTUP_PERSISTENCE
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.settings import (
+    PHASE_3_5_SCHEMA_USER_VERSION,
+    PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
     PHASE_3_SCHEMA_USER_VERSION,
     READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
     STARTUP_LEGACY_RESET_GUIDANCE,
@@ -339,6 +341,82 @@ def test_trace_and_resume_missing_database_return_lookup_without_creating_db(
     assert resume.exit_code == ERROR_LOOKUP_NOT_FOUND
     assert resume.message == "No session found for id: sess_missing"
     assert not (workspace / ".sessions" / "runtime.db").exists()
+
+
+def test_phase_3_5_internal_status_trace_resume_missing_database_do_not_create_db(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    orchestrator = RuntimeOrchestrator(workspace_root=workspace)
+
+    status = orchestrator.status_phase_3_5_internal("sess_missing")
+    trace = orchestrator.trace_phase_3_5_internal("sess_missing")
+    resume = orchestrator.resume_phase_3_5_internal("sess_missing")
+
+    assert status.exit_code == 0
+    assert status.fields == {"runtime_database": "missing", "active_session": None}
+    assert trace.exit_code == ERROR_LOOKUP_NOT_FOUND
+    assert resume.exit_code == ERROR_LOOKUP_NOT_FOUND
+    assert not (workspace / ".sessions" / "runtime.db").exists()
+
+
+def test_phase_3_5_internal_status_trace_resume_fail_closed_for_legacy_schema(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    db_dir = workspace / ".sessions"
+    db_dir.mkdir(parents=True)
+    db_path = db_dir / "runtime.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('legacy_session')")
+        conn.execute("PRAGMA user_version = 3")
+
+    orchestrator = RuntimeOrchestrator(workspace_root=workspace)
+
+    status = orchestrator.status_phase_3_5_internal("legacy_session")
+    trace = orchestrator.trace_phase_3_5_internal("legacy_session")
+    resume = orchestrator.resume_phase_3_5_internal("legacy_session")
+
+    for result in (status, trace, resume):
+        assert result.exit_code == ERROR_STARTUP_PERSISTENCE
+        assert PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE in result.message
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT session_id FROM sessions").fetchone()[0] == (
+            "legacy_session"
+        )
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_phase_3_5_internal_status_trace_resume_fail_closed_for_future_schema(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    db_dir = workspace / ".sessions"
+    db_dir.mkdir(parents=True)
+    db_path = db_dir / "runtime.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('future_session')")
+        conn.execute(f"PRAGMA user_version = {PHASE_3_5_SCHEMA_USER_VERSION + 1}")
+
+    orchestrator = RuntimeOrchestrator(workspace_root=workspace)
+
+    status = orchestrator.status_phase_3_5_internal("future_session")
+    trace = orchestrator.trace_phase_3_5_internal("future_session")
+    resume = orchestrator.resume_phase_3_5_internal("future_session")
+
+    for result in (status, trace, resume):
+        assert result.exit_code == ERROR_STARTUP_PERSISTENCE
+        assert PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE in result.message
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT session_id FROM sessions").fetchone()[0] == (
+            "future_session"
+        )
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+            PHASE_3_5_SCHEMA_USER_VERSION + 1
+        )
 
 
 def test_startup_rejects_invalid_agent_policy_before_creating_database(tmp_path, monkeypatch) -> None:

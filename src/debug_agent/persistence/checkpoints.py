@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Any
 
 from debug_agent.persistence.approval_grants import ApprovalGrantStore
@@ -14,6 +15,7 @@ from debug_agent.persistence.conversation import (
 )
 from debug_agent.persistence.errors import StoreError
 from debug_agent.persistence.settings import (
+    PHASE_3_5_TERMINAL_RECOVERY_MANIFEST_SCHEMA_VERSION,
     TERMINAL_REASONS,
     TERMINAL_RECOVERY_MANIFEST_SCHEMA_VERSION,
     ZERO_MESSAGE_REASONS,
@@ -29,6 +31,19 @@ class CheckpointStore:
     todo_plan_store: TodoPlanStore | None = None
     approval_grant_store: ApprovalGrantStore | None = None
     artifact_store: ArtifactStore | None = None
+    terminal_recovery_manifest_schema_version: int = (
+        TERMINAL_RECOVERY_MANIFEST_SCHEMA_VERSION
+    )
+    include_phase_3_5_tool_availability: bool = False
+
+    def for_phase_3_5_internal(self) -> CheckpointStore:
+        return replace(
+            self,
+            terminal_recovery_manifest_schema_version=(
+                PHASE_3_5_TERMINAL_RECOVERY_MANIFEST_SCHEMA_VERSION
+            ),
+            include_phase_3_5_tool_availability=True,
+        )
 
     def save(self, checkpoint: Checkpoint) -> Checkpoint:
         if checkpoint.kind != "terminal_recovery":
@@ -157,7 +172,10 @@ class CheckpointStore:
         if checkpoint.kind != "terminal_recovery":
             raise _store_error("Checkpoint kind is not terminal_recovery.")
         payload = checkpoint.state
-        if payload.get("manifest_schema_version") != TERMINAL_RECOVERY_MANIFEST_SCHEMA_VERSION:
+        if (
+            payload.get("manifest_schema_version")
+            != self.terminal_recovery_manifest_schema_version
+        ):
             raise _store_error("Unsupported terminal recovery manifest schema version.")
         if payload.get("checkpoint_kind") != "terminal_recovery":
             raise _store_error("Terminal recovery payload kind is invalid.")
@@ -263,7 +281,7 @@ class CheckpointStore:
         if highest == 0:
             projection_snapshot = conversation_store.empty_projection_snapshot(run_id=run_id)
         manifest = {
-            "manifest_schema_version": TERMINAL_RECOVERY_MANIFEST_SCHEMA_VERSION,
+            "manifest_schema_version": self.terminal_recovery_manifest_schema_version,
             "checkpoint_kind": "terminal_recovery",
             "session_id": session_id,
             "run_id": run_id,
@@ -639,6 +657,11 @@ class CheckpointStore:
                 "max_analysis_chars": max_analysis_chars,
             },
         }
+        if self.include_phase_3_5_tool_availability:
+            availability["native_tools_contract"] = {
+                "phase": "3.5",
+                "contract_marker": "phase-3.5-native-tools-v1",
+            }
         availability["checksum"] = sha256_hex(canonical_json_bytes(availability))
         return availability
 

@@ -3,7 +3,11 @@ import pytest
 from debug_agent.persistence.approval_grants import ApprovalGrantStore
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.checkpoints import CheckpointStore
-from debug_agent.persistence.conversation import ConversationStore
+from debug_agent.persistence.conversation import (
+    ConversationStore,
+    canonical_json_bytes,
+    sha256_hex,
+)
 from debug_agent.persistence.errors import StoreError
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
@@ -79,7 +83,7 @@ def test_checkpoint_store_rejects_non_terminal_recovery_prompt_checkpoint(tmp_pa
     assert _runs.get(run.run_id).latest_checkpoint_id is None
 
 
-def test_terminal_recovery_checkpoint_zero_message_exit_sets_latest_ids(tmp_path):
+def test_default_terminal_recovery_checkpoint_remains_phase_3_shaped(tmp_path):
     db, sessions, runs, artifacts, session, run = _stores(tmp_path)
     checkpoints = _checkpoint_store(db, artifacts)
 
@@ -94,11 +98,13 @@ def test_terminal_recovery_checkpoint_zero_message_exit_sets_latest_ids(tmp_path
     )
 
     assert checkpoint.kind == "terminal_recovery"
+    assert checkpoint.state["manifest_schema_version"] == 1
     assert checkpoint.state["checkpoint_kind"] == "terminal_recovery"
     assert checkpoint.state["terminal_reason"] == "user_exit"
     assert checkpoint.state["conversation"]["fact_cut"]["highest_message_index"] == 0
     assert checkpoint.state["conversation"]["projection_snapshot"]["message_refs"] == []
     assert checkpoint.state["tool_availability"]["shell_exec"]["max_timeout_seconds"] == 900
+    assert "native_tools_contract" not in checkpoint.state["tool_availability"]
     assert checkpoint.state["tool_availability"]["view_image"]["enabled"] is False
     assert checkpoint.state["tool_availability"]["view_image"]["timeout_seconds"] == 60
     assert checkpoint.state["tool_availability"]["view_image"]["max_tokens"] == 4096
@@ -108,6 +114,74 @@ def test_terminal_recovery_checkpoint_zero_message_exit_sets_latest_ids(tmp_path
     checkpoints.validate_terminal_recovery(checkpoint)
     assert sessions.get(session.session_id).latest_checkpoint_id == "chk_terminal"
     assert runs.get(run.run_id).latest_checkpoint_id == "chk_terminal"
+
+
+def test_phase_3_5_terminal_recovery_checkpoint_requires_v2_manifest(tmp_path):
+    db, _sessions, _runs, artifacts, session, run = _stores(tmp_path)
+    checkpoints = _checkpoint_store(db, artifacts).for_phase_3_5_internal()
+    checkpoint = checkpoints.create_terminal_recovery(
+        checkpoint_id="chk_terminal",
+        session_id=session.session_id,
+        run_id=run.run_id,
+        terminal_status="completed",
+        terminal_reason="user_exit",
+        terminal_error=None,
+        created_at="2026-06-06T00:00:00Z",
+    )
+    assert checkpoint.state["manifest_schema_version"] == 2
+    assert checkpoint.state["tool_availability"]["native_tools_contract"] == {
+        "phase": "3.5",
+        "contract_marker": "phase-3.5-native-tools-v1",
+    }
+    mutated_state = dict(checkpoint.state)
+    mutated_state["manifest_schema_version"] = 1
+
+    with pytest.raises(StoreError, match="manifest schema version"):
+        checkpoints.validate_terminal_recovery(
+            Checkpoint(
+                checkpoint_id=checkpoint.checkpoint_id,
+                session_id=checkpoint.session_id,
+                run_id=checkpoint.run_id,
+                kind=checkpoint.kind,
+                state=mutated_state,
+                summary=checkpoint.summary,
+                created_at=checkpoint.created_at,
+            )
+        )
+
+
+def test_phase_3_5_terminal_recovery_rejects_missing_native_tool_marker(tmp_path):
+    db, _sessions, _runs, artifacts, session, run = _stores(tmp_path)
+    checkpoints = _checkpoint_store(db, artifacts).for_phase_3_5_internal()
+    checkpoint = checkpoints.create_terminal_recovery(
+        checkpoint_id="chk_terminal",
+        session_id=session.session_id,
+        run_id=run.run_id,
+        terminal_status="completed",
+        terminal_reason="user_exit",
+        terminal_error=None,
+        created_at="2026-06-06T00:00:00Z",
+    )
+    mutated_state = dict(checkpoint.state)
+    mutated_tools = dict(mutated_state["tool_availability"])
+    mutated_tools.pop("native_tools_contract")
+    mutated_state["tool_availability"] = mutated_tools
+    comparable = dict(mutated_state)
+    comparable.pop("payload_sha256", None)
+    mutated_state["payload_sha256"] = sha256_hex(canonical_json_bytes(comparable))
+
+    with pytest.raises(StoreError, match="tool availability"):
+        checkpoints.validate_terminal_recovery(
+            Checkpoint(
+                checkpoint_id=checkpoint.checkpoint_id,
+                session_id=checkpoint.session_id,
+                run_id=checkpoint.run_id,
+                kind=checkpoint.kind,
+                state=mutated_state,
+                summary=checkpoint.summary,
+                created_at=checkpoint.created_at,
+            )
+        )
 
 
 def test_terminal_recovery_rejects_zero_message_failure(tmp_path):

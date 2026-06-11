@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 
-# Phase 3 runtime database user_version; Phase 3.5 bumps this in a later milestone.
+# Phase 3 runtime database user_version; default prompt routing stays on this path
+# until the Phase 3.5 cutover milestone.
 PHASE_3_SCHEMA_USER_VERSION = 3
+
+# Phase 3.5 runtime database user_version for internal compatibility seams.
+PHASE_3_5_SCHEMA_USER_VERSION = 4
 
 # Phase 2 and Phase 3 share the same current runtime database shape here.
 PHASE_2_SCHEMA_USER_VERSION = PHASE_3_SCHEMA_USER_VERSION
 
 # Legacy runtime database versions reset on startup but fail closed in read-only paths.
 LEGACY_SCHEMA_USER_VERSIONS = frozenset({0, 1, 2})
+
+# Phase 3.5 treats Phase 0/0.5/1/2/3 databases as legacy in startup reset seams.
+PHASE_3_5_LEGACY_SCHEMA_USER_VERSIONS = frozenset({0, 1, 2, 3})
 
 # Startup guidance describes the approved destructive legacy reset behavior.
 STARTUP_LEGACY_RESET_GUIDANCE = (
@@ -18,10 +25,24 @@ STARTUP_LEGACY_RESET_GUIDANCE = (
     "remain under .sessions/ but are not interpreted by the fresh Phase 3 runtime."
 )
 
+# Internal Phase 3.5 startup guidance for schema-4 bootstrap seams.
+PHASE_3_5_STARTUP_LEGACY_RESET_GUIDANCE = (
+    "Older runtime databases are unsupported by Phase 3.5. The old "
+    ".sessions/runtime.db was deleted and a fresh Phase 3.5 database was created. "
+    "Legacy artifact, log, trace, checkpoint-payload, or session files may remain "
+    "under .sessions/ but are not interpreted by the fresh Phase 3.5 runtime."
+)
+
 # Read-only guidance is used when status, trace, or resume must not reset state.
 READ_ONLY_SCHEMA_FAILURE_GUIDANCE = (
     "Older runtime databases are unsupported by Phase 3. Start a new session or "
     "use a fresh workspace."
+)
+
+# Internal Phase 3.5 read-only guidance for schema-4 status/trace/resume seams.
+PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE = (
+    "Older runtime databases are unsupported by Phase 3.5. Move or delete "
+    ".sessions/, or use a fresh workspace."
 )
 
 # Compatibility alias for user-facing Phase 2 database failure messaging.
@@ -257,8 +278,11 @@ ON sessions(workspace_root)
 WHERE status = 'running';
 """
 
-# Terminal recovery checkpoint payload contract version for Phase 3.
+# Terminal recovery checkpoint payload contract version for default Phase 3 paths.
 TERMINAL_RECOVERY_MANIFEST_SCHEMA_VERSION = 1
+
+# Terminal recovery checkpoint payload contract version for internal Phase 3.5 paths.
+PHASE_3_5_TERMINAL_RECOVERY_MANIFEST_SCHEMA_VERSION = 2
 
 # Terminal reasons that may produce terminal recovery checkpoints.
 TERMINAL_REASONS = frozenset(

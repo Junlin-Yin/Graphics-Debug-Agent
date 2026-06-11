@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from debug_agent.persistence.errors import StoreError
+from debug_agent.persistence.sqlite import validate_phase_3_5_fresh_session_paths
 from debug_agent.runtime.contracts import CONTRACT_VERSION, Checkpoint, Session, utc_now_iso
 
 
@@ -22,9 +23,12 @@ class SessionStore:
         approval_mode: str,
         config_snapshot: dict,
         session_id: str | None = None,
+        require_fresh_phase_3_5_paths: bool = False,
     ) -> Session:
         session_id = session_id or _default_session_id()
         workspace = Path(workspace_root).resolve()
+        if require_fresh_phase_3_5_paths:
+            validate_phase_3_5_fresh_session_paths(workspace, session_id)
         artifact_root = workspace / ".sessions" / session_id / "artifacts"
         now = utc_now_iso()
         session = Session(

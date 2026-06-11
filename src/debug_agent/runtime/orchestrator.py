@@ -1040,6 +1040,33 @@ class RuntimeOrchestrator:
         finally:
             db.close()
 
+    def status_phase_3_5_internal(self, session_id: str) -> StatusResult:
+        try:
+            db = RuntimeDatabase.bootstrap_phase_3_5_read_only_internal(
+                self.workspace_root
+            )
+        except RuntimeBootstrapError as exc:
+            return StatusResult(
+                exit_code=map_error_to_exit_code(exc.normalized_error),
+                fields={},
+                message=str(exc),
+            )
+        if db is None:
+            return StatusResult(
+                exit_code=0,
+                fields={"runtime_database": "missing", "active_session": None},
+                message="",
+            )
+        db.close()
+        return StatusResult(
+            exit_code=ERROR_STARTUP_CONFIG,
+            fields={},
+            message=(
+                "Phase 3.5 status routing is gated until Milestone 10 completes "
+                "the default runtime cutover."
+            ),
+        )
+
     def trace(self, session_id: str) -> TraceResult:
         try:
             db = RuntimeDatabase.bootstrap_read_only(self.workspace_root)
@@ -1090,6 +1117,36 @@ class RuntimeOrchestrator:
         finally:
             db.close()
 
+    def trace_phase_3_5_internal(self, session_id: str) -> TraceResult:
+        try:
+            db = RuntimeDatabase.bootstrap_phase_3_5_read_only_internal(
+                self.workspace_root
+            )
+        except RuntimeBootstrapError as exc:
+            return TraceResult(
+                exit_code=map_error_to_exit_code(exc.normalized_error, boundary="trace"),
+                trace_path=Path(),
+                summary={},
+                message=str(exc),
+            )
+        if db is None:
+            return TraceResult(
+                exit_code=ERROR_LOOKUP_NOT_FOUND,
+                trace_path=Path(),
+                summary={},
+                message=f"No session found for id: {session_id}",
+            )
+        db.close()
+        return TraceResult(
+            exit_code=ERROR_STARTUP_CONFIG,
+            trace_path=Path(),
+            summary={},
+            message=(
+                "Phase 3.5 trace routing is gated until Milestone 10 completes "
+                "the default runtime cutover."
+            ),
+        )
+
     def resume(self, session_id: str) -> ResumeResult:
         result = self._resume_lineage(session_id)
         if result.exit_code != 0:
@@ -1099,6 +1156,44 @@ class RuntimeOrchestrator:
             message=f"Resumed session {session_id}",
             error=None,
             session_id=session_id,
+        )
+
+    def resume_phase_3_5_internal(self, session_id: str) -> ResumeResult:
+        try:
+            db = RuntimeDatabase.bootstrap_phase_3_5_read_only_internal(
+                self.workspace_root
+            )
+        except RuntimeBootstrapError as exc:
+            return ResumeResult(
+                exit_code=map_error_to_exit_code(exc.normalized_error),
+                message=str(exc),
+                error=exc.normalized_error.to_dict(),
+                session_id=None,
+            )
+        if db is None:
+            return ResumeResult(
+                exit_code=ERROR_LOOKUP_NOT_FOUND,
+                message=f"No session found for id: {session_id}",
+                error={
+                    "error_class": "user_error",
+                    "reason": "lookup_not_found",
+                    "message": f"No session found for id: {session_id}",
+                },
+                session_id=None,
+            )
+        db.close()
+        return ResumeResult(
+            exit_code=ERROR_STARTUP_CONFIG,
+            message=(
+                "Phase 3.5 resume routing is gated until Milestone 10 completes "
+                "the default runtime cutover."
+            ),
+            error={
+                "error_class": "config_error",
+                "reason": "startup_schema_validation_failed",
+                "message": "Phase 3.5 resume routing is gated.",
+            },
+            session_id=None,
         )
 
     def start_resumed_repl(self, session_id: str) -> ReplStartResult:

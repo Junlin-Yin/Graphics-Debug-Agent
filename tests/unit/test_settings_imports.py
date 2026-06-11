@@ -29,7 +29,10 @@ def test_settings_modules_import_and_expose_documented_groups() -> None:
     assert cli_settings.MAX_MARKDOWN_RENDER_CHARS == 50_000
 
     assert persistence_settings.PHASE_3_SCHEMA_USER_VERSION == 3
+    assert persistence_settings.PHASE_3_5_SCHEMA_USER_VERSION == 4
     assert 0 in persistence_settings.LEGACY_SCHEMA_USER_VERSIONS
+    assert 3 in persistence_settings.PHASE_3_5_LEGACY_SCHEMA_USER_VERSIONS
     assert "CREATE TABLE IF NOT EXISTS sessions" in persistence_settings.SQLITE_SCHEMA
     assert persistence_settings.TERMINAL_RECOVERY_MANIFEST_SCHEMA_VERSION == 1
+    assert persistence_settings.PHASE_3_5_TERMINAL_RECOVERY_MANIFEST_SCHEMA_VERSION == 2
     assert persistence_settings.SNAPSHOT_INLINE_THRESHOLD_BYTES == 16 * 1024

@@ -3,9 +3,12 @@ import sqlite3
 import pytest
 
 from debug_agent.persistence.settings import (
+    PHASE_3_5_SCHEMA_USER_VERSION,
     PHASE_3_SCHEMA_USER_VERSION,
+    PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
     READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
 )
+from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.sqlite import RuntimeBootstrapError, RuntimeDatabase
 
 
@@ -336,6 +339,107 @@ def test_startup_legacy_user_version_resets_only_runtime_db(tmp_path) -> None:
     with sqlite3.connect(db_dir / "runtime.db") as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+def test_phase_3_5_internal_bootstrap_creates_user_version_4(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    db = RuntimeDatabase.bootstrap_phase_3_5_internal(workspace)
+    db.close()
+
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+            PHASE_3_5_SCHEMA_USER_VERSION
+        )
+
+
+def test_phase_3_5_startup_legacy_reset_deletes_sqlite_sidecars(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    db_dir = workspace / ".sessions"
+    db_dir.mkdir(parents=True)
+    db_path = db_dir / "runtime.db"
+    wal_path = db_dir / "runtime.db-wal"
+    shm_path = db_dir / "runtime.db-shm"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('legacy')")
+        conn.execute("PRAGMA user_version = 3")
+    wal_path.write_text("legacy wal", encoding="utf-8")
+    shm_path.write_text("legacy shm", encoding="utf-8")
+
+    db = RuntimeDatabase.bootstrap_phase_3_5_internal(workspace)
+    db.close()
+
+    assert not wal_path.exists()
+    assert not shm_path.exists()
+    assert db_path.exists()
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+            PHASE_3_5_SCHEMA_USER_VERSION
+        )
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("legacy_version", [0, 1, 2, 3])
+def test_phase_3_5_read_only_legacy_schema_fails_without_deleting(
+    tmp_path, legacy_version
+) -> None:
+    workspace = tmp_path / "workspace"
+    db_dir = workspace / ".sessions"
+    db_dir.mkdir(parents=True)
+    db_path = db_dir / "runtime.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('legacy')")
+        conn.execute(f"PRAGMA user_version = {legacy_version}")
+
+    with pytest.raises(RuntimeBootstrapError) as exc:
+        RuntimeDatabase.bootstrap_phase_3_5_read_only_internal(workspace)
+
+    assert exc.value.error_class == "config_error"
+    assert exc.value.reason in {"schema_version_missing", "legacy_schema_version"}
+    assert PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE in str(exc.value)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT session_id FROM sessions").fetchone()[0] == "legacy"
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == legacy_version
+
+
+def test_phase_3_5_startup_corrupt_database_fails_without_reset(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    db_dir = workspace / ".sessions"
+    db_dir.mkdir(parents=True)
+    db_path = db_dir / "runtime.db"
+    db_path.write_bytes(b"not sqlite")
+
+    with pytest.raises(RuntimeBootstrapError) as exc:
+        RuntimeDatabase.bootstrap_phase_3_5_internal(workspace)
+
+    assert exc.value.error_class == "persistence_error"
+    assert exc.value.reason == "persistence_read_failed"
+    assert db_path.read_bytes() == b"not sqlite"
+
+
+def test_phase_3_5_session_path_collision_fails_closed(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    orphan_session = workspace / ".sessions" / "sess_orphan"
+    orphan_session.mkdir(parents=True)
+    db = RuntimeDatabase.bootstrap_phase_3_5_internal(workspace)
+
+    with pytest.raises(RuntimeBootstrapError) as exc:
+        SessionStore(db.connection).create(
+            workspace_root=workspace,
+            approval_mode="normal",
+            config_snapshot={},
+            session_id="sess_orphan",
+            require_fresh_phase_3_5_paths=True,
+        )
+
+    assert exc.value.error_class == "persistence_error"
+    assert exc.value.reason == "persistence_write_failed"
+    assert orphan_session.is_dir()
+    db.close()
 
 
 def test_startup_unknown_future_user_version_fails_closed_without_deleting(

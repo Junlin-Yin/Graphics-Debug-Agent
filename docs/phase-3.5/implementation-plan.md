@@ -254,19 +254,19 @@ After Milestone 9 completes, trace/events integration verification passes, and t
 
 **Freeze/review checkpoint:** do not implement Phase 3.5 native tool schemas until schema 4 reset/fail-closed behavior and checkpoint manifest version gates are reviewed.
 
-- [ ] Define Phase 3.5 schema user version in `src/debug_agent/persistence/settings.py`.
-- [ ] Create fresh Phase 3.5 runtime databases with SQLite `PRAGMA user_version = 4` through the internal Phase 3.5 bootstrap seam only; do not bind this bootstrap to default user-facing startup before Milestone 10.
-- [ ] Implement startup-only reset for missing schema version, `0`, and legacy `< 4` databases before interpreting rows in the internal Phase 3.5 startup path.
-- [ ] Delete `.sessions/runtime.db-wal` and `.sessions/runtime.db-shm` with the legacy DB when present.
-- [ ] Keep corrupt/unreadable DB handling as `persistence_error/persistence_read_failed` without reset.
-- [ ] Keep unknown future DB versions fail-closed and non-destructive.
-- [ ] Implement Phase 3.5 `status`, `trace`, and `resume` read-only/recovery schema gates through internal routing seams, proving they do not create a missing DB and fail closed for mismatched existing DB versions; keep default command routing on the existing Phase 3 path until Milestone 10.
-- [ ] Add collision checks for fresh Phase 3.5 session/log/artifact/checkpoint-payload/temp paths against orphaned legacy files or directories.
-- [ ] Update user-facing startup reset and read-only/recovery fail-closed messages.
-- [ ] Add checkpoint manifest schema version constant `2` and reject non-2 Phase 3.5 terminal recovery checkpoints after schema version 4 gate passes.
-- [ ] Keep default user-facing prompt execution on the existing Phase 3 path while schema 4, tool contracts, and observability are incomplete; partial Phase 3.5 prompt execution remains internal/test-only or fail-closed before accepting prompt work.
-- [ ] Run `uv run pytest tests/unit -v`.
-- [ ] Run `uv run pytest tests/integration -v` with coverage focused on startup/status/trace/resume schema behavior.
+- [x] Define Phase 3.5 schema user version in `src/debug_agent/persistence/settings.py`.
+- [x] Create fresh Phase 3.5 runtime databases with SQLite `PRAGMA user_version = 4` through the internal Phase 3.5 bootstrap seam only; do not bind this bootstrap to default user-facing startup before Milestone 10.
+- [x] Implement startup-only reset for missing schema version, `0`, and legacy `< 4` databases before interpreting rows in the internal Phase 3.5 startup path.
+- [x] Delete `.sessions/runtime.db-wal` and `.sessions/runtime.db-shm` with the legacy DB when present.
+- [x] Keep corrupt/unreadable DB handling as `persistence_error/persistence_read_failed` without reset.
+- [x] Keep unknown future DB versions fail-closed and non-destructive.
+- [x] Implement Phase 3.5 `status`, `trace`, and `resume` read-only/recovery schema gates through internal routing seams, proving they do not create a missing DB and fail closed for mismatched existing DB versions; keep default command routing on the existing Phase 3 path until Milestone 10.
+- [x] Add collision checks for fresh Phase 3.5 session/log/artifact/checkpoint-payload/temp paths against orphaned legacy files or directories.
+- [x] Update user-facing startup reset and read-only/recovery fail-closed messages.
+- [x] Add checkpoint manifest schema version constant `2` and reject non-2 Phase 3.5 terminal recovery checkpoints after schema version 4 gate passes.
+- [x] Keep default user-facing prompt execution on the existing Phase 3 path while schema 4, tool contracts, and observability are incomplete; partial Phase 3.5 prompt execution remains internal/test-only or fail-closed before accepting prompt work.
+- [x] Run `uv run pytest tests/unit -v`.
+- [x] Run `uv run pytest tests/integration -v` with coverage focused on startup/status/trace/resume schema behavior.
 
 ## Milestone 4A: ToolBroker Schema, Defaults, Path Normalization, And Audit Arguments
 
