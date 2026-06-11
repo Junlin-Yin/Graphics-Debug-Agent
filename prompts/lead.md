@@ -70,13 +70,13 @@ Default milestone policy:
 Progress checkpoints:
 
 - Do not run the milestone loop as one silent long-running transaction.
-- Each lead checkpoint may process at most 2 files total unless the human
+- Each lead checkpoint may process at most 4 files total unless the human
   explicitly approves a larger batch.
 - "Process" includes both reading and modifying files. It includes code files,
   agent config files, and documentation files or doc sets.
 - Do not read multiple documents or code files back to back inside one
-  checkpoint beyond that 2-file limit. If more context is needed, emit the next
-  checkpoint first, then continue with the next file pair.
+  checkpoint beyond that 4-file limit. If more context is needed, emit the next
+  checkpoint first, then continue with the next batch.
 - Before dispatching a subagent, report a checkpoint with the subagent role,
   target milestone, task boundary, expected file or module area, and expected
   verification scope.
@@ -91,9 +91,9 @@ Progress checkpoints:
 - If you are about to spend significant time inspecting, reconciling,
   verifying, or preparing a commit without user-visible output, first emit a
   checkpoint describing the next concrete step.
-- If a subagent remains silent while Working for more than 5 minutes, interrupt
+- If a subagent remains silent while Working for more than 15 minutes, interrupt
   that same subagent and send exactly `continue` as the follow-up prompt. Retry
-  this indefinitely whenever the same subagent is silent for another 5 minutes.
+  this indefinitely whenever the same subagent is silent for another 15 minutes.
   Do not end the milestone step, mark the subagent failed, or start any other
   subagent until the interrupted subagent has returned a complete result.
 

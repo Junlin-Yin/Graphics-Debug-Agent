@@ -107,12 +107,12 @@ Report the derived:
 ## Progress Checkpoints
 
 - Do not perform the whole review as one silent long-running operation.
-- Review in small batches. Each batch should process at most 2 files unless the
+- Review in small batches. Each batch should process at most 4 files unless the
   lead explicitly approves a larger batch.
 - "Process" includes both reading and modifying files. It includes code files,
   agent config files, and documentation files or doc sets.
 - Do not read multiple documents or code files back to back inside one batch
-  beyond that 2-file limit.
+  beyond that 4-file limit.
 - Before each review batch, report:
   - batch goal
   - contract documents or files being checked

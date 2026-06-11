@@ -114,12 +114,12 @@ according to the approved repository contracts.
   - batch goal
   - files to read and/or edit
   - expected tests affected
-- Each implementation batch should process at most 2 files unless the lead
+- Each implementation batch should process at most 4 files unless the lead
   explicitly approves a larger batch.
 - "Process" includes both reading and modifying files. It includes code files,
   agent config files, and documentation files or doc sets.
 - Do not read multiple documents or code files back to back inside one batch
-  beyond that 2-file limit.
+  beyond that 4-file limit.
 - After each implementation batch, report:
   - files changed
   - tests added or updated
