@@ -39,7 +39,7 @@ from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeBootstrapError, RuntimeDatabase
 from debug_agent.persistence.todo_plans import TodoPlanStore
-from debug_agent.runtime.config import (
+from debug_agent.runtime.settings import (
     EXECUTION_DEFAULTS,
     MULTIMODAL_LIMIT_DEFAULTS,
     PHASE_0_SYSTEM_PROMPT,

@@ -12,10 +12,9 @@ from uuid import uuid4
 import yaml
 
 from debug_agent.persistence.artifacts import ArtifactStore
+from debug_agent.persistence.settings import SKILL_INLINE_PAYLOAD_THRESHOLD_BYTES
 from debug_agent.runtime.contracts import utc_now_iso
 
-
-INLINE_PAYLOAD_THRESHOLD_BYTES = 16 * 1024
 MANIFEST_FIELDS = frozenset(
     {"name", "description", "execution_mode", "triggers", "metadata"}
 )
@@ -224,7 +223,7 @@ class SkillRegistry:
             if (
                 media_kind == "binary"
                 or len((text_payload or "").encode("utf-8"))
-                > INLINE_PAYLOAD_THRESHOLD_BYTES
+                > SKILL_INLINE_PAYLOAD_THRESHOLD_BYTES
             ):
                 content = text_payload if text_payload is not None else payload.hex()
                 artifact = self.artifact_store.write_text(
@@ -290,7 +289,7 @@ class SkillRegistry:
         serialized = json.dumps(
             payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )
-        if len(serialized.encode("utf-8")) <= INLINE_PAYLOAD_THRESHOLD_BYTES:
+        if len(serialized.encode("utf-8")) <= SKILL_INLINE_PAYLOAD_THRESHOLD_BYTES:
             return None
         artifact = self.artifact_store.write_text(
             session_id=session_id,

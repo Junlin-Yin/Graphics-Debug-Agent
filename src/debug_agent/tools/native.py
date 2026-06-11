@@ -7,9 +7,7 @@ from typing import Any, Protocol
 
 from debug_agent.runtime.contracts import ToolDefinition, ToolResult
 from debug_agent.runtime.policy import PermissionEvaluator
-
-
-DEFAULT_LIMIT = 1000
+from debug_agent.tools.settings import DEFAULT_NATIVE_TOOL_LIMIT
 
 
 class NativeToolContext(Protocol):
@@ -152,7 +150,7 @@ def read_file(context: NativeToolContext, arguments: dict[str, Any]) -> str:
 def list_dir(_context: NativeToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
     target = Path(arguments["path"])
     entries: list[dict[str, Any]] = []
-    limit = arguments.get("limit", DEFAULT_LIMIT)
+    limit = arguments.get("limit", DEFAULT_NATIVE_TOOL_LIMIT)
     for child in sorted(target.iterdir(), key=lambda path: path.name):
         if _context.permission_evaluator.classify_path(child).classification == "denied":
             continue
@@ -170,7 +168,7 @@ def list_dir(_context: NativeToolContext, arguments: dict[str, Any]) -> dict[str
 def search_text(context: NativeToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
     query = arguments["query"]
     start = Path(arguments["path"])
-    limit = arguments.get("limit", DEFAULT_LIMIT)
+    limit = arguments.get("limit", DEFAULT_NATIVE_TOOL_LIMIT)
     matches: list[dict[str, Any]] = []
     for path in _iter_search_files(context, start):
         try:

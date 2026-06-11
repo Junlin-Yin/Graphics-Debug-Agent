@@ -38,15 +38,12 @@ from debug_agent.runtime.policy import PermissionEvaluator, policy_facts_from_sn
 from debug_agent.runtime.prompt_composer import PromptComposer, PromptCompositionRequest
 from debug_agent.runtime.query_control import QueryControlPlane
 from debug_agent.runtime.retry import RetryBoundaryFacts, RetryController
-from debug_agent.runtime.stream_events import AgentStreamEvent
-
-
-LARGE_MODEL_CONTENT_THRESHOLD_BYTES = 16 * 1024
-CONTEXT_LIMIT_EXCEEDED_MESSAGE = (
-    "Context window still exceeds the limit after compression. "
-    "The current turn was aborted."
+from debug_agent.runtime.settings import (
+    CONTEXT_LIMIT_EXCEEDED_MESSAGE,
+    LARGE_MODEL_CONTENT_THRESHOLD_BYTES,
+    NO_COMPRESSIBLE_HISTORY_MESSAGE,
 )
-NO_COMPRESSIBLE_HISTORY_MESSAGE = "No compressible history."
+from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
 class CompressionFailedAbort(Exception):

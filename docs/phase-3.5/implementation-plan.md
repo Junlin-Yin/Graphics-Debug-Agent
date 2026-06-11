@@ -203,15 +203,15 @@ After Milestone 9 completes, trace/events integration verification passes, and t
 
 **Freeze/review checkpoint:** do not add Phase 3.5 config fields until settings ownership, comments, and no-behavior-drift tests are reviewed.
 
-- [ ] Create `src/debug_agent/runtime/settings.py` with main model, context, execution, development, agent loop, retry, token estimator, policy, provider execution, platform, prompt, and runtime ordering constants.
-- [ ] Create `src/debug_agent/tools/settings.py` with native tool pagination constants, ToolBroker internal limits, fixed `view_image` defaults and image/request limits.
-- [ ] Create `src/debug_agent/cli/settings.py` with REPL/TUI presentation, flush, scroll, and preview constants.
-- [ ] Create or update `src/debug_agent/persistence/settings.py` with SQLite schema, legacy schema, checkpoint manifest, and inline/artifact threshold constants.
-- [ ] Move constants from existing modules to settings imports while preserving current behavior for this milestone.
-- [ ] Add short adjacent comments for moved constants that explain their contract boundary or operational role.
-- [ ] Update tests that import old constants to import from the new settings owners.
-- [ ] Add import smoke coverage for all four settings modules.
-- [ ] Run `uv run pytest tests/unit -v`.
+- [x] Create `src/debug_agent/runtime/settings.py` with main model, context, execution, development, agent loop, retry, token estimator, policy, provider execution, platform, prompt, and runtime ordering constants.
+- [x] Create `src/debug_agent/tools/settings.py` with native tool pagination constants, ToolBroker internal limits, fixed `view_image` defaults and image/request limits.
+- [x] Create `src/debug_agent/cli/settings.py` with REPL/TUI presentation, flush, scroll, and preview constants.
+- [x] Create or update `src/debug_agent/persistence/settings.py` with SQLite schema, legacy schema, checkpoint manifest, and inline/artifact threshold constants.
+- [x] Move constants from existing modules to settings imports while preserving current behavior for this milestone.
+- [x] Add short adjacent comments for moved constants that explain their contract boundary or operational role.
+- [x] Update tests that import old constants to import from the new settings owners.
+- [x] Add import smoke coverage for all four settings modules.
+- [x] Run `uv run pytest tests/unit -v`.
 
 ## Milestone 2: Phase 3.5 Frozen Config Additions
 

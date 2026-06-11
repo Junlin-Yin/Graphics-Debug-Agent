@@ -4,12 +4,11 @@ import sqlite3
 
 import pytest
 
-from debug_agent.persistence.sqlite import (
+from debug_agent.persistence.settings import (
     PHASE_3_SCHEMA_USER_VERSION,
     READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
-    RuntimeBootstrapError,
-    RuntimeDatabase,
 )
+from debug_agent.persistence.sqlite import RuntimeBootstrapError, RuntimeDatabase
 
 
 def test_fresh_bootstrap_creates_phase_3_schema_and_todo_plan_table(tmp_path) -> None:

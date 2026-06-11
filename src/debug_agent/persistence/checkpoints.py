@@ -13,21 +13,13 @@ from debug_agent.persistence.conversation import (
     sha256_hex,
 )
 from debug_agent.persistence.errors import StoreError
+from debug_agent.persistence.settings import (
+    TERMINAL_REASONS,
+    TERMINAL_RECOVERY_MANIFEST_SCHEMA_VERSION,
+    ZERO_MESSAGE_REASONS,
+)
 from debug_agent.persistence.todo_plans import TodoPlanStore
 from debug_agent.runtime.contracts import Checkpoint
-
-
-TERMINAL_RECOVERY_MANIFEST_SCHEMA_VERSION = 1
-TERMINAL_REASONS = frozenset(
-    {
-        "terminal_completion",
-        "user_exit",
-        "user_cancel_idle",
-        "terminal_failure",
-        "terminal_stale",
-    }
-)
-ZERO_MESSAGE_REASONS = frozenset({"user_exit"})
 
 
 @dataclass(frozen=True)

@@ -5,7 +5,7 @@ import sqlite3
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
 from debug_agent.cli.exit_codes import ERROR_LOOKUP_NOT_FOUND, ERROR_STARTUP_PERSISTENCE
 from debug_agent.persistence.events import EventWriter
-from debug_agent.persistence.sqlite import (
+from debug_agent.persistence.settings import (
     PHASE_3_SCHEMA_USER_VERSION,
     READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
     STARTUP_LEGACY_RESET_GUIDANCE,

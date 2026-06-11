@@ -6,10 +6,8 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from debug_agent.persistence.artifacts import ArtifactStore
+from debug_agent.persistence.settings import SNAPSHOT_INLINE_THRESHOLD_BYTES
 from debug_agent.runtime.contracts import utc_now_iso
-
-
-SNAPSHOT_INLINE_THRESHOLD_BYTES = 16 * 1024
 
 
 @dataclass(frozen=True)

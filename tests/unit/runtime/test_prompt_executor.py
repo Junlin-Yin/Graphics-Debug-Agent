@@ -13,7 +13,6 @@ from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
 from debug_agent.persistence.todo_plans import TodoPlanStore
-from debug_agent.runtime.config import PHASE_0_SYSTEM_PROMPT
 from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.context_manager import ContextManager
 from debug_agent.runtime.model_context import ConversationMessage
@@ -21,6 +20,7 @@ from debug_agent.runtime.model_context import TokenEstimator
 from debug_agent.runtime.orchestrator import ReplRuntime
 from debug_agent.runtime.prompt_executor import PromptAgentExecutor
 from debug_agent.runtime.query_control import QueryControlPlane
+from debug_agent.runtime.settings import PHASE_0_SYSTEM_PROMPT
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.tools.broker import ToolBroker
 from debug_agent.tools.native import tool_definitions

@@ -37,13 +37,20 @@ from debug_agent.cli.repl_view import (
     WelcomeSnapshot,
     format_token_count,
 )
+from debug_agent.cli.settings import (
+    ESCAPE_SEQUENCE_TIMEOUT_SECONDS,
+    MAX_MARKDOWN_RENDER_CHARS,
+    MESSAGE_SCROLL_STEP_LINES,
+    MESSAGE_SCROLL_STEP_PAGE,
+    STREAM_FLUSH_INTERVAL_SECONDS,
+)
 
 
-max_markdown_render_chars = 50_000
-stream_flush_interval_seconds = 0.25
-message_scroll_step_lines = 2
-message_scroll_step_page = 10
-escape_sequence_timeout_seconds = 0.05
+max_markdown_render_chars = MAX_MARKDOWN_RENDER_CHARS
+stream_flush_interval_seconds = STREAM_FLUSH_INTERVAL_SECONDS
+message_scroll_step_lines = MESSAGE_SCROLL_STEP_LINES
+message_scroll_step_page = MESSAGE_SCROLL_STEP_PAGE
+escape_sequence_timeout_seconds = ESCAPE_SEQUENCE_TIMEOUT_SECONDS
 
 
 class _MessageScrollablePane(ScrollablePane):

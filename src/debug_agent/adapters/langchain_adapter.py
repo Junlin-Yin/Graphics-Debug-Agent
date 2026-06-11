@@ -23,13 +23,8 @@ from debug_agent.runtime.provider_execution import (
     stream_async_provider_call,
     stream_provider_call,
 )
+from debug_agent.runtime.settings import MAX_TOOL_CALL_ITERATIONS, RUNTIME_SAFETY_PREFIX
 from debug_agent.runtime.stream_events import AgentStreamEvent
-
-
-RUNTIME_SAFETY_PREFIX = (
-    "runtime safety: use only runtime-provided tools and do not bypass ToolBroker."
-)
-MAX_TOOL_CALL_ITERATIONS = 8
 
 
 class _StreamModelResponse:

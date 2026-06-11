@@ -16,12 +16,9 @@ from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
 from debug_agent.runtime.policy import build_builtin_policy
 from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
-from debug_agent.tools.broker import (
-    LARGE_OUTPUT_THRESHOLD_BYTES,
-    FakeApprovalProvider,
-    ToolBroker,
-    ToolRouter,
-)
+from debug_agent.tools import settings as tool_settings
+from debug_agent.tools.broker import FakeApprovalProvider, ToolBroker, ToolRouter
+from debug_agent.tools.settings import LARGE_OUTPUT_THRESHOLD_BYTES
 from debug_agent.tools.view_image import ViewImageTool
 
 
@@ -707,7 +704,7 @@ def test_view_image_request_size_limit_prevents_provider_call(tmp_path, monkeypa
     _write_image(image)
     monkeypatch.setenv("MOONSHOT_API_KEY", "secret")
     monkeypatch.setenv("MOONSHOT_BASE_URL", "https://example.test/v1")
-    monkeypatch.setattr(ViewImageTool, "MAX_REQUEST_BODY_BYTES", 10)
+    monkeypatch.setattr(tool_settings, "MAX_VIEW_IMAGE_REQUEST_BODY_BYTES", 10)
     vision_client = _FakeVisionClient()
 
     result = _invoke_enabled(runtime, {"paths": ["capture.png"]}, vision_client=vision_client)

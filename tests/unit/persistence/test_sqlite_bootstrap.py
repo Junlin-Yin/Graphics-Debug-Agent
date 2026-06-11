@@ -2,12 +2,11 @@ import sqlite3
 
 import pytest
 
-from debug_agent.persistence.sqlite import (
+from debug_agent.persistence.settings import (
     PHASE_3_SCHEMA_USER_VERSION,
-    RuntimeBootstrapError,
-    RuntimeDatabase,
     READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
 )
+from debug_agent.persistence.sqlite import RuntimeBootstrapError, RuntimeDatabase
 
 
 def test_runtime_database_bootstrap_creates_phase_3_tables_and_user_version(

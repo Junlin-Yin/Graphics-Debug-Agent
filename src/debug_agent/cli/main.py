@@ -9,18 +9,10 @@ from debug_agent.cli.repl import (
     run_repl,
     run_resumed_repl,
 )
+from debug_agent.cli.settings import APPROVAL_MODES, USAGE
 from debug_agent.persistence.sqlite import RuntimeBootstrapError
 from debug_agent.runtime.config import load_config_snapshot
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
-
-
-USAGE = (
-    'Usage: debug-agent [--approval-mode normal|semi-auto|yolo]  # REPL | '
-    'debug-agent [--approval-mode normal|semi-auto|yolo] -p "prompt" | '
-    "debug-agent status <session_id> | debug-agent trace <session_id> | "
-    "debug-agent resume <session_id>"
-)
-APPROVAL_MODES = {"normal", "semi-auto", "yolo"}
 
 
 def main(argv: Sequence[str] | None = None) -> int:

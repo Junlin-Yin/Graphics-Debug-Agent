@@ -26,13 +26,7 @@ from debug_agent.runtime.provider_execution import (
     ProviderCancellationHandle,
     provider_cancellation_uncertainty_metadata,
 )
-
-
-DEFAULT_QUERY = (
-    "Describe the visible contents of the image(s), call out visual differences or "
-    "anomalies when multiple images are provided, transcribe visible text when "
-    "useful, and note uncertainty."
-)
+from debug_agent.tools import settings as tool_settings
 
 
 @dataclass(frozen=True)
@@ -74,10 +68,6 @@ class ImageFacts:
 
 
 class ViewImageTool:
-    MAX_DIMENSION = 4096
-    MAX_PIXELS = 4096 * 2160
-    MAX_REQUEST_BODY_BYTES = 100_000_000
-
     def __init__(
         self,
         *,
@@ -144,7 +134,7 @@ class ViewImageTool:
         projected_size = len(
             json.dumps(projected, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         )
-        if projected_size > self.MAX_REQUEST_BODY_BYTES:
+        if projected_size > tool_settings.MAX_VIEW_IMAGE_REQUEST_BODY_BYTES:
             return ViewImageResult(
                 status="error",
                 error_message="Projected vision request body is too large.",
@@ -247,9 +237,12 @@ class ViewImageTool:
             mime_type = "image/jpeg"
         else:
             raise ValueError("Unsupported image type.")
-        if width > self.MAX_DIMENSION or height > self.MAX_DIMENSION:
+        if (
+            width > tool_settings.MAX_VIEW_IMAGE_DIMENSION
+            or height > tool_settings.MAX_VIEW_IMAGE_DIMENSION
+        ):
             raise ValueError("Image dimensions exceed Phase 2 limits.")
-        if width * height > self.MAX_PIXELS:
+        if width * height > tool_settings.MAX_VIEW_IMAGE_PIXELS:
             raise ValueError("Image pixel count exceeds Phase 2 limits.")
         return ImageFacts(
             path=path,
@@ -347,7 +340,7 @@ def _effective_query(
     *, arguments: dict[str, Any], max_query_chars: int
 ) -> tuple[str, str] | ViewImageResult:
     if "query" not in arguments:
-        return DEFAULT_QUERY, "default"
+        return tool_settings.DEFAULT_VIEW_IMAGE_QUERY, "default"
     query = arguments["query"].strip()
     if not query:
         return ViewImageResult(

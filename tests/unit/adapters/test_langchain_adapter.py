@@ -12,7 +12,6 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
 from debug_agent.adapters.langchain_adapter import (
     LangChainAgentLoopAdapter,
-    MAX_TOOL_CALL_ITERATIONS,
     _langchain_tools,
     _provider_messages_from_segments,
 )
@@ -30,6 +29,7 @@ from debug_agent.runtime.contracts import (
 )
 from debug_agent.runtime.model_context import ConversationMessage, ModelContextFrame
 from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
+from debug_agent.runtime.settings import MAX_TOOL_CALL_ITERATIONS
 from debug_agent.runtime.stream_events import AgentStreamEvent
 
 

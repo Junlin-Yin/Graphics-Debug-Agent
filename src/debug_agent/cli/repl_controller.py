@@ -16,17 +16,12 @@ from debug_agent.cli.repl_view import (
     WelcomeSnapshot,
     build_welcome_snapshot,
 )
+from debug_agent.cli.settings import BUSY_MESSAGE, STREAMING_FALLBACK_MESSAGE
 from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.orchestrator import ReplRuntime, RuntimeOrchestrator
 from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.tools.broker import ApprovalDecision
-
-
-BUSY_MESSAGE = "Prompt run is already executing. Input is disabled."
-STREAMING_FALLBACK_MESSAGE = (
-    "streaming unavailable for this model; using non-streaming response."
-)
 
 
 @dataclass

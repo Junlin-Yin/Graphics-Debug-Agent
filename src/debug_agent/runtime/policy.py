@@ -8,49 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from debug_agent.runtime.config import ConfigError
-
-
-BUILTIN_DIRECTORY_DENIES = (
-    ".git",
-    "node_modules",
-    "build",
-    "dist",
-    ".venv",
-    "__pycache__",
-    ".pytest_cache",
-    ".sessions",
+from debug_agent.runtime.settings import (
+    BUILTIN_DIRECTORY_DENIES,
+    PATH_OPTION_NAMES,
+    RAW_SHELL_TRAMPOLINES,
+    WINDOWS_SUFFIXES,
 )
-PATH_OPTION_NAMES = frozenset(
-    {
-        "--output",
-        "--out",
-        "--config",
-        "--file",
-        "--path",
-        "--cwd",
-        "--directory",
-        "--root",
-        "--input",
-        "--src",
-        "--source",
-        "--dest",
-        "--destination",
-        "-o",
-        "-c",
-        "-f",
-        "-C",
-        "-I",
-    }
-)
-WINDOWS_SUFFIXES = (".exe", ".cmd", ".bat")
-RAW_SHELL_TRAMPOLINES = {
-    ("sh", "-c"),
-    ("bash", "-c"),
-    ("zsh", "-c"),
-    ("cmd", "/c"),
-    ("powershell", "-command"),
-    ("pwsh", "-command"),
-}
 
 
 @dataclass

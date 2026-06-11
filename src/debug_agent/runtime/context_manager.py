@@ -10,11 +10,11 @@ from debug_agent.runtime.model_context import (
     TokenEstimator,
 )
 from debug_agent.runtime.query_control import QueryControlPlane
-
-
-OMITTED_TOOL_RESULT_MARKER = (
-    "[Earlier tool result omitted for brevity. See artifact references or trace "
-    "for full details.]"
+from debug_agent.runtime.settings import (
+    COMPRESSION_INSTRUCTION_PROMPT,
+    COMPRESSION_OPTIONAL_VISIBLE_FIELDS,
+    COMPRESSION_REQUIRED_FIELDS,
+    OMITTED_TOOL_RESULT_MARKER,
 )
 
 
@@ -40,45 +40,6 @@ class CompressionError(Exception):
     def __init__(self, reason: str, message: str = "compression_failed") -> None:
         super().__init__(message)
         self.reason = reason
-
-
-COMPRESSION_REQUIRED_FIELDS = {
-    "task_goal": str,
-    "completed_work": list,
-    "inspected_or_modified_files": list,
-    "remaining_work": list,
-    "next_plan": list,
-    "key_decisions": list,
-    "constraints": list,
-}
-COMPRESSION_OPTIONAL_VISIBLE_FIELDS = (
-    "visible_artifact_refs",
-    "visible_active_skills",
-    "visible_loaded_skill_resources",
-    "visible_policy_or_approval_facts",
-)
-
-COMPRESSION_INSTRUCTION_PROMPT = """You are producing a Phase 1 debug-agent continuity summary.
-Return only a JSON object. Merge the previous summary and evicted history into
-a complete replacement summary, not a delta. Preserve task goal, completed
-work, inspected or modified files, remaining work, next plan, key decisions,
-constraints, and visible artifact, loaded skill resource, approval, or policy facts
-only when already visible in the previous summary or evicted history.
-Required schema:
-{
-  "task_goal": "string",
-  "completed_work": ["string"],
-  "inspected_or_modified_files": ["string"],
-  "remaining_work": ["string"],
-  "next_plan": ["string"],
-  "key_decisions": ["string"],
-  "constraints": ["string"],
-  "visible_artifact_refs": ["string"],
-  "visible_active_skills": ["string"],
-  "visible_loaded_skill_resources": ["string"],
-  "visible_policy_or_approval_facts": ["string"]
-}
-"""
 
 
 class ContextManager:

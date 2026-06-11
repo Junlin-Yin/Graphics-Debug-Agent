@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from debug_agent.runtime.settings import (
+    RETRY_BACKOFFS,
+    RETRY_PRECONDITIONS,
+    RETRY_STRATEGIES,
+)
+
 
 RetryPrecondition = Literal[
     "none",
@@ -12,17 +18,6 @@ RetryPrecondition = Literal[
 ]
 RetryStrategy = Literal["repeat_call", "continue_generation"]
 RetryBackoff = Literal["none", "fixed"]
-
-_PRECONDITIONS = frozenset(
-    {
-        "none",
-        "metadata_transient_true",
-        "text_only_no_tool_fragment",
-        "sqlite_no_partial_commit",
-    }
-)
-_STRATEGIES = frozenset({"repeat_call", "continue_generation"})
-_BACKOFFS = frozenset({"none", "fixed"})
 
 
 class RetryRuleInvalid(ValueError):
@@ -40,11 +35,11 @@ class RetrySpec:
     comment: str
 
     def validate(self) -> None:
-        if self.precondition not in _PRECONDITIONS:
+        if self.precondition not in RETRY_PRECONDITIONS:
             raise RetryRuleInvalid(f"Unknown retry precondition: {self.precondition}")
-        if self.strategy not in _STRATEGIES:
+        if self.strategy not in RETRY_STRATEGIES:
             raise RetryRuleInvalid(f"Unknown retry strategy: {self.strategy}")
-        if self.backoff not in _BACKOFFS:
+        if self.backoff not in RETRY_BACKOFFS:
             raise RetryRuleInvalid(f"Unknown retry backoff: {self.backoff}")
         if self.enabled and self.max_attempts <= 0:
             raise RetryRuleInvalid("Enabled retry rules require max_attempts > 0")

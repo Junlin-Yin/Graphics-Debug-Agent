@@ -31,12 +31,12 @@ from debug_agent.tools import shell as shell_tools
 from debug_agent.tools import view_image as view_image_tools
 from debug_agent.tools.native import NativeHandlerResult, tool_definitions, tool_error_result, tool_handlers
 from debug_agent.tools.runtime_control import RuntimeControlHandlerResult
+from debug_agent.tools.settings import (
+    DEFAULT_TOOL_TIMEOUT_SECONDS,
+    LARGE_OUTPUT_THRESHOLD_BYTES,
+)
 from debug_agent.tools.shell import ShellHandlerResult
 from debug_agent.tools.view_image import ViewImageResult
-
-
-LARGE_OUTPUT_THRESHOLD_BYTES = 16 * 1024
-DEFAULT_TOOL_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass(frozen=True)

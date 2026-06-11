@@ -5,6 +5,13 @@ import json
 from math import ceil
 from typing import Any
 
+from debug_agent.runtime.settings import (
+    TOKEN_ESTIMATOR_FRAME_STRUCTURAL_TOKENS,
+    TOKEN_ESTIMATOR_MESSAGE_STRUCTURAL_TOKENS,
+    TOKEN_ESTIMATOR_TOOL_SCHEMA_STRUCTURAL_TOKENS,
+    TOKEN_ESTIMATOR_VERSION,
+)
+
 
 JsonDict = dict[str, Any]
 MessageContent = str | JsonDict
@@ -141,10 +148,10 @@ class TokenEstimate:
 
 
 class TokenEstimator:
-    VERSION = "deterministic-char-v1"
-    MESSAGE_STRUCTURAL_TOKENS = 4
-    TOOL_SCHEMA_STRUCTURAL_TOKENS = 8
-    FRAME_STRUCTURAL_TOKENS = 2
+    VERSION = TOKEN_ESTIMATOR_VERSION
+    MESSAGE_STRUCTURAL_TOKENS = TOKEN_ESTIMATOR_MESSAGE_STRUCTURAL_TOKENS
+    TOOL_SCHEMA_STRUCTURAL_TOKENS = TOKEN_ESTIMATOR_TOOL_SCHEMA_STRUCTURAL_TOKENS
+    FRAME_STRUCTURAL_TOKENS = TOKEN_ESTIMATOR_FRAME_STRUCTURAL_TOKENS
 
     def estimate_model_context_frame(self, frame: ModelContextFrame) -> TokenEstimate:
         if not isinstance(frame, ModelContextFrame):

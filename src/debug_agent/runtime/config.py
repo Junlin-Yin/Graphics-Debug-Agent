@@ -6,39 +6,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
-PHASE_0_SYSTEM_PROMPT = (
-    "You are debug-agent, a local debugging assistant. Answer concisely and use "
-    "only tools exposed by the runtime."
+from debug_agent.runtime.settings import (
+    CONTEXT_DEFAULTS,
+    DEFAULT_ALLOW_INCOMPLETE_PHASE3_PROMPT_EXECUTION,
+    EXECUTION_DEFAULTS,
+    MULTIMODAL_LIMIT_DEFAULTS,
+    NON_PROVIDER_DEFAULTS,
+    PHASE_0_SYSTEM_PROMPT,
 )
-
-NON_PROVIDER_DEFAULTS: dict[str, Any] = {
-    "temperature": 0.2,
-    "max_tokens": 8192,
-    "timeout_seconds": 120,
-    "system_prompt": PHASE_0_SYSTEM_PROMPT,
-}
-
-CONTEXT_DEFAULTS: dict[str, Any] = {
-    "window_tokens": 200000,
-    "omit_old_tool_results_at_ratio": 0.60,
-    "compress_history_at_ratio": 0.80,
-    "retain_recent_model_calls": 4,
-    "compression_reserved_output_tokens": 10000,
-}
-
-EXECUTION_DEFAULTS: dict[str, Any] = {
-    "default_shell_timeout_seconds": 300,
-    "max_shell_timeout_seconds": 3600,
-    "cancellation_timeout_seconds": 10,
-}
-
-MULTIMODAL_LIMIT_DEFAULTS: dict[str, int] = {
-    "timeout_seconds": 60,
-    "max_tokens": 4096,
-    "max_query_chars": 8192,
-    "max_analysis_chars": 8192,
-}
 
 
 @dataclass(frozen=True)
@@ -278,7 +253,7 @@ def _resolve_development_settings(raw_development: Any) -> dict[str, Any] | Conf
         return _config_error("[development] must be a table.")
     allow_prompt_execution = raw_development.get(
         "allow_incomplete_phase3_prompt_execution",
-        False,
+        DEFAULT_ALLOW_INCOMPLETE_PHASE3_PROMPT_EXECUTION,
     )
     if not isinstance(allow_prompt_execution, bool):
         return _config_error(
