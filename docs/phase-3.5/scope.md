@@ -40,9 +40,13 @@ The trace observability portion of Phase 3.5 focuses on:
 - centralize runtime constants into directory-level settings modules without
   making a constant configurable unless a phase config spec explicitly allows it.
 - add `[agent_loop].max_tool_call_iterations` to frozen runtime config with
-  default `1000` and positive-integer validation.
+  default `1000` and positive-integer validation. Phase 3.5 intentionally does
+  not define a hard maximum; local users who configure extremely large values
+  accept the local execution-risk tradeoff.
 - add `[execution].default_tool_timeout_seconds` to the Phase 3 frozen execution
-  config group with default `30` and positive-integer validation.
+  config group with default `30` and positive-integer validation. Phase 3.5 also
+  intentionally does not define a hard maximum for this field; local users who
+  configure extremely large values accept the local execution-risk tradeoff.
 - keep Phase 3 startup/config ordering. Invalid Phase 3.5 `[agent_loop]` or
   `[execution]` config must fail through the existing startup config failure
   boundary before runtime database bootstrap or startup legacy schema reset.
@@ -64,10 +68,19 @@ The trace observability portion of Phase 3.5 focuses on:
 - for startup paths that will create a new REPL or one-shot session/run, delete
   missing-version, `0`, or legacy `< 4` `.sessions/runtime.db` before
   interpreting any rows, then create a fresh Phase 3.5 database.
-- startup legacy reset deletes only `.sessions/runtime.db`; legacy artifact,
-  log, trace, checkpoint-payload, and session subdirectories under `.sessions/`
-  may remain on disk for manual cleanup but must not be interpreted as runtime
-  truth or referenced by the fresh database.
+- startup legacy reset is intentionally destructive and does not request active
+  owner confirmation for legacy databases. Phase 3.5 treats legacy owner/session
+  truth as unsupported and accepts the reset risk documented in
+  `project-contract.md`.
+- startup legacy reset deletes `.sessions/runtime.db` plus SQLite sidecar files
+  `.sessions/runtime.db-wal` and `.sessions/runtime.db-shm` when present; legacy
+  artifact, log, trace, checkpoint-payload, and session subdirectories under
+  `.sessions/` may remain on disk for manual cleanup but must not be interpreted
+  as runtime truth or referenced by the fresh database.
+- fresh Phase 3.5 session/log/artifact/checkpoint-payload/temp paths must fail
+  closed on collision with orphaned legacy files or directories under
+  `.sessions/`; runtime must not delete, merge, reuse, or interpret the collided
+  legacy path.
 - `status`, `trace`, and `resume` must never reset or create a runtime database.
   They fail closed for missing-version, `0`, legacy `< 4`, unknown future
   version `> 4`, or non-startup schema mismatch before interpreting runtime
@@ -93,6 +106,9 @@ The trace observability portion of Phase 3.5 focuses on:
 - model-visible path fields keep the existing `path` style, accepting relative
   or absolute input. Runtime canonicalizes paths before policy, approval,
   handler execution, and audit.
+- present path strings must be non-empty after trimming whitespace. Omitting a
+  path is valid only for tools that explicitly define an omitted-path default;
+  `"."` remains the explicit workspace-root path.
 - explicitly exclude `view_image` ordinary model-visible output from the
   Phase 3.5 canonical-absolute-path result rule. `view_image` keeps its Phase 2
   display-path output behavior while approval, policy, and audit use canonical
@@ -104,12 +120,33 @@ The trace observability portion of Phase 3.5 focuses on:
   structured output.
 - change `search_text` from the Phase 1 literal `query` schema to a
   line-oriented `pattern` schema backed by controlled ripgrep execution.
+- isolate controlled ripgrep execution from local ripgrep configuration and make
+  `search_text` result pagination deterministic by canonical path and line
+  ordering.
+- because controlled ripgrep search has distinct traversal, filtering, chunking,
+  output-mode, pagination, and error-mapping risks, the future Phase 3.5
+  `implementation-plan.md` must keep `search_text` as its own implementation
+  milestone rather than bundling it into a broad native-tool milestone.
+- serialize structured Phase 3.5 native tool results through `ToolResult.output`,
+  durable `tool_result.content_json`, and artifact reference objects as defined
+  by `specs/native-tools.md`.
+- apply the Phase 3.5 deterministic minimal large-output plan for successful
+  structured native-tool results: when the full native-tool observation exceeds
+  the durable inline threshold, externalize documented large result fields in
+  stable field order until the observation fits inline or no eligible fields
+  remain. If the resulting native-tool observation still cannot fit the durable
+  inline `tool_result` row, the tool call returns
+  `tool_error/tool_execution_failed` instead of using row-level
+  artifact-backed conversation fallback.
 - enhance `edit_file` with `replace_all`, uniqueness semantics, structured
-  output, and stale-write guard.
+  output, stale-write guard, and same-directory temporary-file atomic replace
+  for existing-file writes.
 - enhance `write_file` output and require stale-write guard when overwriting an
-  existing file.
+  existing file. Overwrite writes use same-directory temporary-file atomic
+  replace after stale-write guard succeeds; create-new writes keep exclusive
+  create semantics.
 - enhance successful `shell_exec` output with `argv`, canonical `cwd`,
-  `stdout`, `stderr`, `returncode`, `signal`, and `duration_seconds`.
+  `stdout`, `stderr`, `returncode`, `signal`, and integer `duration_ms`.
 - preserve `shell_exec` structured argv execution. Do not add raw shell strings,
   `command`, `directory`, `description`, background execution, interactive
   execution, PTY, or long-running shell runtime.
@@ -118,7 +155,14 @@ The trace observability portion of Phase 3.5 focuses on:
 - preserve existing `activate_skill`, `load_skill_resource`, and `todo`
   runtime-control tools from earlier phases. Phase 3.5 does not update or
   tighten their schemas, target validation, behavior semantics, approval
-  exceptions, runtime truth, persistence, checkpoint facts, or result contracts.
+  exceptions, runtime truth, persistence, checkpoint facts, or tool-specific
+  logical result objects. Their `ToolResult` envelope, status, and normalized
+  error projection still follow the Phase 3/3.5 ToolBroker boundary contract,
+  which supersedes older Phase 1/2 example status/error wording for malformed
+  tool input and local semantic validation.
+- keep `load_skill_resource.path` as a Phase 1 skill-local resource path. It is
+  not converted into a Phase 3.5 native filesystem path or canonicalized against
+  `workspace_root`.
 
 ### Trace Observability
 
@@ -145,14 +189,14 @@ The trace observability portion of Phase 3.5 focuses on:
   runtime truth, checkpoint input, resume input, or recovery input.
 - after terminal checkpoint success, automatic trace generation failure must not
   roll back checkpoint creation, block terminalization, block ownership release,
-  write runtime truth, write audit/run events, or change the original workflow
-  exit code.
+  write runtime truth, write audit/run events, write `events.jsonl` runtime
+  diagnostics, or change the original workflow exit code.
 - manual `debug-agent trace <session_id>` must fully rebuild trace from the
   database, may run against a running session, must not claim active ownership,
   and must not start, resume, terminalize, fail-close, model-call, or tool-call
   anything.
-- automatic and manual trace writes must use same-directory temporary files and
-  atomic replace so the final trace is never partial or interleaved.
+- automatic and manual trace writes must use unique same-directory temporary
+  files and atomic replace so the final trace is never partial or interleaved.
 - `events.jsonl` keeps the same authority as the old `engine.log`: a
   non-authoritative JSONL stream for run-event observations and runtime
   diagnostics.
@@ -163,16 +207,44 @@ The trace observability portion of Phase 3.5 focuses on:
   offset unit is 0-based line number.
 - `list_dir`: `offset + limit`, default `limit = 200`, hard maximum `1000`,
   offset unit is sorted entry item.
+- `list_dir.ignore`: default `[]`, hard maximum `100` patterns.
 - `find_file`: `offset + maxResults`, default `maxResults = 100`, hard maximum
   `1000`, offset unit is sorted file match item.
 - `search_text`: `offset + maxResults`, default `maxResults = 100`, hard
   maximum `1000`, offset unit is result item for the selected output mode.
+  Content-mode result items are matching lines, not regex submatches; multiple
+  matches on the same line count once.
+- `find_file.pattern` and `search_text.pattern` must be non-empty after
+  trimming whitespace. `search_text.pattern` must not contain CR or LF
+  characters because Phase 3.5 search is line-oriented and does not define
+  multiline matching.
+- `search_text.skipped_files` counters use aggregate file-leaf counts only;
+  runtime must not enter denied or hidden directory subtrees merely to count
+  descendants.
+- `search_text` content-mode pagination is applied to sorted match result items
+  before context rows are attached; context rows do not count toward
+  `total_returned` and may repeat across adjacent pages.
+- `search_text` attaches content-mode context rows by bounded runtime reads
+  after matching-line pagination, not by asking ripgrep to return context for
+  the whole candidate set.
+- `search_text` count-mode counts matching lines per file, not regex captures or
+  repeated submatches within a line.
 - requested page sizes above hard maximum return
   `tool_error/tool_schema_invalid`; they are not silently capped.
 - `total_returned` is the number of result items returned on this page, not a
   full result-set count.
 - `truncated=true` means the same normalized parameter set has another page at
   `next_offset`; otherwise `truncated=false` and `next_offset=null`.
+- for every Phase 3.5 paginated native tool, `next_offset = offset +
+  total_returned` when `truncated=true`.
+- Phase 3.5 does not add model-visible or configurable byte-size limits for
+  generic text tools. `read_file` whole-file hashing, `search_text` candidate
+  enumeration and UTF-8 pre-screening, and related traversal work must use
+  streaming or bounded-memory implementation techniques inside the ToolBroker
+  timeout envelope. Internal parser and argv safety limits are implementation
+  settings, not `config.toml` fields. Timeout returns
+  `tool_error/tool_execution_timeout` and must not return partial successful
+  pages.
 
 ### ToolBroker Volatile File Metadata Cache
 
@@ -196,19 +268,34 @@ The trace observability portion of Phase 3.5 focuses on:
 - keep `approval_scope_signature` as the only reusable approval signature
   mechanism.
 - do not add a separate deterministic call/audit signature.
-- ToolBroker audit events must persist normalized or redacted tool arguments
-  sufficient to explain each call. `view_image` keeps Phase 2 query redaction and
-  records only `effective_query_source`, not query text or query length.
+- ToolBroker audit events are runtime-authored audit facts and must persist
+  normalized or redacted tool arguments sufficient to explain each call.
+  `view_image` keeps Phase 2 query redaction and records only
+  `effective_query_source`, not query text or query length.
+- do not introduce a detailed native-tool failure audit schema in Phase 3.5.
+  Failed/timed-out `write_file` calls that created parent directories record only
+  the known minimal side-effect facts needed for audit and tests; `shell_exec`
+  nonzero keeps the existing stdout/stderr diagnostic behavior.
 - approval reusable grant scope is defined per tool in
   `specs/native-tools.md`. Pagination parameters are excluded from reusable
   approval scope.
+- conversation trace is a presentation layer over assistant-authored durable
+  tool-call arguments. It redacts `write_file.content`, `edit_file.old_text`, and
+  `edit_file.new_text` to SHA-256 plus UTF-8 byte count and applies the trace
+  preview limit to rendered argument blocks.
 
 ### Tool Availability In Terminal Recovery Checkpoints
 
 - do not add a complete per-tool schema/result hash contract.
-- extend the existing terminal recovery checkpoint `tool_availability` manifest
-  with the dynamic facts needed to restore Phase 3.5 tool bindings and a native
-  tool contract marker.
+- extend the existing terminal recovery checkpoint tool-availability facts with
+  the dynamic facts needed to restore Phase 3.5 tool bindings and a native tool
+  contract marker.
+- keep the existing Phase 3 terminal recovery checkpoint representation for tool
+  availability. Phase 3.5 updates the facts contained in that existing
+  representation, but does not move tool availability between top-level payload
+  fields, `frozen_snapshots`, or a separate `tool_availability_snapshot_id`.
+- bump terminal recovery checkpoint payload `manifest_schema_version` to `2`
+  because Phase 3.5 changes the terminal checkpoint payload shape.
 - use `PRAGMA user_version = 4` as the cross-version compatibility boundary;
   do not rely on per-tool schema hashes to migrate or accept older sessions.
 
@@ -227,6 +314,8 @@ The trace observability portion of Phase 3.5 focuses on:
 - complete per-tool schema hash or result-contract hash.
 - full node minimatch compatibility, brace expansion, extglob, or glob behavior
   outside the Phase 3.5 portable subset.
+- environment-dependent ripgrep type registry behavior for `search_text.type`;
+  Phase 3.5 uses a fixed runtime-owned text type allowlist.
 - `search_text.multiline`.
 - Python dependency additions for glob matching.
 - Python regex fallback for `search_text` when `rg` is missing.
@@ -252,16 +341,17 @@ line-oriented ripgrep-backed `pattern` search. The old `query` field is not an
 alias.
 
 Phase 3.5 preserves `activate_skill`, `load_skill_resource`, and `todo` as
-model-visible runtime-control tools. Their absence from the native-tool
-comparison draft's enhancement list is not removal, deprecation, or behavior
-change.
+model-visible runtime-control tools. They are not native-tool enhancement
+targets in this phase, but they are not removed, renamed, deprecated, or
+semantically changed.
 
 Phase 3.5 adds a volatile ToolBroker file metadata cache. This cache is runtime
 execution state only, not recovery truth.
 
-Phase 3.5 extends terminal recovery checkpoint `tool_availability` with a native
-tool marker and dynamic tool facts. It does not introduce a separate complete
-tool-contract hash system.
+Phase 3.5 extends the existing terminal recovery checkpoint tool-availability
+facts with a native tool marker and dynamic tool facts. It does not introduce a
+separate complete tool-contract hash system or change the Phase 3 checkpoint
+placement mechanism.
 
 Phase 3.5 changes observability file paths and trace rendering behavior:
 
@@ -271,8 +361,8 @@ Phase 3.5 changes observability file paths and trace rendering behavior:
 - these files remain non-authoritative observability outputs and are not runtime
   truth.
 
-Phase 3.5 adds `ui_error/trace_render_failed` for trace Markdown render/write
-failures. Durable conversation validation failures remain
+Phase 3.5 uses the existing Phase 3 `ui_error/trace_render_failed` reason for
+trace Markdown render/write failures. Durable conversation validation failures remain
 `persistence_error/conversation_cut_invalid`.
 
 ## Minimum Runnable Slice
@@ -289,7 +379,8 @@ failures. Durable conversation validation failures remain
 6. Successful `shell_exec` returns structured shell metadata without expanding
    shell capabilities.
 7. Terminalization writes a terminal recovery checkpoint whose
-   `tool_availability` contains Phase 3.5 dynamic tool facts.
+   existing tool-availability representation contains Phase 3.5 dynamic tool
+   facts.
 8. Runtime fully rebuilds `.sessions/<session_id>/logs/trace.md` from durable
    conversation rows after terminal checkpoint success, and writes
    `.sessions/<session_id>/logs/events.jsonl` instead of legacy `engine.log`.
@@ -303,8 +394,6 @@ Phase 3.5 native-tool spec work is complete when:
 - this phase document set defines scope, architecture, native tool contracts,
   configuration contracts, observability contracts, compatibility, tests, and
   operations.
-- `native-tools-comparison.md` is updated as a source draft reflecting the final
-  Phase 3.5 decisions.
 - no `docs/phase-3.5/implementation-plan.md` is created as part of this spec
   task.
 - implementation work does not begin until a future approved

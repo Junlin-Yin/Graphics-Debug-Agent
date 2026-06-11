@@ -53,12 +53,16 @@ default_tool_timeout_seconds = 30
 | Key | Default | Validation | Meaning |
 | --- | ---: | --- | --- |
 | `agent_loop.max_tool_call_iterations` | `1000` | positive integer | Maximum model/tool-call loop iterations for one agent turn. |
-| `execution.default_tool_timeout_seconds` | `30` | positive integer | Default ToolBroker timeout for brokered tool calls that do not have a tool-specific timeout source. |
+| `execution.default_tool_timeout_seconds` | `30` | positive integer, no Phase 3.5 hard maximum | Default ToolBroker timeout for brokered tool calls that do not have a tool-specific timeout source. |
 
 Boolean values must not be accepted as integers for these fields.
 
 Phase 3.5 does not set an additional hard cap for either field. `0` does not
-mean infinite and must be rejected.
+mean infinite and must be rejected. Extremely large values can make a local
+agent turn run for a very long time or consume substantial local resources; this
+is an explicit local-user configuration risk accepted by the person setting the
+value. This absence of a Phase 3.5 hard cap is an intentional contract decision,
+not an implementation gap.
 
 Invalid values use `config_error/invalid_runtime_config`.
 
@@ -107,7 +111,7 @@ loop limit.
 
 This value is not model-visible tool availability, not a checkpoint manifest
 field, and not a retry policy setting. It must not be written into terminal
-recovery checkpoint `tool_availability`.
+recovery checkpoint tool-availability facts.
 
 ## Generic ToolBroker Default Timeout
 
@@ -123,7 +127,10 @@ frozen snapshot on resume, and never hot-reloaded from current `config.toml`.
 This field is not a shell timeout. It must not be used as
 `shell_exec.timeout_seconds`, must not cap explicit shell timeouts, and must not
 change `shell_exec.timeout_seconds.maximum`, which continues to come from frozen
-`execution.max_shell_timeout_seconds`.
+`execution.max_shell_timeout_seconds`. When a model omits
+`shell_exec.timeout_seconds`, `shell_exec` uses frozen
+`execution.default_shell_timeout_seconds`, not
+`execution.default_tool_timeout_seconds`.
 
 This field is not a provider/model timeout and must not replace
 `[defaults].timeout_seconds`.
@@ -135,8 +142,16 @@ This field does not add a model-visible timeout input to native tools or
 runtime-control tools. It configures the existing ToolBroker execution envelope
 for brokered calls without a more specific timeout source.
 
+The default ToolBroker timeout starts after interactive approval has finished and
+immediately before handler, traversal, provider, or command work begins. It
+includes handler work, traversal, provider/command work, and ArtifactStore
+registration or artifact writes caused by large tool output. It does not include
+interactive approval wait time, audit emission, or final result envelope
+formatting. Schema validation, policy evaluation, approval, audit, and final
+result envelope formatting failures keep their own existing error handling.
+
 It is part of the session frozen config snapshot, but not part of terminal
-recovery checkpoint `tool_availability`.
+recovery checkpoint tool-availability facts.
 
 ## Multimodal Boundary
 

@@ -182,9 +182,11 @@ mechanism for later interactive mode cycling.
 
 TTY REPL users may cycle the active approval mode with `Ctrl+Y` only while the
 REPL is idle. Runtime records the switch as an `approval_mode_changed` run event
-and in `engine.log`. `Ctrl+Y` during active execution or during an inline
-approval prompt is a silent no-op, must not queue a later mode change, and must
-not change the current tool decision.
+and in the phase's non-authoritative JSONL observation stream. In Phase 1 that
+stream is `engine.log`; Phase 3.5 renames it to `events.jsonl` without changing
+the runtime truth or approval semantics. `Ctrl+Y` during active execution or
+during an inline approval prompt is a silent no-op, must not queue a later mode
+change, and must not change the current tool decision.
 
 ## Alternatives Considered
 

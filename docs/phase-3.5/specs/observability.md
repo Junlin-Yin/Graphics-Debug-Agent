@@ -52,6 +52,14 @@ Ordinary run events such as `model_call_started`, `checkpoint_written`,
 `approval_requested`, and `context_optimized` must not appear in the trace body.
 They remain visible through `events.jsonl` when written there.
 
+Phase 3.5 intentionally supersedes earlier trace event-timeline expectations for
+prompt sessions. Runtime/admin timeline facts such as `todo_updated`,
+`stale_fail_closed`, `session_resumed`, `run_resumed`, checkpoint writes, resume
+attempts, and approval internals are not rendered as standalone trace body
+entries. They remain inspectable through `events.jsonl` when written there. A
+`todo` mutation may appear in trace only through the durable assistant tool call
+and paired `tool_result` transcript rows.
+
 ## Top Format
 
 `trace.md` starts with:
@@ -108,6 +116,10 @@ The session summary must not include:
 - approval grant internals
 - context compression internals
 
+`Terminal Reason` is rendered only when the session has a terminal reason.
+Manual trace against a running session omits this line instead of rendering an
+unknown or placeholder value.
+
 Counting rules:
 
 - `Total Messages` counts rendered durable conversation rows and excludes
@@ -133,11 +145,16 @@ Tool status icons are:
 
 | Status | Icon |
 | --- | --- |
-| `ok`, `completed`, `success` | ✅ |
-| `error`, `failed`, `denied` | ❌ |
+| `ok` | ✅ |
+| `error`, `denied` | ❌ |
 | `timeout` | ⏱️ |
 | `cancelled` | ⏹️ |
-| unknown | ❓ |
+
+This table is a presentation mapping only. It does not add or remove allowed
+`ToolResult.status` values. Phase 3.5 allowed `ToolResult.status` values are
+`ok`, `error`, `denied`, `timeout`, and `cancelled`; any unrecognized status in
+corrupt or manually modified data is a durable conversation validation failure,
+not a renderable trace value.
 
 ## Data Source
 
@@ -151,17 +168,42 @@ Renderable rows:
 | --- | --- | --- | --- |
 | `user` | `user_input` | yes | `## 👤 User` |
 | `assistant` | `assistant_output` | yes | `## 🤖 Assistant` |
-| `assistant` | `assistant_tool_call` | yes | `## 🤖 Assistant` plus `### 🔧 Tool Calls` |
+| `assistant` | `assistant_tool_call` | yes | `## 🤖 Assistant`, optional assistant text, plus `### 🔧 Tool Calls` |
 | `tool` | `tool_result` | yes | folded into the paired tool call item |
 | `runtime` | `failure_fact` | yes | `## ⚠️ Runtime Fact` |
 | `runtime` | `cancellation_fact` | yes | `## ⚠️ Runtime Fact` |
 | `runtime` | `context_summary` | no | filtered with no replacement notice |
 
 Before rendering, `debug-agent trace <session_id>` must run the Phase 3.5 schema
-version gate and durable conversation validation. It must fail closed and leave
-the existing `logs/trace.md` unchanged when validation fails.
+version gate and trace-render validation over the durable conversation rows it
+will render. Trace-render validation is not full recovery-grade resume or
+checkpoint validation and does not read artifact body content to verify
+artifact payload checksums. It must fail closed and leave the existing
+`logs/trace.md` unchanged when validation fails.
 
-Validation failures include:
+Manual and automatic trace rendering must read the session, run, durable
+conversation rows, artifact records, and any summary counts from one consistent
+SQLite read transaction/snapshot. This is required even when manual trace runs
+against a running session, because the renderer must not combine a session
+summary from one database point-in-time with conversation rows or artifact
+validation from another. If the persistence layer cannot obtain the bounded
+consistent read snapshot, manual trace uses the SQLite busy or read-failure
+mapping defined below and leaves the existing `logs/trace.md` unchanged.
+
+Trace-render validation is deliberately narrower than Phase 3 resume validation.
+Resume and terminal checkpoint validation remain responsible for recovery-grade
+conversation fact-cut, projection, checkpoint, and artifact checksum validation.
+Trace validates only the durable rows, pairings, artifact records/references,
+session/run scope, referenced artifact file existence, and presentation shapes
+needed to produce a non-authoritative human-readable transcript.
+
+Manual trace against a running session renders the current accepted closed
+durable conversation snapshot. Normal runtime must not expose open groups in
+`conversation_messages`; any accepted row with `group_status != "closed"` is
+corrupt or invariant-violating durable truth and must fail closed rather than
+selecting a partial high-watermark.
+
+Trace-render validation failures include:
 
 - unsupported role or kind.
 - accepted row is not in a closed group.
@@ -169,8 +211,25 @@ Validation failures include:
 - group completeness source is missing.
 - tool result cannot be uniquely paired to an assistant tool call by
   `model_call_id + tool_call_id`.
-- artifact-backed row has a missing, conflicting, or checksum-invalid artifact
-  source.
+- paired tool result uses an unsupported `ToolResult.status` value.
+- inline paired `tool_result.content_json.status` is missing, or
+  `metadata_json.status` is present and conflicts with `content_json.status`.
+  For Phase 3.5 native tool results, `content_json.status` is the canonical
+  status source.
+- artifact-backed row has a missing or conflicting durable artifact
+  record/reference. Trace validation verifies artifact record/reference metadata
+  and referenced file existence only. It must not read large artifact body
+  content to compute checksums, generate previews, or enrich previews.
+
+Artifact validation failure mapping:
+
+- missing artifact record, missing referenced artifact file, or missing artifact
+  reference uses `persistence_error/artifact_missing`.
+- conflicting artifact metadata, invalid artifact-backed conversation source
+  shape, or artifact/session/run mismatch uses
+  `persistence_error/conversation_cut_invalid`.
+- checksum-invalid artifact body content is not detected by trace rendering in
+  Phase 3.5 because trace is non-authoritative observability, not recovery truth.
 
 ## Message Rendering
 
@@ -201,14 +260,23 @@ Rules:
 - timestamp comes from `accepted_at` and is rendered as UTC ISO.
 - message index always comes from `message_index`.
 - turn id is shown when `turn_id` is present.
-- user and assistant content comes from `content_json.content`.
-- user and assistant content is written as-is, without fencing, escaping, or
-  Markdown sanitization.
+- inline user and assistant content comes from `content_json.content`.
+- inline user and assistant content is written as-is, without fencing, escaping,
+  or Markdown sanitization.
+- artifact-backed user and assistant rows are valid durable conversation rows,
+  but Phase 3.5 trace does not read artifact body content to reconstruct their
+  full Markdown. It renders an artifact reference using the durable artifact id,
+  relative artifact path, and any already-inline preview/reference metadata. If
+  that metadata is missing or conflicts with the ArtifactStore record, trace
+  validation fails closed using the artifact validation mapping in this spec.
 
 Trace is optimized for convenient human reading, not tamper-resistant audit.
 If user or assistant content includes Markdown headings, horizontal rules, HTML
 comments, unclosed code fences, or other Markdown control text, the renderer
-still writes the durable content as-is.
+still writes the durable content as-is. Phase 3.5 explicitly accepts that such
+content can visually mimic trace section structure in the Markdown presentation;
+SQLite runtime truth, run events, artifact records, and checkpoint payloads
+remain the authoritative audit and recovery sources.
 
 Phase 3.5 trace must not render model name, token counts, or `unknown`
 placeholders by pulling model events back into the trace body.
@@ -231,29 +299,43 @@ Assistant tool-call groups render as:
 - **Tool Result Index**: 3
 - **Timestamp**: 2026-06-09T10:00:02Z
 - **Arguments**:
-  ```json
-  {
-    "path": "/repo/README.md",
-    "limit": 100
-  }
-  ```
+    {
+      "path": "/repo/README.md",
+      "limit": 100
+    }
 - **Result**:
-  ```text
-  # README preview...
-  ```
+    # README preview...
 ```
+
+Sensitive write/edit tool arguments render redacted values instead of content:
+
+{
+  "path": "/repo/app.py",
+  "content": {
+    "redacted": true,
+    "sha256": "hex",
+    "bytes": 12345
+  }
+}
+
+Trace must not wrap tool arguments, tool results, redacted argument objects, or
+artifact reference previews in Markdown fenced code blocks. Argument and result
+previews are rendered as indented plain preview blocks under their labels. The
+renderer prefixes every preview line with indentation after preview truncation
+and redaction, so Markdown headings, horizontal rules, HTML, and backtick
+sequences inside the preview cannot escape into trace section structure.
 
 Fields:
 
 | Field | Source | Rule |
 | --- | --- | --- |
 | assistant timestamp | `assistant_tool_call.accepted_at` | required. |
-| status | paired `tool_result` content or metadata | required. |
+| status | paired inline `tool_result.content_json.status` | required and canonical for Phase 3.5 native tool results. |
 | call id | `tool_call_id` | required. |
 | tool result index | paired `tool_result.message_index` | required. |
 | timestamp | paired `tool_result.accepted_at` | required. |
-| arguments | `assistant_tool_call.content.tool_calls[].args` | pretty JSON in original tool-call order. |
-| result | `tool_result.content.content` or artifact ref | preview-limited. |
+| arguments | `assistant_tool_call.content.tool_calls[].args` | redacted where required, pretty JSON in original tool-call order, preview-limited. |
+| result | durable `tool_result.content_json.content` or artifact reference object from the Phase 3.5 ToolResult serialization contract | preview-limited. |
 | artifacts | ToolResult artifacts or durable artifact refs | shown when present. |
 
 Tool call/result pairing rules:
@@ -267,6 +349,12 @@ Tool call/result pairing rules:
   durable conversation validation failure.
 - when one assistant tool-call message contains multiple tool calls, trace
   renders them in `assistant_tool_call.content.tool_calls[]` order.
+- when `assistant_tool_call.content` contains an optional non-empty string
+  `text` field alongside `tool_calls[]`, trace renders that text as-is before
+  `### 🔧 Tool Calls`. If assistant tool-call text is present in any
+  non-normalized location, or if `tool_calls[]` is missing or malformed, trace
+  validation fails closed instead of silently dropping accepted assistant
+  content.
 
 `view_image.query` redaction is deliberately split:
 
@@ -293,9 +381,10 @@ Tool call/result pairing rules:
 `context_summary` rows are filtered and no "summary omitted" replacement text is
 rendered.
 
-## Result Preview
+## Result And Argument Preview
 
-Tool result previews are limited by both characters and lines:
+Tool result previews and tool argument blocks are limited by both characters and
+lines:
 
 | Limit | Value |
 | --- | ---: |
@@ -310,11 +399,41 @@ Rules:
   conversation content.
 - JSON or dict outputs are pretty-printed before preview limits are applied.
 - text outputs apply preview limits to the original text.
+- argument preview limits apply after tool-specific trace redaction has been
+  applied.
+
+Tool argument redaction rules:
+
+- `write_file.content` is replaced before rendering with:
+
+{
+  "redacted": true,
+  "sha256": "hex",
+  "bytes": 12345
+}
+
+- `edit_file.old_text` and `edit_file.new_text` are replaced with the same
+  redacted object shape.
+- trace does not render content previews for these three fields.
+- redaction uses UTF-8 bytes for the `bytes` value and SHA-256 input.
+- this is presentation-only redaction. It does not modify durable conversation
+  content, model-visible tool observations, ToolResult payloads, audit events, or
+  checkpoint truth.
 
 Artifact-backed content rules:
 
-- do not read artifact content to generate a preview.
-- display only `artifact_id` and relative artifact path.
+- do not read artifact content to generate a preview or verify body checksums.
+- display only `artifact_id`, relative artifact path, and any already-inline
+  preview/reference metadata. The relative path comes from the durable artifact
+  reference object's `relative_path` when present, or from the matching
+  ArtifactStore record during validation.
+- validate Phase 3.5 field-level artifact reference objects inside inline
+  `tool_result.content_json.content` using the same ArtifactStore record checks
+  as artifact-backed rows. Each referenced `artifact_id` must have a matching
+  durable ArtifactStore record, a matching session/run scope, a matching
+  `relative_path`, and an existing referenced file. The durable
+  `tool_result.artifact_ids` list must include every inline field-level artifact
+  reference and must not contain unrelated ids.
 - if the durable `tool_result` already stores a redacted inline preview, trace
   may display that inline preview.
 - do not read an unredacted artifact to generate or enrich the trace.
@@ -350,8 +469,8 @@ Generation rules:
 - never append to an existing trace.
 - never incrementally update from old trace file contents.
 - never depend on Markdown high-watermarks or hidden metadata.
-- write to a temporary file in the same `logs/` directory and atomically replace
-  `logs/trace.md`.
+- write to a unique temporary file in the same `logs/` directory and atomically
+  replace `logs/trace.md`.
 - automatic terminal trace refresh and manual trace generation may run
   concurrently.
 - concurrent trace writes are last-writer-wins, but the final file must be one
@@ -366,8 +485,13 @@ Automatic trace failure after terminal checkpoint success:
 - must not write a run event, conversation row, checkpoint, or other runtime
   truth.
 - does not go through runtime audit.
+- must not write `events.jsonl`, including non-authoritative runtime diagnostic
+  observations.
 - must not change the original workflow exit code or lifecycle outcome.
 - may be reported through the current CLI output or UI.
+- in REPL/TUI, must be shown as an error block because the trace refresh is a
+  user-visible observability failure even though runtime truth is already
+  terminalized.
 
 ## Manual Trace Command
 
@@ -384,8 +508,14 @@ Automatic trace failure after terminal checkpoint success:
 - must not claim active workspace ownership.
 - must not block just because another runner is active.
 - must not require the target session to be idle.
-- must fail with a standardized error on SQLite busy or read failure without
-  waiting, taking ownership, or changing active owner state.
+- must not wait for an active runner, claim ownership, or change active owner
+  state.
+- must render session summary counts, accepted conversation rows, and artifact
+  validation from one consistent SQLite read transaction/snapshot.
+- SQLite reads may use the current persistence layer's bounded busy handling. If
+  SQLite remains busy after that bounded handling, manual trace returns
+  `persistence_error/sqlite_busy_timeout`. Ordinary read failures return
+  `persistence_error/persistence_read_failed`.
 
 Manual trace failure rules:
 
@@ -397,7 +527,13 @@ Manual trace failure rules:
 - durable conversation validation failure uses
   `persistence_error/conversation_cut_invalid` and must not overwrite the
   existing `logs/trace.md`.
-- artifact reference failure uses `persistence_error/artifact_missing`.
+- missing artifact reference, missing artifact record, missing inline
+  field-level artifact reference target, or missing artifact content uses
+  `persistence_error/artifact_missing`.
+- conflicting artifact metadata, mismatched field-level artifact reference
+  metadata, or mismatch between inline artifact refs and `artifact_ids` uses
+  `persistence_error/conversation_cut_invalid`.
+- SQLite busy uses `persistence_error/sqlite_busy_timeout`.
 - SQLite/read path failure uses `persistence_error/persistence_read_failed`.
 - trace Markdown render/write failure uses `ui_error/trace_render_failed`.
 - failures are returned through CLI exit code and message, not persisted as
@@ -476,7 +612,10 @@ JSONL entry shape:
 - **Terminal Reason**: `terminal_completion`
 - **Started**: 2026-06-09T11:00:00Z
 - **Last Updated**: 2026-06-09T11:05:00Z
+- **Approval Mode**: `normal`
 - **Total Messages**: 4
+- **Total User Messages**: 1
+- **Total Assistant Messages**: 2
 - **Total Tool Calls**: 1
 
 ---
@@ -499,15 +638,11 @@ Please read README.
 - **Tool Result Index**: 3
 - **Timestamp**: 2026-06-09T11:00:03Z
 - **Arguments**:
-  ```json
-  {
-    "path": "/Users/xinzhu/Workspace/MyAgent/README.md"
-  }
-  ```
+    {
+      "path": "/Users/xinzhu/Workspace/MyAgent/README.md"
+    }
 - **Result**:
-  ```text
-  # Shader-Debug-Agent
-  ```
+    # Shader-Debug-Agent
 
 ---
 

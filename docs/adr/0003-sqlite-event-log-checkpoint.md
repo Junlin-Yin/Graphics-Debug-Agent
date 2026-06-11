@@ -17,7 +17,9 @@ Use SQLite for metadata and audit records, with local filesystem artifacts.
 - `run_events` records append-only audit facts.
 - `checkpoints` records authoritative state snapshots.
 - `artifacts` records filesystem-backed large outputs.
-- `trace.md` is derived from events and artifacts.
+- Phase 0 `trace.md` is derived from events and artifacts; later phase
+  refinements may supersede this trace derivation model without making
+  Markdown trace output runtime truth.
 
 ## Alternatives Considered
 
@@ -78,3 +80,27 @@ payloads.
 [ADR 0015](0015-normalized-error-taxonomy-narrow-runtime-retry.md) refines
 failure event payloads by requiring normalized failure facts under
 `payload.error` for Phase 3 failure-class events.
+
+## Phase 3.5 Refinement
+
+Phase 3.5 supersedes the Phase 0 trace derivation model for prompt sessions.
+`trace.md` remains non-authoritative observability output, but it is no longer
+rendered as a runtime event/checkpoint timeline and it no longer uses rendered
+event metadata such as event count or latest event id for freshness.
+
+For Phase 3.5 prompt sessions:
+
+- `trace.md` is rendered from accepted closed `conversation_messages` rows,
+  ordered by `message_index`.
+- ordinary run events, checkpoint internals, approval internals, context
+  compression internals, and admin timeline facts remain outside the trace body.
+- `debug-agent trace <session_id>` fully rebuilds the trace from SQLite runtime
+  truth; it must not read or trust old Markdown trace metadata.
+- trace output moves to `.sessions/<session_id>/logs/trace.md`.
+- `.sessions/<session_id>/logs/events.jsonl` replaces
+  `.sessions/<session_id>/logs/engine.log` as the non-authoritative JSONL
+  observation stream for run events, audit facts, and runtime diagnostics.
+
+This refinement does not make Markdown or JSONL output runtime truth. SQLite
+rows, checkpoint payloads, and artifact records remain authoritative for status,
+resume, checkpoint validation, audit, and recovery.

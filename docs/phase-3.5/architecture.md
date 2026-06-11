@@ -37,7 +37,7 @@ Responsibilities:
 - pass the frozen config to ToolBroker so shell maximum timeout, multimodal
   limits, and approval/policy facts are evaluated from session truth.
 - on resume, use the existing terminal recovery checkpoint path and validate
-  Phase 3.5 `tool_availability`.
+  Phase 3.5 tool-availability facts.
 - after a terminal recovery checkpoint is successfully written, request a full
   conversation trace rebuild as non-authoritative observability output.
 
@@ -47,8 +47,9 @@ tool facts.
 
 Automatic trace refresh failure must not roll back checkpoint creation, block
 terminalization, block ownership release, write runtime truth, write audit/run
-events, or change the original command exit code or lifecycle outcome. The
-runtime may surface the trace refresh failure through the current CLI/UI only.
+events, write `events.jsonl` runtime diagnostics, or change the original command
+exit code or lifecycle outcome. The runtime may surface the trace refresh
+failure through the current CLI/UI only.
 
 ### Configuration And Settings
 
@@ -99,6 +100,17 @@ Phase 3.5 responsibilities:
   results through the Phase 3 error taxonomy.
 - use frozen `execution.default_tool_timeout_seconds` as the default execution
   envelope for brokered tool calls without a tool-specific timeout source.
+- serialize Phase 3.5 native tool results through the ToolResult envelope and
+  durable `tool_result.content_json` contract defined in
+  `specs/native-tools.md`.
+- keep ArtifactStore registration and artifact writes caused by large tool output
+  inside the ToolBroker timeout envelope; final result envelope formatting remains
+  outside that envelope.
+
+Phase 3.5 changes selected structured native tool outputs, but it does not add a
+new durable conversation artifact source shape. It uses the explicit
+`ToolResult.status` values defined in `specs/native-tools.md`: `ok`, `error`,
+`denied`, `timeout`, and `cancelled`.
 
 ToolBroker must not add a deterministic call/audit signature field. Audit truth
 is the existing event payload with normalized or redacted arguments, target,
@@ -163,16 +175,34 @@ Data flow:
 3. enumerate candidate files under the root.
 4. apply path policy deny, hidden filtering, symlink rules, and optional glob
    filtering.
-5. invoke `rg --json --files-from <runtime-owned-list>` with normalized
-   arguments.
-6. parse ripgrep JSON records and normalize them into the documented result
+5. apply optional `type` filtering to the already authorized candidate file list
+   using the Phase 3.5 runtime-owned type allowlist.
+6. verify that `rg` is available and, for regex mode, that the pattern compiles
+   through ripgrep even if no candidate files remain. The regex compile check
+   uses a runtime-owned empty UTF-8 temporary file rather than workspace
+   traversal or stdin.
+7. if no candidates remain, return the selected output mode's empty success
+   result without invoking the main search.
+8. invoke ripgrep with `shell=False` argv, `--json`, `--regexp <pattern>`, `--`,
+   and a runtime-filtered candidate file argv list.
+9. parse ripgrep JSON records and normalize them into the documented result
    shapes.
-7. sort results deterministically by canonical path and line number.
+10. preserve deterministic canonical path and line ordering while streaming,
+   skipping, and collecting only the requested page plus one extra result item
+   when possible.
 
 `rg` exit code `1` for no matches is success with empty results. Missing `rg`,
-regex compile errors, unknown `type`, files-from failure, or other ripgrep
-execution errors return `tool_error/tool_execution_failed`. Phase 3.5 does not
-fallback to Python regex.
+regex compile errors, candidate argv/chunk execution failure, or other ripgrep
+execution errors return `tool_error/tool_execution_failed`. Unknown `type` is a
+pre-execution semantic validation failure and returns
+`tool_error/tool_schema_invalid`.
+Phase 3.5 does not inspect ripgrep's local type registry and does not fallback
+to Python regex. Ripgrep execution must also be isolated from local ripgrep
+configuration by using `--no-config` and a controlled child-process environment
+that prevents `RIPGREP_CONFIG_PATH` from changing search semantics. Result
+pagination must be independent of ripgrep discovery order by searching
+canonical-path-sorted files or chunks and merging records by canonical path and
+line number before pagination.
 
 ### File Metadata Cache
 
@@ -207,21 +237,34 @@ rule and does not persist query text or query length in runtime-authored fields.
 
 ### Terminal Recovery Checkpoint Tool Availability
 
-Phase 3 terminal recovery checkpoints already validate `tool_availability`
-against frozen session config. Phase 3.5 extends that manifest instead of
-introducing a complete tool-contract hash system.
+Phase 3 terminal recovery checkpoints already validate tool availability against
+frozen session config through the Phase 3 checkpoint representation. Phase 3.5
+extends those facts instead of introducing a complete tool-contract hash system.
 
-The Phase 3.5 manifest records:
+Phase 3.5 preserves whichever Phase 3 checkpoint placement mechanism the
+implementation already uses for tool availability. It updates only the facts
+contained in that existing representation for `manifest_schema_version = 2`.
+It must not introduce a new placement, migrate between the Phase 3 placement
+forms, or require implementations to switch from one Phase 3 representation form
+to another.
+
+Because Phase 3.5 changes the terminal recovery checkpoint payload shape, fresh
+Phase 3.5 terminal recovery checkpoints use `manifest_schema_version = 2`.
+Resume validates this checkpoint payload version after the SQLite
+`PRAGMA user_version = 4` gate passes.
+
+The Phase 3.5 tool-availability facts record:
 
 - a native tools contract marker.
-- shell dynamic timeout facts.
+- `shell_exec.max_timeout_seconds` facts.
 - `view_image` enabled/disabled state and multimodal limits.
 
-The manifest is checkpoint truth used for resume validation. It is not a model
-message, tool result, or substitute for SQLite schema version compatibility.
+The tool-availability representation is checkpoint truth used for resume
+validation. It is not a model message, tool result, or substitute for SQLite
+schema version compatibility.
 `agent_loop.max_tool_call_iterations` and
 `execution.default_tool_timeout_seconds` remain frozen session config facts and
-are not included in `tool_availability`.
+are not included in tool-availability facts.
 
 ### Observability
 
@@ -251,9 +294,10 @@ Responsibilities:
   tool results, and runtime failure/cancellation facts.
 - filter `context_summary` rows without replacement text.
 - pair tool calls and tool results by durable `model_call_id + tool_call_id`.
-- apply tool-result preview limits and artifact-display rules.
-- write trace output to a same-directory temporary file and atomically replace
-  `logs/trace.md`.
+- apply tool-result preview limits, tool-argument preview/redaction rules, and
+  artifact-display rules.
+- write trace output to a unique same-directory temporary file and atomically
+  replace `logs/trace.md`.
 
 The renderer must not read event timelines, current conversation projection
 state, terminal checkpoint projection snapshots, existing Markdown trace files,

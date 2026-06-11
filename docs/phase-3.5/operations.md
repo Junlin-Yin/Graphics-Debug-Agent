@@ -52,18 +52,70 @@ Run `uv lock` whenever dependency declarations change.
 Prefer targeted tests for:
 
 - schema version 4 compatibility and startup legacy reset.
+- startup legacy reset fail-closed behavior when fresh Phase 3.5 runtime paths
+  collide with orphaned legacy files or directories.
 - ToolBroker schema validation and default injection.
+- empty and whitespace-only path rejection, plus trim-before-canonicalization
+  behavior for non-empty path strings.
+- `load_skill_resource.path` remaining skill-local and excluded from the
+  Phase 3.5 native filesystem workspace-path canonicalization rule.
 - approval scope signatures.
+- `write_file` reusable approval signatures that include planned parent
+  directories to create.
 - audit event normalized/redacted arguments.
 - portable glob subset.
+- inherited builtin denies, including `.sessions/`, global skill sources, and
+  project skill sources.
 - `find_file` traversal, hidden, deny, symlink, sort, and pagination.
-- `read_file` pagination and file metadata cache updates.
+- `read_file` pagination, streaming whole-file hash calculation, and file
+  metadata cache updates.
 - `list_dir` filtering and pagination.
 - `search_text` controlled ripgrep boundary and output modes.
+- `search_text` line-oriented pattern validation, including CR/LF rejection.
+- `search_text` skipped-file counters as file-leaf aggregates, including denied
+  subtree non-traversal, hidden subtree non-traversal, symlink escape in `other`,
+  and UTF-8 decode pre-screening in `decode_error`.
+- `search_text` content-mode pagination before context attachment, including
+  matching-line result items, same-line repeated match counting, `next_offset`,
+  and repeated context rows across adjacent pages.
+- `search_text` context attachment by bounded runtime reads after matching-line
+  pagination, including no ripgrep context flags and failure without partial
+  successful pages when context attachment cannot read/stat/decode a selected
+  page file.
+- `search_text` ripgrep argv construction with `shell=False`, `--regexp`, `--`,
+  `--no-config`, special-character paths, controlled `RIPGREP_CONFIG_PATH`
+  behavior, runtime-side type filtering for explicit candidate files, fixed
+  runtime-owned type allowlist behavior with case-insensitive file-family
+  matching, required `rg` availability and regex compile checks before empty
+  success using a runtime-owned empty temporary file, optional chunking,
+  deterministic canonical-path result ordering, empty candidate handling, custom
+  ripgrep type/config isolation, and no Python regex fallback.
+- generic text tool streaming or bounded-memory behavior under the ToolBroker
+  timeout envelope, including no partial successful pages on timeout.
+- ToolResult envelope and durable `tool_result` serialization for structured
+  native tool outputs, including deterministic field-level artifact references
+  triggered by full-observation size in stable field order for documented large
+  fields and `tool_error/tool_execution_failed` when the full native-tool
+  observation still exceeds the inline threshold afterward.
+- atomic artifact finalization for large tool output: temporary artifact files
+  are committed to accepted ArtifactStore truth only after successful write and
+  metadata calculation; timeout, cancellation, or registration failure must not
+  expose artifact ids or accepted conversation references to incomplete
+  artifacts.
 - stale-write guard for `edit_file` and `write_file`.
-- `shell_exec` successful output shape and nonzero failure mapping.
+- same-directory temporary-file atomic replace behavior for `edit_file` and
+  overwrite `write_file`, without requiring crash-consistency or fsync-grade
+  durability.
+- `write_file` create-parent-directory side effects on failure or timeout,
+  including cooperative deadline checks, no reported file write success, no file
+  metadata cache update, and the documented minimal side-effect audit fields.
+- trace argument redaction for `write_file.content`, `edit_file.old_text`, and
+  `edit_file.new_text`.
+- `shell_exec` default workspace-root `cwd`, successful output shape, and
+  nonzero failure mapping, including dynamic frozen maximum timeout schema and
+  completed-only optional diagnostic artifact exposure.
 - `view_image` unchanged ordinary output and query redaction.
-- terminal recovery checkpoint `tool_availability`.
+- terminal recovery checkpoint tool-availability facts.
 
 ## External Dependencies
 

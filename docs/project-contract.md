@@ -139,7 +139,10 @@ Phase 6 不做 workflow adapter、MCP `shader-nav`、plugin 分发、background 
 
 runtime 启动、`status`、`trace` 和 active ownership 解释 runtime truth 之前，必须先检查 schema version。missing、legacy、unknown 或不匹配的 schema version 必须 fail closed，并返回 `config_error`。除当前 phase 文档明确批准的破坏性 schema reset 外，runtime 不自动迁移、删除、重写旧 `.sessions/runtime.db`。
 
-Phase 3 是该规则的显式例外：Phase 3 startup 可以在解释任何 legacy runtime truth 前删除 missing/legacy Phase 0/0.5/1/2 `.sessions/runtime.db`，撤销 legacy checkpoint/context schema，并创建 fresh Phase 3 database。Phase 3 不迁移、不解释、不重写 legacy rows；`status`、`trace`、`resume` 和未知 future schema 仍必须 fail closed，不能为了查询或恢复自动删除数据库。
+Phase 3 和 Phase 3.5 是该规则的显式例外：
+
+- Phase 3 startup 可以在解释任何 legacy runtime truth 前删除 missing/legacy Phase 0/0.5/1/2 `.sessions/runtime.db`，撤销 legacy checkpoint/context schema，并创建 fresh Phase 3 database。Phase 3 不迁移、不解释、不重写 legacy rows；`status`、`trace`、`resume` 和未知 future schema 仍必须 fail closed，不能为了查询或恢复自动删除数据库。
+- Phase 3.5 startup 可以在解释任何 legacy runtime truth 前无确认删除 missing/legacy Phase 0/0.5/1/2/3 `.sessions/runtime.db` 及其 SQLite sidecar 文件 `.sessions/runtime.db-wal`、`.sessions/runtime.db-shm`，撤销 legacy native tool schema/result、trace/log path 和 terminal checkpoint tool-availability contract，并创建 fresh Phase 3.5 database。这是 Phase 3.5 明确接受的破坏性 reset 风险：legacy active owner、session、run、checkpoint、approval grant 和 event truth 均不被 Phase 3.5 startup 解释或保留。Phase 3.5 不迁移、不解释、不重写 legacy rows；corrupt/unreadable runtime database 不属于 legacy reset 候选，必须 fail closed；`status`、`trace`、`resume` 和未知 future schema 仍必须 fail closed，不能为了查询或恢复自动删除数据库。
 
 用户提示必须说明当前 phase 不支持旧 runtime database。默认提示要求用户移动或删除 `.sessions/`，或使用 fresh workspace；如果当前 phase 文档明确批准 destructive schema reset，则提示必须说明 reset/delete 行为及其影响。
 
