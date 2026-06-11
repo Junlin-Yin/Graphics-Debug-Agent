@@ -109,6 +109,40 @@ def test_main_returns_config_error_without_creating_session(
     assert not (workspace / ".sessions" / "runtime.db").exists()
 
 
+def test_main_invalid_phase35_config_does_not_touch_existing_runtime_db(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home.mkdir()
+    workspace.mkdir()
+    db_dir = workspace / ".sessions"
+    db_dir.mkdir()
+    db_path = db_dir / "runtime.db"
+    db_path.write_text("legacy-db-sentinel", encoding="utf-8")
+    config_dir = home / ".debug-agent"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.toml").write_text(
+        """
+[defaults]
+provider = "fake"
+model = "fake-model"
+
+[agent_loop]
+max_tool_call_iterations = true
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(workspace)
+
+    exit_code = main(["-p", "hello"])
+
+    assert exit_code == 4
+    assert "agent_loop.max_tool_call_iterations" in capsys.readouterr().err
+    assert db_path.read_text(encoding="utf-8") == "legacy-db-sentinel"
+
+
 def test_main_one_shot_fresh_phase3_startup_no_longer_requires_development_gate(
     tmp_path, monkeypatch, capsys
 ) -> None:

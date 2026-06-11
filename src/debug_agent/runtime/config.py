@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from debug_agent.runtime.settings import (
+    AGENT_LOOP_DEFAULTS,
     CONTEXT_DEFAULTS,
     DEFAULT_ALLOW_INCOMPLETE_PHASE3_PROMPT_EXECUTION,
     EXECUTION_DEFAULTS,
@@ -53,6 +54,9 @@ def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
     execution_result = _resolve_execution_settings(raw_config.get("execution", {}))
     if isinstance(execution_result, ConfigError):
         return ConfigLoadResult(snapshot=None, error=execution_result, defaults=defaults)
+    agent_loop_result = _resolve_agent_loop_settings(raw_config.get("agent_loop", {}))
+    if isinstance(agent_loop_result, ConfigError):
+        return ConfigLoadResult(snapshot=None, error=agent_loop_result, defaults=defaults)
     development_result = _resolve_development_settings(raw_config.get("development", {}))
     if isinstance(development_result, ConfigError):
         return ConfigLoadResult(snapshot=None, error=development_result, defaults=defaults)
@@ -75,6 +79,7 @@ def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
             **runtime_settings,
             "context": context_result,
             "execution": execution_result,
+            "agent_loop": agent_loop_result,
             "development": development_result,
             "multimodal": multimodal_result,
             "fake_response": config_defaults.get("fake_response", "fake response"),
@@ -118,6 +123,7 @@ def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
         **runtime_settings,
         "context": context_result,
         "execution": execution_result,
+        "agent_loop": agent_loop_result,
         "development": development_result,
         "auth": {
             "api_key_env": api_key_env,
@@ -219,13 +225,18 @@ def _resolve_execution_settings(raw_execution: Any) -> dict[str, Any] | ConfigEr
     if not isinstance(raw_execution, dict):
         return _config_error("[execution] must be a table.")
     settings = {**EXECUTION_DEFAULTS, **raw_execution}
+    generic_tool_timeout = settings.get("default_tool_timeout_seconds")
+    if not _is_positive_int(generic_tool_timeout):
+        return _config_error(
+            "execution.default_tool_timeout_seconds must be a positive integer."
+        )
     timeout = settings.get("default_shell_timeout_seconds")
-    if not isinstance(timeout, int) or timeout <= 0:
+    if not _is_positive_int(timeout):
         return _config_error(
             "execution.default_shell_timeout_seconds must be a positive integer."
         )
     max_timeout = settings.get("max_shell_timeout_seconds")
-    if not isinstance(max_timeout, int) or max_timeout <= 0:
+    if not _is_positive_int(max_timeout):
         return _config_error(
             "execution.max_shell_timeout_seconds must be a positive integer."
         )
@@ -235,15 +246,34 @@ def _resolve_execution_settings(raw_execution: Any) -> dict[str, Any] | ConfigEr
             "to execution.default_shell_timeout_seconds."
         )
     cancellation_timeout = settings.get("cancellation_timeout_seconds")
-    if not isinstance(cancellation_timeout, int) or cancellation_timeout <= 0:
+    if not _is_positive_int(cancellation_timeout):
         return _config_error(
             "execution.cancellation_timeout_seconds must be a positive integer."
         )
     return {
+        "default_tool_timeout_seconds": generic_tool_timeout,
         "default_shell_timeout_seconds": timeout,
         "max_shell_timeout_seconds": max_timeout,
         "cancellation_timeout_seconds": cancellation_timeout,
     }
+
+
+def _resolve_agent_loop_settings(raw_agent_loop: Any) -> dict[str, Any] | ConfigError:
+    if raw_agent_loop is None:
+        raw_agent_loop = {}
+    if not isinstance(raw_agent_loop, dict):
+        return _config_error("[agent_loop] must be a table.")
+    settings = {**AGENT_LOOP_DEFAULTS, **raw_agent_loop}
+    max_iterations = settings.get("max_tool_call_iterations")
+    if not _is_positive_int(max_iterations):
+        return _config_error(
+            "agent_loop.max_tool_call_iterations must be a positive integer."
+        )
+    return {"max_tool_call_iterations": max_iterations}
+
+
+def _is_positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 def _resolve_development_settings(raw_development: Any) -> dict[str, Any] | ConfigError:

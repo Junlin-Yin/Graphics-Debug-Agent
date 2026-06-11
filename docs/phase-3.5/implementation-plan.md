@@ -227,18 +227,18 @@ After Milestone 9 completes, trace/events integration verification passes, and t
 
 **Freeze/review checkpoint:** do not bump schema version to 4 until startup ordering and frozen snapshot behavior for new config fields are verified.
 
-- [ ] Update `src/debug_agent/runtime/config.py` to read defaults from settings modules.
-- [ ] Add `[agent_loop].max_tool_call_iterations` default `1000`, positive-integer validation, boolean rejection, no hard cap, and frozen snapshot persistence.
-- [ ] Add `[execution].default_tool_timeout_seconds` default `30`, positive-integer validation, boolean rejection, no hard cap, and frozen snapshot persistence.
-- [ ] Preserve unknown `config.toml` key behavior; do not add global unknown-key fail-closed parsing.
-- [ ] Ensure `config.toml` does not parse `multimodal.defaults.max_images`, `max_image_edge`, `max_image_pixels`, or `max_request_bytes`.
-- [ ] Update frozen-default backfill so test/helper paths receive `agent_loop` and expanded `execution` defaults without hot reload.
-- [ ] Update `src/debug_agent/adapters/langchain_adapter.py` to read tool-call iteration limit from `AgentRunRequest.model_config["agent_loop"]`, with settings fallback only for direct lower-level tests.
-- [ ] Update `src/debug_agent/tools/broker.py` construction/context so brokered tools without a tool-specific timeout source use frozen `execution.default_tool_timeout_seconds`.
-- [ ] Prove `shell_exec` still uses `default_shell_timeout_seconds` and `max_shell_timeout_seconds`, not generic tool timeout.
-- [ ] Prove `view_image` still uses frozen multimodal `timeout_seconds`, not generic tool timeout.
-- [ ] Add resume tests proving current `config.toml` changes do not alter frozen `agent_loop` or expanded `execution` settings.
-- [ ] Run `uv run pytest tests/unit -v`.
+- [x] Update `src/debug_agent/runtime/config.py` to read defaults from settings modules.
+- [x] Add `[agent_loop].max_tool_call_iterations` default `1000`, positive-integer validation, boolean rejection, no hard cap, and frozen snapshot persistence.
+- [x] Add `[execution].default_tool_timeout_seconds` default `30`, positive-integer validation, boolean rejection, no hard cap, and frozen snapshot persistence.
+- [x] Preserve unknown `config.toml` key behavior; do not add global unknown-key fail-closed parsing.
+- [x] Ensure `config.toml` does not parse `multimodal.defaults.max_images`, `max_image_edge`, `max_image_pixels`, or `max_request_bytes`.
+- [x] Update frozen-default backfill so test/helper paths receive `agent_loop` and expanded `execution` defaults without hot reload.
+- [x] Update `src/debug_agent/adapters/langchain_adapter.py` to read tool-call iteration limit from `AgentRunRequest.model_config["agent_loop"]`, with settings fallback only for direct lower-level tests.
+- [x] Update `src/debug_agent/tools/broker.py` construction/context so brokered tools without a tool-specific timeout source use frozen `execution.default_tool_timeout_seconds`.
+- [x] Prove `shell_exec` still uses `default_shell_timeout_seconds` and `max_shell_timeout_seconds`, not generic tool timeout.
+- [x] Prove `view_image` still uses frozen multimodal `timeout_seconds`, not generic tool timeout.
+- [x] Add resume tests proving current `config.toml` changes do not alter frozen `agent_loop` or expanded `execution` settings.
+- [x] Run `uv run pytest tests/unit -v`.
 
 ## Milestone 3: Schema Version 4 Compatibility And Checkpoint Manifest Foundation
 

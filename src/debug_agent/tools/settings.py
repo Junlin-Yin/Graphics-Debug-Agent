@@ -7,7 +7,7 @@ DEFAULT_NATIVE_TOOL_LIMIT = 1000
 # Shared inline threshold for brokered tool observations before artifact fallback.
 LARGE_OUTPUT_THRESHOLD_BYTES = 16 * 1024
 
-# Default ToolBroker envelope before Phase 3.5 frozen config timeout wiring.
+# Lower-level ToolBroker fallback when no frozen session config is available.
 DEFAULT_TOOL_TIMEOUT_SECONDS = 30.0
 
 # Default visual analysis prompt used when view_image.query is omitted.

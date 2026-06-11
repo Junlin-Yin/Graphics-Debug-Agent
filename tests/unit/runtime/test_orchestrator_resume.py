@@ -722,6 +722,55 @@ def test_resume_preserves_approval_grants_active_skills_and_frozen_tools(
     assert any("view_image" in line and "disabled" in line for line in tools)
 
 
+def test_resume_preserves_frozen_agent_loop_and_expanded_execution_config(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = _config("frozen config")
+    config["agent_loop"] = {"max_tool_call_iterations": 4}
+    config["execution"] = {
+        "default_tool_timeout_seconds": 6,
+        "default_shell_timeout_seconds": 11,
+        "max_shell_timeout_seconds": 22,
+        "cancellation_timeout_seconds": 3,
+    }
+
+    one_shot = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
+        "freeze config",
+        config,
+        approval_mode="semi-auto",
+    )
+    assert one_shot.exit_code == 0
+    (workspace / "config.toml").write_text(
+        """
+[agent_loop]
+max_tool_call_iterations = 999
+
+[execution]
+default_tool_timeout_seconds = 999
+""".strip(),
+        encoding="utf-8",
+    )
+
+    resumed = RuntimeOrchestrator(workspace_root=workspace).start_resumed_repl(
+        one_shot.session_id
+    )
+    assert resumed.runtime is not None
+    try:
+        session = resumed.runtime.sessions.get(one_shot.session_id)
+    finally:
+        resumed.runtime.close()
+
+    assert session.config_snapshot["agent_loop"] == {"max_tool_call_iterations": 4}
+    assert session.config_snapshot["execution"] == {
+        "default_tool_timeout_seconds": 6,
+        "default_shell_timeout_seconds": 11,
+        "max_shell_timeout_seconds": 22,
+        "cancellation_timeout_seconds": 3,
+    }
+
+
 def test_start_resumed_repl_runtime_construction_failure_does_not_revive(
     tmp_path,
     monkeypatch,

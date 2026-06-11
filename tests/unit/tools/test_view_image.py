@@ -440,7 +440,10 @@ def test_view_image_provider_uses_frozen_cancellation_cleanup_timeout(
         tmp_path,
         multimodal=_enabled_multimodal(),
     )
-    runtime["config_snapshot"]["execution"] = {"cancellation_timeout_seconds": 2}
+    runtime["config_snapshot"]["execution"] = {
+        "default_tool_timeout_seconds": 3,
+        "cancellation_timeout_seconds": 2,
+    }
     image = runtime["workspace"] / "capture.png"
     _write_image(image)
     monkeypatch.setenv("MOONSHOT_API_KEY", "secret")

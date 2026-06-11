@@ -29,7 +29,7 @@ from debug_agent.runtime.contracts import (
 )
 from debug_agent.runtime.model_context import ConversationMessage, ModelContextFrame
 from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
-from debug_agent.runtime.settings import MAX_TOOL_CALL_ITERATIONS
+from debug_agent.runtime.settings import DEFAULT_AGENT_LOOP_MAX_TOOL_CALL_ITERATIONS
 from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
@@ -1417,7 +1417,6 @@ def test_langchain_adapter_delegates_tool_calls_to_toolbroker() -> None:
                 "artifact_root": "/repo/.sessions/sess_1/artifacts",
                 "approval_mode": "yolo",
                 "cancellation_token": None,
-                "timeout_seconds": 30,
                 "frozen_config": {"provider": "fake"},
                 "metadata": {},
             },
@@ -1533,7 +1532,6 @@ def test_langchain_adapter_feeds_tool_results_back_to_model() -> None:
                 "artifact_root": "/repo/.sessions/sess_1/artifacts",
                 "approval_mode": "yolo",
                 "cancellation_token": None,
-                "timeout_seconds": 30,
                 "frozen_config": {"provider": "fake"},
                 "metadata": {},
             },
@@ -2410,7 +2408,61 @@ def test_langchain_adapter_stream_aggregates_usage_across_tool_loop_model_calls(
     }
 
 
-def test_langchain_adapter_stops_after_phase_0_tool_call_iteration_limit() -> None:
+def test_langchain_adapter_stops_after_frozen_tool_call_iteration_limit() -> None:
+    class RepeatingToolModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            return type(
+                "Response",
+                (),
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": f"read_file_{self.calls}",
+                            "name": "read_file",
+                            "args": {"path": "a.txt"},
+                        }
+                    ],
+                    "usage": {},
+                },
+            )()
+
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="ok",
+                output="file text",
+                error=None,
+                artifacts=[],
+                metadata={},
+                redacted_output=None,
+            )
+
+    model = RepeatingToolModel()
+    adapter = LangChainAgentLoopAdapter(model=model, tool_broker=RecordingBroker())
+
+    request = replace(
+        _request(),
+        model_config={
+            "provider": "fake",
+            "agent_loop": {"max_tool_call_iterations": 3},
+        },
+    )
+
+    result = adapter.run(request, _context())
+
+    assert model.calls == 3
+    assert result.status == "failed"
+    assert result.error["error_class"] == "internal_error"
+    assert "iteration limit" in result.error["message"]
+    assert result.metadata == {"failure_scope": "turn"}
+
+
+def test_langchain_adapter_uses_settings_loop_bound_only_without_frozen_config() -> None:
     class RepeatingToolModel:
         def __init__(self) -> None:
             self.calls = 0
@@ -2449,11 +2501,79 @@ def test_langchain_adapter_stops_after_phase_0_tool_call_iteration_limit() -> No
 
     result = adapter.run(_request(), _context())
 
-    assert model.calls == MAX_TOOL_CALL_ITERATIONS
+    assert model.calls == DEFAULT_AGENT_LOOP_MAX_TOOL_CALL_ITERATIONS
     assert result.status == "failed"
-    assert result.error["error_class"] == "internal_error"
-    assert "iteration limit" in result.error["message"]
-    assert result.metadata == {"failure_scope": "turn"}
+
+
+def test_langchain_adapter_does_not_pass_model_timeout_as_generic_tool_timeout() -> None:
+    class SingleToolModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "read_file_1",
+                                "name": "read_file",
+                                "args": {"path": "a.txt"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "done", "tool_calls": [], "usage": {}},
+            )()
+
+    class RecordingBroker:
+        def __init__(self) -> None:
+            self.contexts = []
+
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            self.contexts.append(dict(context))
+            return ToolResult(
+                status="ok",
+                output="file text",
+                error=None,
+                artifacts=[],
+                metadata={},
+                redacted_output=None,
+            )
+
+    broker = RecordingBroker()
+
+    result = LangChainAgentLoopAdapter(
+        model=SingleToolModel(),
+        tool_broker=broker,
+    ).run(
+        replace(
+            _request(),
+            timeout_seconds=120,
+            model_config={
+                "provider": "fake",
+                "execution": {"default_tool_timeout_seconds": 9},
+            },
+        ),
+        _context(),
+    )
+
+    assert result.status == "completed"
+    assert "timeout_seconds" not in broker.contexts[0]
+    assert broker.contexts[0]["frozen_config"]["execution"][
+        "default_tool_timeout_seconds"
+    ] == 9
 
 
 def test_langchain_adapter_converts_runtime_tool_schemas_to_structured_tools() -> None:
@@ -2528,7 +2648,6 @@ def test_generated_langchain_tool_callable_delegates_only_to_toolbroker() -> Non
                 "artifact_root": "/repo/.sessions/sess_1/artifacts",
                 "approval_mode": "yolo",
                 "cancellation_token": None,
-                "timeout_seconds": 30,
                 "frozen_config": {"provider": "fake"},
                 "metadata": {},
             },

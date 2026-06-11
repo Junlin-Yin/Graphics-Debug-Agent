@@ -23,7 +23,10 @@ from debug_agent.runtime.provider_execution import (
     stream_async_provider_call,
     stream_provider_call,
 )
-from debug_agent.runtime.settings import MAX_TOOL_CALL_ITERATIONS, RUNTIME_SAFETY_PREFIX
+from debug_agent.runtime.settings import (
+    DEFAULT_AGENT_LOOP_MAX_TOOL_CALL_ITERATIONS,
+    RUNTIME_SAFETY_PREFIX,
+)
 from debug_agent.runtime.stream_events import AgentStreamEvent
 
 
@@ -60,7 +63,7 @@ class LangChainAgentLoopAdapter:
         tool_results: list[dict[str, Any]] = []
         aggregate_usage: dict[str, Any] = {}
         try:
-            for model_call_index in range(MAX_TOOL_CALL_ITERATIONS):
+            for model_call_index in range(_tool_call_iteration_limit(request)):
                 model_call_id = f"model_call_{model_call_index + 1}"
                 response = _invoke_model(
                     model,
@@ -104,7 +107,7 @@ class LangChainAgentLoopAdapter:
             return _error_result(
                 "failed",
                 "internal_error",
-                "Tool call loop exceeded Phase 0 iteration limit.",
+                "Tool call loop exceeded configured iteration limit.",
                 metadata={"failure_scope": "turn"},
             )
         except TimeoutError as exc:
@@ -144,7 +147,7 @@ class LangChainAgentLoopAdapter:
         tool_results: list[dict[str, Any]] = []
         aggregate_usage: dict[str, Any] = {}
         try:
-            for model_call_index in range(MAX_TOOL_CALL_ITERATIONS):
+            for model_call_index in range(_tool_call_iteration_limit(request)):
                 model_call_id = f"model_call_{model_call_index + 1}"
                 response = _stream_model_call(
                     model=model,
@@ -396,9 +399,16 @@ def _tool_context(request: AgentRunRequest, context: RunContext) -> dict[str, An
         "frozen_config": request.model_config,
         **context.metadata,
     }
-    if request.timeout_seconds is not None:
-        payload["timeout_seconds"] = request.timeout_seconds
     return payload
+
+
+def _tool_call_iteration_limit(request: AgentRunRequest) -> int:
+    agent_loop = request.model_config.get("agent_loop")
+    if isinstance(agent_loop, dict):
+        value = agent_loop.get("max_tool_call_iterations")
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return DEFAULT_AGENT_LOOP_MAX_TOOL_CALL_ITERATIONS
 
 
 def _tool_result_turn_aborted(result: object) -> bool:

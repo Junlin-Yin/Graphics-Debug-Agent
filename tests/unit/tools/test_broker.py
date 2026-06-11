@@ -21,6 +21,15 @@ from debug_agent.tools.broker import FakeApprovalProvider, NonInteractiveApprova
 from debug_agent.tools.shell import FakeShellRunner
 
 
+class _RecordingTimeoutRouter:
+    def __init__(self) -> None:
+        self.effective_timeout_seconds = None
+
+    def route(self, context, arguments):
+        self.effective_timeout_seconds = context.effective_timeout_seconds
+        return "ok"
+
+
 def _runtime(tmp_path, *, approval_mode: str = "normal", policy_facts=None):
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
@@ -105,6 +114,54 @@ def test_broker_keyboard_interrupt_shuts_down_executor(tmp_path, monkeypatch) ->
 
     assert submitted == {"called": True}
     assert shutdown_calls == [{"wait": False, "cancel_futures": True}]
+    runtime["db"].close()
+
+
+def test_broker_uses_frozen_generic_tool_timeout_for_unspecified_native_tool(
+    tmp_path, monkeypatch
+) -> None:
+    class RecordingFuture:
+        timeout_seen = None
+
+        def result(self, timeout=None):
+            self.__class__.timeout_seen = timeout
+            return "ok"
+
+        def cancel(self):
+            return False
+
+    class RecordingExecutor:
+        def __init__(self, *, max_workers):
+            assert max_workers == 1
+
+        def submit(self, fn, *args):
+            fn(*args)
+            return RecordingFuture()
+
+        def shutdown(self, *, wait=True, cancel_futures=False):
+            pass
+
+    runtime = _runtime(tmp_path)
+    router = _RecordingTimeoutRouter()
+    runtime["broker"] = ToolBroker(
+        event_writer=runtime["events"],
+        artifact_store=runtime["artifacts"],
+        router=router,
+    )
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("debug_agent.tools.broker.ThreadPoolExecutor", RecordingExecutor)
+        result = _invoke(
+            runtime,
+            "read_file",
+            {"path": "notes.txt"},
+            approval_mode="yolo",
+            frozen_config={"execution": {"default_tool_timeout_seconds": 7}},
+        )
+
+    assert result.status == "ok"
+    assert router.effective_timeout_seconds == 7
+    assert RecordingFuture.timeout_seen == 7
     runtime["db"].close()
 
 

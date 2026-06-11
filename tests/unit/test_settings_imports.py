@@ -11,8 +11,10 @@ def test_settings_modules_import_and_expose_documented_groups() -> None:
         "You are debug-agent"
     )
     assert runtime_settings.CONTEXT_DEFAULTS["window_tokens"] == 200000
+    assert runtime_settings.EXECUTION_DEFAULTS["default_tool_timeout_seconds"] == 30
     assert runtime_settings.EXECUTION_DEFAULTS["max_shell_timeout_seconds"] == 3600
-    assert runtime_settings.MAX_TOOL_CALL_ITERATIONS == 8
+    assert runtime_settings.AGENT_LOOP_DEFAULTS["max_tool_call_iterations"] == 1000
+    assert runtime_settings.MAX_TOOL_CALL_ITERATIONS == 1000
     assert runtime_settings.TOKEN_ESTIMATOR_VERSION == "deterministic-char-v1"
     assert ".sessions" in runtime_settings.BUILTIN_DIRECTORY_DENIES
 

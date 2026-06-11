@@ -48,6 +48,7 @@ model = "fake-model"
         "compression_reserved_output_tokens": 10000,
     }
     assert result.snapshot["execution"] == {
+        "default_tool_timeout_seconds": 30,
         "default_shell_timeout_seconds": 300,
         "max_shell_timeout_seconds": 3600,
         "cancellation_timeout_seconds": 10,

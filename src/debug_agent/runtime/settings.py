@@ -28,9 +28,18 @@ CONTEXT_DEFAULTS: dict[str, Any] = {
 
 # Shell execution and cancellation defaults frozen before tool execution.
 EXECUTION_DEFAULTS: dict[str, Any] = {
+    "default_tool_timeout_seconds": 30,
     "default_shell_timeout_seconds": 300,
     "max_shell_timeout_seconds": 3600,
     "cancellation_timeout_seconds": 10,
+}
+
+# Agent turn loop bound frozen into each session config snapshot.
+DEFAULT_AGENT_LOOP_MAX_TOOL_CALL_ITERATIONS = 1000
+
+# Agent loop defaults are config facts, not model-visible tool availability.
+AGENT_LOOP_DEFAULTS: dict[str, int] = {
+    "max_tool_call_iterations": DEFAULT_AGENT_LOOP_MAX_TOOL_CALL_ITERATIONS,
 }
 
 # Multimodal provider defaults are frozen config values, not image safety limits.
@@ -44,8 +53,8 @@ MULTIMODAL_LIMIT_DEFAULTS: dict[str, int] = {
 # Development gate for incomplete Phase 3 prompt execution paths.
 DEFAULT_ALLOW_INCOMPLETE_PHASE3_PROMPT_EXECUTION = False
 
-# Phase 3 adapter loop bound; Phase 3.5 config wiring changes this later.
-MAX_TOOL_CALL_ITERATIONS = 8
+# Lower-level adapter tests may construct requests without a session snapshot.
+MAX_TOOL_CALL_ITERATIONS = DEFAULT_AGENT_LOOP_MAX_TOOL_CALL_ITERATIONS
 
 # Provider-visible safety instruction prepended by the LangChain adapter.
 RUNTIME_SAFETY_PREFIX = (

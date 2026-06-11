@@ -1,3 +1,5 @@
+import pytest
+
 from debug_agent.runtime.config import ConfigError, load_config_snapshot
 
 
@@ -116,10 +118,12 @@ base_url_env = "ANTHROPIC_BASE_URL"
             "compression_reserved_output_tokens": 10000,
         },
         "execution": {
+            "default_tool_timeout_seconds": 30,
             "default_shell_timeout_seconds": 300,
             "max_shell_timeout_seconds": 3600,
             "cancellation_timeout_seconds": 10,
         },
+        "agent_loop": {"max_tool_call_iterations": 1000},
         "development": {
             "allow_incomplete_phase3_prompt_execution": False,
         },
@@ -163,10 +167,12 @@ fake_response = "hello"
             "compression_reserved_output_tokens": 10000,
         },
         "execution": {
+            "default_tool_timeout_seconds": 30,
             "default_shell_timeout_seconds": 300,
             "max_shell_timeout_seconds": 3600,
             "cancellation_timeout_seconds": 10,
         },
+        "agent_loop": {"max_tool_call_iterations": 1000},
         "development": {
             "allow_incomplete_phase3_prompt_execution": False,
         },
@@ -226,9 +232,13 @@ model = "fake-model"
 fake_response = "hello"
 
 [execution]
+default_tool_timeout_seconds = 33
 default_shell_timeout_seconds = 120
 max_shell_timeout_seconds = 600
 cancellation_timeout_seconds = 7
+
+[agent_loop]
+max_tool_call_iterations = 1234
 """.strip(),
         encoding="utf-8",
     )
@@ -238,10 +248,139 @@ cancellation_timeout_seconds = 7
 
     assert result.error is None
     assert result.snapshot["execution"] == {
+        "default_tool_timeout_seconds": 33,
         "default_shell_timeout_seconds": 120,
         "max_shell_timeout_seconds": 600,
         "cancellation_timeout_seconds": 7,
     }
+    assert result.snapshot["agent_loop"] == {"max_tool_call_iterations": 1234}
+
+
+def test_phase35_config_accepts_very_large_agent_loop_and_generic_tool_timeout(
+    tmp_path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    config_dir = home / ".debug-agent"
+    config_dir.mkdir(parents=True)
+    huge = 10**18
+    (config_dir / "config.toml").write_text(
+        f"""
+[defaults]
+provider = "fake"
+model = "fake-model"
+
+[agent_loop]
+max_tool_call_iterations = {huge}
+
+[execution]
+default_tool_timeout_seconds = {huge}
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    result = load_config_snapshot()
+
+    assert result.error is None
+    assert result.snapshot["agent_loop"]["max_tool_call_iterations"] == huge
+    assert result.snapshot["execution"]["default_tool_timeout_seconds"] == huge
+
+
+def test_phase35_config_ignores_unrecognized_multimodal_fixed_limit_fields(
+    tmp_path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    config_dir = home / ".debug-agent"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.toml").write_text(
+        """
+[defaults]
+provider = "fake"
+model = "fake-model"
+
+[multimodal.defaults]
+max_images = 999
+max_image_edge = 999
+max_image_pixels = 999
+max_request_bytes = 999
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    result = load_config_snapshot()
+
+    assert result.error is None
+    assert "max_images" not in result.snapshot["multimodal"]
+    assert "max_image_edge" not in result.snapshot["multimodal"]
+    assert "max_image_pixels" not in result.snapshot["multimodal"]
+    assert "max_request_bytes" not in result.snapshot["multimodal"]
+
+
+@pytest.mark.parametrize(
+    ("toml_section", "expected_message"),
+    [
+        (
+            "[agent_loop]\nmax_tool_call_iterations = 0",
+            "agent_loop.max_tool_call_iterations must be a positive integer.",
+        ),
+        (
+            "[agent_loop]\nmax_tool_call_iterations = -1",
+            "agent_loop.max_tool_call_iterations must be a positive integer.",
+        ),
+        (
+            '[agent_loop]\nmax_tool_call_iterations = "1000"',
+            "agent_loop.max_tool_call_iterations must be a positive integer.",
+        ),
+        (
+            "[agent_loop]\nmax_tool_call_iterations = true",
+            "agent_loop.max_tool_call_iterations must be a positive integer.",
+        ),
+        (
+            "[execution]\ndefault_tool_timeout_seconds = 0",
+            "execution.default_tool_timeout_seconds must be a positive integer.",
+        ),
+        (
+            "[execution]\ndefault_tool_timeout_seconds = -1",
+            "execution.default_tool_timeout_seconds must be a positive integer.",
+        ),
+        (
+            '[execution]\ndefault_tool_timeout_seconds = "30"',
+            "execution.default_tool_timeout_seconds must be a positive integer.",
+        ),
+        (
+            "[execution]\ndefault_tool_timeout_seconds = false",
+            "execution.default_tool_timeout_seconds must be a positive integer.",
+        ),
+    ],
+)
+def test_phase35_config_rejects_invalid_agent_loop_and_generic_tool_timeout(
+    tmp_path, monkeypatch, toml_section, expected_message
+) -> None:
+    home = tmp_path / "home"
+    config_dir = home / ".debug-agent"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.toml").write_text(
+        f"""
+[defaults]
+provider = "fake"
+model = "fake-model"
+
+{toml_section}
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    result = load_config_snapshot()
+
+    assert result.snapshot is None
+    assert result.error == ConfigError(
+        error_class="config_error",
+        message=expected_message,
+        source="config",
+        recoverable=True,
+    )
 
 
 def test_phase3_execution_timeout_config_rejects_invalid_maximum(

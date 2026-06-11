@@ -334,6 +334,21 @@ def test_shell_outer_broker_timeout_uses_effective_shell_timeout(tmp_path) -> No
     runtime["db"].close()
 
 
+def test_shell_omitted_timeout_ignores_generic_tool_timeout(tmp_path) -> None:
+    runner = FakeShellRunner(stdout="ok")
+    runtime = _runtime(tmp_path, default_timeout=17, max_timeout=100, runner=runner)
+    runtime["context"]["frozen_config"]["execution"][
+        "default_tool_timeout_seconds"
+    ] = 3
+
+    result = _invoke(runtime, {"argv": ["echo", "ok"]})
+
+    assert result.status == "ok"
+    assert result.metadata["effective_timeout_seconds"] == 17
+    assert runner.calls[0]["timeout_seconds"] == 17
+    runtime["db"].close()
+
+
 def test_shell_policy_allow_deny_builtin_and_allowlist_miss(tmp_path) -> None:
     runtime = _runtime(tmp_path, approval_mode="yolo")
     facts = runtime["context"]["policy_facts"]

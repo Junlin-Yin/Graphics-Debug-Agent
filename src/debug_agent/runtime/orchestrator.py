@@ -40,6 +40,7 @@ from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeBootstrapError, RuntimeDatabase
 from debug_agent.persistence.todo_plans import TodoPlanStore
 from debug_agent.runtime.settings import (
+    AGENT_LOOP_DEFAULTS,
     EXECUTION_DEFAULTS,
     MULTIMODAL_LIMIT_DEFAULTS,
     PHASE_0_SYSTEM_PROMPT,
@@ -2206,6 +2207,11 @@ def _next_durable_message_index(connection: sqlite3.Connection, *, run_id: str) 
 
 def _ensure_phase3_frozen_runtime_defaults(config_snapshot: dict[str, Any]) -> dict[str, Any]:
     frozen = dict(config_snapshot)
+    agent_loop = frozen.get("agent_loop")
+    if not isinstance(agent_loop, dict):
+        frozen["agent_loop"] = dict(AGENT_LOOP_DEFAULTS)
+    else:
+        frozen["agent_loop"] = {**AGENT_LOOP_DEFAULTS, **agent_loop}
     execution = frozen.get("execution")
     if not isinstance(execution, dict):
         frozen["execution"] = dict(EXECUTION_DEFAULTS)

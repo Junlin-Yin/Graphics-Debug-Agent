@@ -210,7 +210,7 @@ class ToolBroker:
             return result
         normalized_arguments = dict(arguments)
         workspace_root = Path(context["workspace_root"]).resolve()
-        timeout_seconds = float(context.get("timeout_seconds", self.timeout_seconds))
+        timeout_seconds = _generic_tool_timeout_seconds(context, self.timeout_seconds)
 
         definition = self._definitions.get(tool_name)
         if definition is None or not tool_name.strip():
@@ -1404,6 +1404,22 @@ def _shell_timeout_limits(frozen_config: dict[str, Any]) -> tuple[int, int]:
         else 3600
     )
     return default, max_timeout
+
+
+def _generic_tool_timeout_seconds(context: dict[str, Any], fallback: float) -> float:
+    explicit = context.get("timeout_seconds")
+    if isinstance(explicit, (int, float)) and not isinstance(explicit, bool) and explicit > 0:
+        return float(explicit)
+    frozen_config = context.get("frozen_config")
+    execution = frozen_config.get("execution") if isinstance(frozen_config, dict) else None
+    timeout = (
+        execution.get("default_tool_timeout_seconds")
+        if isinstance(execution, dict)
+        else None
+    )
+    if isinstance(timeout, int) and not isinstance(timeout, bool) and timeout > 0:
+        return float(timeout)
+    return float(fallback)
 
 
 def _effective_view_image_timeout(
