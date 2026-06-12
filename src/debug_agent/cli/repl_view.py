@@ -217,12 +217,88 @@ def _preview_source(
     if redacted_output is not None:
         return redacted_output
     if isinstance(output, dict):
+        structured = _structured_tool_preview_source(output)
+        if structured is not None:
+            return structured
         if {"stdout", "stderr", "returncode"} <= set(output):
             return _shell_preview_source(output)
         return json.dumps(output, ensure_ascii=False, sort_keys=True)
     if output is None:
         return ""
     return output
+
+
+def _structured_tool_preview_source(output: dict[str, Any]) -> str | None:
+    error = output.get("error")
+    if isinstance(error, dict):
+        lines = []
+        status = output.get("status")
+        if isinstance(status, str) and status:
+            lines.append(f"status: {status}")
+        error_class = error.get("error_class")
+        reason = error.get("reason")
+        message = error.get("message")
+        if isinstance(error_class, str) and isinstance(reason, str):
+            rendered = f"{error_class}/{reason}"
+            if isinstance(message, str) and message:
+                rendered = f"{rendered}: {message}"
+            lines.append(rendered)
+        return "\n".join(lines) if lines else None
+
+    lines: list[str] = []
+    path = output.get("path")
+    if isinstance(path, str) and path:
+        lines.append(f"path: {path}")
+    pagination = _pagination_preview(output)
+    if pagination is not None:
+        lines.append(pagination)
+    for key in ("content", "matches", "paths", "counts", "stdout", "stderr"):
+        value = output.get(key)
+        if isinstance(value, dict) and isinstance(value.get("artifact_id"), str):
+            lines.extend(_artifact_reference_preview(key, value))
+    return "\n".join(lines) if lines else None
+
+
+def _pagination_preview(output: dict[str, Any]) -> str | None:
+    if not {
+        "offset",
+        "total_returned",
+        "truncated",
+        "next_offset",
+    } <= set(output):
+        return None
+    offset = output.get("offset")
+    returned = output.get("total_returned")
+    truncated = output.get("truncated")
+    next_offset = output.get("next_offset")
+    size = output.get("limit", output.get("maxResults"))
+    if not isinstance(offset, int) or not isinstance(returned, int):
+        return None
+    page = f"page: offset={offset}"
+    if isinstance(size, int):
+        page = f"{page} limit={size}"
+    page = f"{page} returned={returned}"
+    if truncated is True:
+        page = f"{page} next_offset={next_offset}"
+    else:
+        page = f"{page} complete"
+    return page
+
+
+def _artifact_reference_preview(field: str, reference: dict[str, Any]) -> list[str]:
+    artifact_id = str(reference["artifact_id"])
+    line = f"{field}: artifact {artifact_id}"
+    relative_path = reference.get("relative_path")
+    if isinstance(relative_path, str) and relative_path:
+        line = f"{line} ({relative_path})"
+    bytes_value = reference.get("bytes")
+    if isinstance(bytes_value, int):
+        line = f"{line}, {bytes_value} bytes"
+    lines = [line]
+    preview = reference.get("preview")
+    if isinstance(preview, str) and preview:
+        lines.append(preview)
+    return lines
 
 
 def _shell_preview_source(output: dict[str, Any]) -> str:

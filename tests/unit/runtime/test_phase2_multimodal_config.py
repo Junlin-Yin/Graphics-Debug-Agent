@@ -65,7 +65,7 @@ def test_missing_multimodal_config_freezes_disabled_view_image_without_startup_e
         approval_mode="yolo",
     )
     assert result.exit_code == 0
-    db = RuntimeDatabase.bootstrap(workspace)
+    db = RuntimeDatabase.bootstrap_phase_3_5_internal(workspace)
     try:
         session = SessionStore(db.connection).get(result.session_id)
         persisted = session.config_snapshot["multimodal"]

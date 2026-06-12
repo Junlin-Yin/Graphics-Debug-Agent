@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
 from debug_agent.adapters.model_factory import ModelFactoryResult
+from debug_agent.persistence.settings import PHASE_3_5_SCHEMA_USER_VERSION
 from debug_agent.runtime import orchestrator as orchestrator_module
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
 
@@ -333,6 +334,7 @@ def test_one_shot_default_path_exposes_todo_but_keeps_view_image_gated(
     assert tool_names == [
         "read_file",
         "list_dir",
+        "find_file",
         "search_text",
         "write_file",
         "edit_file",
@@ -343,11 +345,26 @@ def test_one_shot_default_path_exposes_todo_but_keeps_view_image_gated(
     ]
     assert "view_image" not in tool_names
     schemas = {tool["name"]: tool["input_schema"] for tool in tool_schema_bindings}
-    assert "offset" not in schemas["read_file"]["properties"]
-    assert "ignore" not in schemas["list_dir"]["properties"]
-    assert schemas["search_text"]["required"] == ["query"]
-    assert "pattern" not in schemas["search_text"]["properties"]
-    assert "replace_all" not in schemas["edit_file"]["properties"]
+    assert "offset" in schemas["read_file"]["properties"]
+    assert "ignore" in schemas["list_dir"]["properties"]
+    assert schemas["find_file"]["required"] == ["pattern"]
+    assert schemas["search_text"]["required"] == ["pattern"]
+    assert "query" not in schemas["search_text"]["properties"]
+    assert "replace_all" in schemas["edit_file"]["properties"]
+
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+            PHASE_3_5_SCHEMA_USER_VERSION
+        )
+        manifest_version = conn.execute(
+            """
+            SELECT json_extract(state_json, '$.manifest_schema_version')
+            FROM checkpoints
+            ORDER BY rowid DESC
+            LIMIT 1
+            """
+        ).fetchone()[0]
+    assert manifest_version == 2
 
 
 def test_one_shot_enabled_multimodal_exposes_view_image_tool_binding(

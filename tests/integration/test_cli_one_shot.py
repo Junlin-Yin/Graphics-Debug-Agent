@@ -27,7 +27,7 @@ def _terminal_failure_summary(
         "\n"
         f"One-shot session {session_id} failed.\n"
         f"{error_class}/{reason}: {message}\n"
-        f"trace: debug-agent trace {session_id}\n"
+        f"trace: .sessions/{session_id}/logs/trace.md\n"
         f"resume: debug-agent resume {session_id}\n"
     )
 

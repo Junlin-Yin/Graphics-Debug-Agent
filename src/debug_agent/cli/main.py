@@ -95,7 +95,7 @@ def _format_one_shot_terminal_failure(result) -> str | None:
         [
             f"One-shot session {session_id} failed.",
             f"{error['error_class']}/{error['reason']}: {error['message']}",
-            f"trace: debug-agent trace {session_id}",
+            f"trace: {_trace_file_path(session_id)}",
             f"resume: debug-agent resume {session_id}",
         ]
     )
@@ -121,6 +121,10 @@ def _has_complete_normalized_error_fields(error: object) -> bool:
         if expected_type is str and not value:
             return False
     return True
+
+
+def _trace_file_path(session_id: str) -> str:
+    return f".sessions/{session_id}/logs/trace.md"
 
 
 def _parse_prompt_args(args: list[str]) -> tuple[str, str | None] | str:

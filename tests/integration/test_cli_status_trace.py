@@ -12,10 +12,10 @@ from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.sqlite import (
-    PHASE_3_SCHEMA_USER_VERSION,
-    READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
+    PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
+    PHASE_3_5_SCHEMA_USER_VERSION,
     RuntimeDatabase,
-    STARTUP_LEGACY_RESET_GUIDANCE,
+    PHASE_3_5_STARTUP_LEGACY_RESET_GUIDANCE,
 )
 from debug_agent.runtime.contracts import RunEvent, utc_now_iso
 
@@ -183,7 +183,7 @@ def test_trace_command_renders_phase1_skill_approval_tool_and_compression_events
     home.mkdir()
     workspace.mkdir()
     _write_fake_config(home)
-    db = RuntimeDatabase.bootstrap(workspace)
+    db = RuntimeDatabase.bootstrap_phase_3_5_internal(workspace)
     try:
         sessions = SessionStore(db.connection)
         runs = RunStore(db.connection)
@@ -341,9 +341,9 @@ def test_startup_status_and_trace_fail_closed_on_legacy_schema(tmp_path) -> None
     )
 
     assert status_before_startup.returncode == 6
-    assert READ_ONLY_SCHEMA_FAILURE_GUIDANCE in status_before_startup.stderr
+    assert PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE in status_before_startup.stderr
     assert trace_before_startup.returncode == 6
-    assert READ_ONLY_SCHEMA_FAILURE_GUIDANCE in trace_before_startup.stderr
+    assert PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE in trace_before_startup.stderr
     startup = subprocess.run(
         [executable, "-p", "hello"],
         cwd=workspace,
@@ -353,7 +353,7 @@ def test_startup_status_and_trace_fail_closed_on_legacy_schema(tmp_path) -> None
         check=False,
     )
     assert startup.returncode == 0
-    assert STARTUP_LEGACY_RESET_GUIDANCE in startup.stdout
+    assert PHASE_3_5_STARTUP_LEGACY_RESET_GUIDANCE in startup.stdout
     status_after_startup = subprocess.run(
         [executable, "status", "sess_legacy"],
         cwd=workspace,
@@ -375,7 +375,9 @@ def test_startup_status_and_trace_fail_closed_on_legacy_schema(tmp_path) -> None
     assert trace_after_startup.returncode == 10
     assert "No session found for id: sess_legacy" in trace_after_startup.stderr
     with sqlite3.connect(sessions_dir / "runtime.db") as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == PHASE_3_SCHEMA_USER_VERSION
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+            PHASE_3_5_SCHEMA_USER_VERSION
+        )
         tables = {
             row[0]
             for row in conn.execute(

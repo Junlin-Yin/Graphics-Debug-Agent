@@ -338,7 +338,7 @@ def test_main_one_shot_failure_with_session_formats_summary(monkeypatch, capsys)
         "\n"
         "One-shot session sess_123 failed.\n"
         "model_error/model_call_timeout: model call timed out\n"
-        "trace: debug-agent trace sess_123\n"
+        "trace: .sessions/sess_123/logs/trace.md\n"
         "resume: debug-agent resume sess_123\n"
     )
 

@@ -211,6 +211,54 @@ def test_tool_result_preview_formats_dict_output_with_sorted_keys_and_unicode() 
     assert preview.text == '> {"a": "中文", "z": 1}'
 
 
+def test_tool_result_preview_summarizes_structured_pagination_and_artifact_refs() -> None:
+    preview = ToolResultPreviewFormatter().format(
+        output={
+            "path": "/repo/README.md",
+            "offset": 2000,
+            "limit": 2000,
+            "total_returned": 2000,
+            "truncated": True,
+            "next_offset": 4000,
+            "content": {
+                "artifact_id": "art_content",
+                "relative_path": "sess_1/artifacts/art_content.txt",
+                "preview": "first lines",
+                "truncated": True,
+                "bytes": 12000,
+                "sha256": "sha256:abc",
+            },
+        },
+        redacted_output=None,
+        artifact_ids=["art_content"],
+    )
+
+    assert "path: /repo/README.md" in preview.text
+    assert "page: offset=2000 limit=2000 returned=2000 next_offset=4000" in preview.text
+    assert "content: artifact art_content" in preview.text
+    assert "sess_1/artifacts/art_content.txt" in preview.text
+    assert "first lines" in preview.text
+
+
+def test_tool_result_preview_summarizes_non_success_status_and_stale_guard() -> None:
+    preview = ToolResultPreviewFormatter().format(
+        output={
+            "status": "error",
+            "error": {
+                "error_class": "tool_error",
+                "reason": "stale_file_revision",
+                "message": "File changed since last read.",
+                "artifact_ids": [],
+            },
+        },
+        redacted_output=None,
+        artifact_ids=[],
+    )
+
+    assert "status: error" in preview.text
+    assert "tool_error/stale_file_revision: File changed since last read." in preview.text
+
+
 def test_tool_result_preview_prefers_redacted_output_over_raw_output() -> None:
     preview = ToolResultPreviewFormatter().format(
         output="secret raw output",

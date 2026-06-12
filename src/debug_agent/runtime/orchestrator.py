@@ -63,7 +63,7 @@ from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.runtime.workspace import resolve_workspace_root
 from debug_agent.skills.registry import SkillRegistry, SkillRegistryError
 from debug_agent.tools.broker import NonInteractiveApprovalProvider, ToolBroker
-from debug_agent.tools.native import phase3_user_facing_tool_definitions
+from debug_agent.tools.native import gated_user_facing_tool_definitions
 from debug_agent.tools.view_image import tool_definition as view_image_tool_definition
 
 
@@ -705,7 +705,7 @@ class RuntimeOrchestrator:
         provider_model = None
         runtime: ReplRuntime | None = None
         try:
-            db = RuntimeDatabase.bootstrap(self.workspace_root)
+            db = RuntimeDatabase.bootstrap_phase_3_5_internal(self.workspace_root)
         except RuntimeBootstrapError as exc:
             return _bootstrap_one_shot_error(exc)
         sessions_root = db.path.parent
@@ -713,13 +713,17 @@ class RuntimeOrchestrator:
         runs = RunStore(db.connection)
         events = EventWriter(db.connection, sessions_root)
         artifacts = ArtifactStore(db.connection, sessions_root)
-        checkpoints = CheckpointStore(db.connection, artifact_store=artifacts)
+        checkpoints = CheckpointStore(
+            db.connection,
+            artifact_store=artifacts,
+        ).for_phase_3_5_internal()
         try:
             try:
                 session = sessions.create(
                     workspace_root=self.workspace_root,
                     approval_mode=approval_mode,
                     config_snapshot=config_snapshot,
+                    require_fresh_phase_3_5_paths=True,
                 )
             except StoreError as exc:
                 active = sessions.find_active_for_workspace(self.workspace_root)
@@ -736,6 +740,7 @@ class RuntimeOrchestrator:
                         workspace_root=self.workspace_root,
                         approval_mode=approval_mode,
                         config_snapshot=config_snapshot,
+                        require_fresh_phase_3_5_paths=True,
                     )
                 else:
                     message = _active_conflict_message(
@@ -996,7 +1001,9 @@ class RuntimeOrchestrator:
 
     def status(self, session_id: str) -> StatusResult:
         try:
-            db = RuntimeDatabase.bootstrap_read_only(self.workspace_root)
+            db = RuntimeDatabase.bootstrap_phase_3_5_read_only_internal(
+                self.workspace_root
+            )
         except RuntimeBootstrapError as exc:
             return StatusResult(
                 exit_code=map_error_to_exit_code(exc.normalized_error),
@@ -1057,35 +1064,13 @@ class RuntimeOrchestrator:
             db.close()
 
     def status_phase_3_5_internal(self, session_id: str) -> StatusResult:
+        return self.status(session_id)
+
+    def trace(self, session_id: str) -> TraceResult:
         try:
             db = RuntimeDatabase.bootstrap_phase_3_5_read_only_internal(
                 self.workspace_root
             )
-        except RuntimeBootstrapError as exc:
-            return StatusResult(
-                exit_code=map_error_to_exit_code(exc.normalized_error),
-                fields={},
-                message=str(exc),
-            )
-        if db is None:
-            return StatusResult(
-                exit_code=0,
-                fields={"runtime_database": "missing", "active_session": None},
-                message="",
-            )
-        db.close()
-        return StatusResult(
-            exit_code=ERROR_STARTUP_CONFIG,
-            fields={},
-            message=(
-                "Phase 3.5 status routing is gated until Milestone 10 completes "
-                "the default runtime cutover."
-            ),
-        )
-
-    def trace(self, session_id: str) -> TraceResult:
-        try:
-            db = RuntimeDatabase.bootstrap_read_only(self.workspace_root)
         except RuntimeBootstrapError as exc:
             return TraceResult(
                 exit_code=map_error_to_exit_code(exc.normalized_error, boundary="trace"),
@@ -1137,34 +1122,7 @@ class RuntimeOrchestrator:
             db.close()
 
     def trace_phase_3_5_internal(self, session_id: str) -> TraceResult:
-        try:
-            db = RuntimeDatabase.bootstrap_phase_3_5_read_only_internal(
-                self.workspace_root
-            )
-        except RuntimeBootstrapError as exc:
-            return TraceResult(
-                exit_code=map_error_to_exit_code(exc.normalized_error, boundary="trace"),
-                trace_path=Path(),
-                summary={},
-                message=str(exc),
-            )
-        if db is None:
-            return TraceResult(
-                exit_code=ERROR_LOOKUP_NOT_FOUND,
-                trace_path=Path(),
-                summary={},
-                message=f"No session found for id: {session_id}",
-            )
-        db.close()
-        return TraceResult(
-            exit_code=ERROR_STARTUP_CONFIG,
-            trace_path=Path(),
-            summary={},
-            message=(
-                "Phase 3.5 trace routing is gated until Milestone 10 completes "
-                "the default runtime cutover."
-            ),
-        )
+        return self.trace(session_id)
 
     def resume(self, session_id: str) -> ResumeResult:
         result = self._resume_lineage(session_id)
@@ -1178,42 +1136,7 @@ class RuntimeOrchestrator:
         )
 
     def resume_phase_3_5_internal(self, session_id: str) -> ResumeResult:
-        try:
-            db = RuntimeDatabase.bootstrap_phase_3_5_read_only_internal(
-                self.workspace_root
-            )
-        except RuntimeBootstrapError as exc:
-            return ResumeResult(
-                exit_code=map_error_to_exit_code(exc.normalized_error),
-                message=str(exc),
-                error=exc.normalized_error.to_dict(),
-                session_id=None,
-            )
-        if db is None:
-            return ResumeResult(
-                exit_code=ERROR_LOOKUP_NOT_FOUND,
-                message=f"No session found for id: {session_id}",
-                error={
-                    "error_class": "user_error",
-                    "reason": "lookup_not_found",
-                    "message": f"No session found for id: {session_id}",
-                },
-                session_id=None,
-            )
-        db.close()
-        return ResumeResult(
-            exit_code=ERROR_STARTUP_CONFIG,
-            message=(
-                "Phase 3.5 resume routing is gated until Milestone 10 completes "
-                "the default runtime cutover."
-            ),
-            error={
-                "error_class": "config_error",
-                "reason": "startup_schema_validation_failed",
-                "message": "Phase 3.5 resume routing is gated.",
-            },
-            session_id=None,
-        )
+        return self.resume(session_id)
 
     def start_resumed_repl(self, session_id: str) -> ReplStartResult:
         resume = self._resume_lineage(session_id)
@@ -1227,7 +1150,9 @@ class RuntimeOrchestrator:
                 ),
             )
         try:
-            db = RuntimeDatabase.bootstrap(self.workspace_root)
+            db = RuntimeDatabase.open_phase_3_5_existing_read_write(
+                self.workspace_root
+            )
         except RuntimeBootstrapError as exc:
             return ReplStartResult(
                 runtime=None,
@@ -1235,6 +1160,21 @@ class RuntimeOrchestrator:
                     exit_code=map_error_to_exit_code(exc.normalized_error),
                     message=str(exc),
                     error=exc.normalized_error.to_dict(),
+                ),
+            )
+        if db is None:
+            error = NormalizedError.create(
+                "user_error",
+                "lookup_not_found",
+                message=f"No session found for id: {session_id}",
+                scope="session",
+            )
+            return ReplStartResult(
+                runtime=None,
+                error=ReplStartError(
+                    exit_code=map_error_to_exit_code(error),
+                    message=error.message,
+                    error=error.to_dict(),
                 ),
             )
         try:
@@ -1264,7 +1204,9 @@ class RuntimeOrchestrator:
 
     def _preflight_resumed_repl(self, session_id: str) -> ReplStartResult | None:
         try:
-            db = RuntimeDatabase.bootstrap_read_only(self.workspace_root)
+            db = RuntimeDatabase.bootstrap_phase_3_5_read_only_internal(
+                self.workspace_root
+            )
         except RuntimeBootstrapError as exc:
             return ReplStartResult(
                 runtime=None,
@@ -1315,7 +1257,9 @@ class RuntimeOrchestrator:
 
     def _resume_lineage(self, session_id: str) -> ResumeResult:
         try:
-            db = RuntimeDatabase.bootstrap_read_only(self.workspace_root)
+            db = RuntimeDatabase.bootstrap_phase_3_5_read_only_internal(
+                self.workspace_root
+            )
         except RuntimeBootstrapError as exc:
             return ResumeResult(
                 exit_code=map_error_to_exit_code(exc.normalized_error),
@@ -1336,12 +1280,25 @@ class RuntimeOrchestrator:
             )
         db.close()
         try:
-            db = RuntimeDatabase.bootstrap(self.workspace_root)
+            db = RuntimeDatabase.open_phase_3_5_existing_read_write(
+                self.workspace_root
+            )
         except RuntimeBootstrapError as exc:
             return ResumeResult(
                 exit_code=map_error_to_exit_code(exc.normalized_error),
                 message=str(exc),
                 error=exc.normalized_error.to_dict(),
+                session_id=None,
+            )
+        if db is None:
+            return ResumeResult(
+                exit_code=ERROR_LOOKUP_NOT_FOUND,
+                message=f"No session found for id: {session_id}",
+                error={
+                    "error_class": "user_error",
+                    "reason": "lookup_not_found",
+                    "message": f"No session found for id: {session_id}",
+                },
                 session_id=None,
             )
         try:
@@ -1355,7 +1312,7 @@ class RuntimeOrchestrator:
                 conversation_store=conversation_store,
                 todo_plan_store=TodoPlanStore(db.connection),
                 artifact_store=artifacts,
-            )
+            ).for_phase_3_5_internal()
             try:
                 session = sessions.get(session_id)
             except StoreError as exc:
@@ -1559,7 +1516,7 @@ class RuntimeOrchestrator:
 
     def cancel_active_session(self, message: str) -> OneShotResult:
         try:
-            db = RuntimeDatabase.bootstrap(self.workspace_root)
+            db = RuntimeDatabase.bootstrap_phase_3_5_internal(self.workspace_root)
         except RuntimeBootstrapError as exc:
             return _bootstrap_one_shot_error(exc)
         sessions_root = db.path.parent
@@ -1567,7 +1524,10 @@ class RuntimeOrchestrator:
         runs = RunStore(db.connection)
         events = EventWriter(db.connection, sessions_root)
         artifacts = ArtifactStore(db.connection, sessions_root)
-        checkpoints = CheckpointStore(db.connection, artifact_store=artifacts)
+        checkpoints = CheckpointStore(
+            db.connection,
+            artifact_store=artifacts,
+        ).for_phase_3_5_internal()
         try:
             session = sessions.find_active_for_workspace(self.workspace_root)
             error = {
@@ -1668,7 +1628,7 @@ class RuntimeOrchestrator:
             )
         config_snapshot = _ensure_phase3_frozen_runtime_defaults(policy_result)
         try:
-            db = RuntimeDatabase.bootstrap(self.workspace_root)
+            db = RuntimeDatabase.bootstrap_phase_3_5_internal(self.workspace_root)
         except RuntimeBootstrapError as exc:
             return ReplStartResult(
                 runtime=None,
@@ -1689,13 +1649,17 @@ class RuntimeOrchestrator:
         runs = RunStore(db.connection)
         events = EventWriter(db.connection, sessions_root)
         artifacts = ArtifactStore(db.connection, sessions_root)
-        checkpoints = CheckpointStore(db.connection, artifact_store=artifacts)
+        checkpoints = CheckpointStore(
+            db.connection,
+            artifact_store=artifacts,
+        ).for_phase_3_5_internal()
 
         try:
             session = sessions.create(
                 workspace_root=self.workspace_root,
                 approval_mode=approval_mode,
                 config_snapshot=config_snapshot,
+                require_fresh_phase_3_5_paths=True,
             )
         except StoreError as exc:
             active = sessions.find_active_for_workspace(self.workspace_root)
@@ -1710,6 +1674,7 @@ class RuntimeOrchestrator:
                     workspace_root=self.workspace_root,
                     approval_mode=approval_mode,
                     config_snapshot=config_snapshot,
+                    require_fresh_phase_3_5_paths=True,
                 )
             elif stale_result is not None:
                 db.close()
@@ -2005,7 +1970,7 @@ def format_tool_listing(
 
 
 def visible_tool_definitions(config_snapshot: dict[str, Any]) -> list[Any]:
-    definitions = list(phase3_user_facing_tool_definitions(config_snapshot))
+    definitions = list(gated_user_facing_tool_definitions(config_snapshot))
     if _view_image_enabled(config_snapshot):
         definitions.append(view_image_tool_definition())
     return definitions
@@ -2942,7 +2907,7 @@ def _runtime_from_resumed_session(
         conversation_store=conversation_store,
         todo_plan_store=TodoPlanStore(db.connection),
         artifact_store=artifacts,
-    )
+    ).for_phase_3_5_internal()
     session = sessions.get(session_id)
     owner_token = _owner_token_for_session(db.connection, session_id)
     if session.status != "running" or session.active_run_id is None:
@@ -3022,7 +2987,7 @@ def _preflight_resumed_runtime_construction(
         conversation_store=conversation_store,
         todo_plan_store=TodoPlanStore(db.connection),
         artifact_store=artifacts,
-    )
+    ).for_phase_3_5_internal()
     session = sessions.get(session_id)
     run = runs.latest_for_session(session.session_id)
     if (

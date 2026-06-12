@@ -1345,7 +1345,7 @@ def test_prompt_toolkit_view_exit_is_idempotent_after_slash_exit() -> None:
     assert "session sess_full" not in view.rendered_text()
     assert view._terminal_summary_text() == (
         "session sess_full exit.\n"
-        "trace: debug-agent trace sess_full\n"
+        "trace: .sessions/sess_full/logs/trace.md\n"
         "resume: debug-agent resume sess_full"
     )
 
@@ -1636,7 +1636,7 @@ def test_prompt_toolkit_view_run_prints_terminal_summary_after_application_exit(
     assert exit_code == 0
     assert output.getvalue() == (
         "session sess_full exit.\n"
-        "trace: debug-agent trace sess_full\n"
+        "trace: .sessions/sess_full/logs/trace.md\n"
         "resume: debug-agent resume sess_full\n"
     )
 
@@ -1690,7 +1690,7 @@ def test_prompt_toolkit_view_run_prints_cancelled_terminal_summary() -> None:
     assert exit_code == 1
     assert output.getvalue() == (
         "session sess_full cancelled.\n"
-        "trace: debug-agent trace sess_full\n"
+        "trace: .sessions/sess_full/logs/trace.md\n"
         "resume: debug-agent resume sess_full\n"
     )
 

@@ -143,6 +143,15 @@ class RuntimeDatabase:
         )
 
     @classmethod
+    def open_phase_3_5_existing_read_write(cls, workspace_root: str | Path) -> Self | None:
+        return cls._open_existing_read_write(
+            workspace_root,
+            expected_user_version=PHASE_3_5_SCHEMA_USER_VERSION,
+            legacy_user_versions=PHASE_3_5_LEGACY_SCHEMA_USER_VERSIONS,
+            read_only_guidance=PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
+        )
+
+    @classmethod
     def _bootstrap_read_only(
         cls,
         workspace_root: str | Path,
@@ -178,6 +187,47 @@ class RuntimeDatabase:
         except (OSError, sqlite3.DatabaseError) as exc:
             raise RuntimeBootstrapError(
                 f"Runtime database read-only bootstrap failed: {exc}",
+                error_class="persistence_error",
+                reason="persistence_read_failed",
+            ) from exc
+        return cls(path=db_path, connection=connection)
+
+    @classmethod
+    def _open_existing_read_write(
+        cls,
+        workspace_root: str | Path,
+        *,
+        expected_user_version: int,
+        legacy_user_versions: frozenset[int],
+        read_only_guidance: str,
+    ) -> Self | None:
+        sessions_root = Path(workspace_root).resolve() / ".sessions"
+        db_path = sessions_root / "runtime.db"
+        if not db_path.exists():
+            return None
+        try:
+            connection = sqlite3.connect(
+                f"file:{db_path.as_posix()}?mode=rw",
+                uri=True,
+                check_same_thread=False,
+            )
+            connection.execute("PRAGMA foreign_keys = ON")
+            try:
+                _validate_open_connection_user_version(
+                    connection,
+                    startup=False,
+                    expected_user_version=expected_user_version,
+                    legacy_user_versions=legacy_user_versions,
+                    read_only_guidance=read_only_guidance,
+                )
+            except RuntimeBootstrapError:
+                connection.close()
+                raise
+        except RuntimeBootstrapError:
+            raise
+        except (OSError, sqlite3.DatabaseError) as exc:
+            raise RuntimeBootstrapError(
+                f"Runtime database read-write open failed: {exc}",
                 error_class="persistence_error",
                 reason="persistence_read_failed",
             ) from exc

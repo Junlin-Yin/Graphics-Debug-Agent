@@ -3,9 +3,9 @@ from __future__ import annotations
 import sqlite3
 
 from debug_agent.persistence.sqlite import (
-    PHASE_3_SCHEMA_USER_VERSION,
-    READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
-    STARTUP_LEGACY_RESET_GUIDANCE,
+    PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
+    PHASE_3_5_SCHEMA_USER_VERSION,
+    PHASE_3_5_STARTUP_LEGACY_RESET_GUIDANCE,
 )
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
 
@@ -53,11 +53,13 @@ def test_status_and_trace_fail_closed_while_startup_resets_legacy_database(
 
     for result in (status, trace):
         assert result.exit_code == 6
-        assert READ_ONLY_SCHEMA_FAILURE_GUIDANCE in result.message
+        assert PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE in result.message
     assert one_shot.exit_code == 0
-    assert STARTUP_LEGACY_RESET_GUIDANCE in one_shot.message
+    assert PHASE_3_5_STARTUP_LEGACY_RESET_GUIDANCE in one_shot.message
     with sqlite3.connect(db_path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == PHASE_3_SCHEMA_USER_VERSION
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+            PHASE_3_5_SCHEMA_USER_VERSION
+        )
         tables = {
             row[0]
             for row in conn.execute(

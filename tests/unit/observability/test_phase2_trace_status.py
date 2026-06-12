@@ -15,7 +15,7 @@ from debug_agent.runtime.orchestrator import RuntimeOrchestrator
 def _workspace_with_todo_plan(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    db = RuntimeDatabase.bootstrap(workspace)
+    db = RuntimeDatabase.bootstrap_phase_3_5_internal(workspace)
     sessions = SessionStore(db.connection)
     runs = RunStore(db.connection)
     events = EventWriter(db.connection, db.path.parent)
@@ -63,7 +63,7 @@ def test_status_includes_current_todo_plan_counts_from_store(tmp_path) -> None:
 
 def test_trace_excludes_todo_events_and_current_plan_summary(tmp_path) -> None:
     workspace, session_id = _workspace_with_todo_plan(tmp_path)
-    db = RuntimeDatabase.bootstrap(workspace)
+    db = RuntimeDatabase.bootstrap_phase_3_5_internal(workspace)
     try:
         result = TraceWriter(db.connection, db.path.parent).refresh_if_stale(session_id)
     finally:
@@ -75,7 +75,7 @@ def test_trace_excludes_todo_events_and_current_plan_summary(tmp_path) -> None:
     assert "## Todo Plans" not in content
     assert "Patch runtime injection" not in content
 
-    check_db = RuntimeDatabase.bootstrap(workspace)
+    check_db = RuntimeDatabase.bootstrap_phase_3_5_internal(workspace)
     try:
         row = check_db.connection.execute(
             """
@@ -93,7 +93,7 @@ def test_trace_excludes_todo_events_and_current_plan_summary(tmp_path) -> None:
 def test_trace_excludes_view_image_event_facts_without_query_or_base64(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    db = RuntimeDatabase.bootstrap(workspace)
+    db = RuntimeDatabase.bootstrap_phase_3_5_internal(workspace)
     sessions = SessionStore(db.connection)
     runs = RunStore(db.connection)
     events = EventWriter(db.connection, db.path.parent)
@@ -209,7 +209,7 @@ def test_trace_excludes_view_image_event_facts_without_query_or_base64(tmp_path)
 def test_trace_excludes_view_image_error_events_without_leaks(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    db = RuntimeDatabase.bootstrap(workspace)
+    db = RuntimeDatabase.bootstrap_phase_3_5_internal(workspace)
     sessions = SessionStore(db.connection)
     runs = RunStore(db.connection)
     events = EventWriter(db.connection, db.path.parent)

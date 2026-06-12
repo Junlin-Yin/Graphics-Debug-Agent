@@ -763,9 +763,13 @@ def _format_labeled_message(label: str, text: object) -> str:
 def _format_terminal_summary(summary: SessionCloseSummary) -> str:
     status = "exit" if summary.status == "closed" else summary.status
     lines = [f"session {summary.session_id} {status}."]
-    lines.append(f"trace: debug-agent trace {summary.session_id}")
+    lines.append(f"trace: {_trace_file_path(summary.session_id)}")
     lines.append(f"resume: debug-agent resume {summary.session_id}")
     return "\n".join(lines)
+
+
+def _trace_file_path(session_id: str) -> str:
+    return f".sessions/{session_id}/logs/trace.md"
 
 
 def _format_tool_block(payload: dict) -> str:

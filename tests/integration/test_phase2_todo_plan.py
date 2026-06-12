@@ -59,7 +59,7 @@ def test_one_shot_todo_call_persists_and_next_model_call_sees_plan(
     )
 
     assert result.exit_code == 0
-    db = RuntimeDatabase.bootstrap(workspace)
+    db = RuntimeDatabase.bootstrap_phase_3_5_internal(workspace)
     try:
         plan = TodoPlanStore(db.connection).get_current(result.run_id)
         assert plan.version == 1
@@ -67,7 +67,11 @@ def test_one_shot_todo_call_persists_and_next_model_call_sees_plan(
             "Inspect exported image",
             "Run verification",
         ]
-        checkpoint = CheckpointStore(db.connection).latest_for_run(result.run_id)
+        checkpoint = (
+            CheckpointStore(db.connection)
+            .for_phase_3_5_internal()
+            .latest_for_run(result.run_id)
+        )
         assert checkpoint is not None
         assert checkpoint.kind == "terminal_recovery"
         assert checkpoint.state["todo_plan"]["plan_version"] == 1
@@ -95,7 +99,7 @@ def test_manual_compress_leaves_todo_plan_unchanged_and_trace_observes_store(
 ) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    db = RuntimeDatabase.bootstrap(workspace)
+    db = RuntimeDatabase.bootstrap_phase_3_5_internal(workspace)
     try:
         session = db.connection.execute(
             "SELECT session_id FROM sessions LIMIT 1"
@@ -111,7 +115,7 @@ def test_manual_compress_leaves_todo_plan_unchanged_and_trace_observes_store(
     )
     assert result.exit_code == 0
 
-    db = RuntimeDatabase.bootstrap(workspace)
+    db = RuntimeDatabase.bootstrap_phase_3_5_internal(workspace)
     try:
         before = TodoPlanStore(db.connection).get_current(result.run_id)
         events_before = [

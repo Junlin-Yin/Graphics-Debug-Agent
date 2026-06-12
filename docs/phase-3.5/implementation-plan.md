@@ -552,15 +552,15 @@ After Milestone 9 completes, trace/events integration verification passes, and t
 
 **Freeze/review checkpoint:** do not start interactive REPL/TUI polish until cutover, baseline presentation, and focused integration verification are reviewed.
 
-- [ ] Cut over default user-facing one-shot, plain REPL, and TUI prompt execution from the existing Phase 3 path to the Phase 3.5 path only after Milestone 9 review confirms schema 4, frozen config, model-visible tools, ToolResult serialization, checkpoint facts, `logs/trace.md`, `logs/events.jsonl`, and no-legacy-path behavior are complete and verified.
-- [ ] Update CLI output to print the new `logs/trace.md` path.
-- [ ] Update REPL/TUI/plain rendering for structured native tool outputs, field-level artifact references, pagination metadata, timeout/error statuses, and stale-write guard failures.
-- [ ] Update user-facing legacy reset and read-only/recovery fail-closed messages in CLI/TUI surfaces.
-- [ ] Update status/trace tests so no assertion expects `.sessions/<session_id>/trace.md` or `logs/engine.log`.
-- [ ] Add integration coverage for a representative one-shot session using Phase 3.5 tool bindings and terminal trace generation.
-- [ ] Add integration coverage for schema 4 startup reset, read-only fail-closed behavior, terminal checkpoint tool availability, and resume validation.
-- [ ] Run `uv run pytest tests/unit -v`.
-- [ ] Run `uv run pytest tests/integration -v`.
+- [x] Cut over default user-facing one-shot, plain REPL, and TUI prompt execution from the existing Phase 3 path to the Phase 3.5 path only after Milestone 9 review confirms schema 4, frozen config, model-visible tools, ToolResult serialization, checkpoint facts, `logs/trace.md`, `logs/events.jsonl`, and no-legacy-path behavior are complete and verified.
+- [x] Update CLI output to print the new `logs/trace.md` path.
+- [x] Update REPL/TUI/plain rendering for structured native tool outputs, field-level artifact references, pagination metadata, timeout/error statuses, and stale-write guard failures.
+- [x] Update user-facing legacy reset and read-only/recovery fail-closed messages in CLI/TUI surfaces.
+- [x] Update status/trace tests so no assertion expects `.sessions/<session_id>/trace.md` or `logs/engine.log`.
+- [x] Add integration coverage for a representative one-shot session using Phase 3.5 tool bindings and terminal trace generation.
+- [x] Add integration coverage for schema 4 startup reset, read-only fail-closed behavior, terminal checkpoint tool availability, and resume validation.
+- [x] Run `uv run pytest tests/unit -v`.
+- [x] Run `uv run pytest tests/integration -v`.
 
 ## Milestone 11: Interactive REPL/TUI Manual Review And Final Acceptance
 

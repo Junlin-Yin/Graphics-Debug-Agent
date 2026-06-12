@@ -25,7 +25,7 @@ def _config() -> dict:
 
 
 def _active_owner(workspace, *, owner_token: str = "owner_old", owner_pid: int = 98765):
-    db = RuntimeDatabase.bootstrap(workspace)
+    db = RuntimeDatabase.bootstrap_phase_3_5_internal(workspace)
     sessions = SessionStore(db.connection)
     runs = RunStore(db.connection)
     session = sessions.create(
@@ -33,6 +33,7 @@ def _active_owner(workspace, *, owner_token: str = "owner_old", owner_pid: int =
         approval_mode="normal",
         config_snapshot=_config(),
         session_id="sess_old",
+        require_fresh_phase_3_5_paths=True,
     )
     run = runs.create_prompt_run(session.session_id, run_id="run_old")
     sessions.set_active_run(session.session_id, run.run_id)

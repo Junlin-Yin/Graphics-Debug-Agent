@@ -611,7 +611,7 @@ def _terminal_checkpoint_summary(
         "checkpoint_valid": False,
         "eligible": False,
     }
-    store = CheckpointStore(connection)
+    store = CheckpointStore(connection).for_phase_3_5_internal()
     try:
         checkpoint = store.get(checkpoint_id)
     except StoreError as exc:
