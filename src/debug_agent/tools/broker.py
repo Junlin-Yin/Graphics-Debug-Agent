@@ -35,6 +35,8 @@ from debug_agent.tools import shell as shell_tools
 from debug_agent.tools import view_image as view_image_tools
 from debug_agent.tools.native import (
     NativeHandlerResult,
+    SEARCH_TEXT_TYPES,
+    is_search_text_type_allowed,
     tool_definitions,
     tool_error_result,
     tool_handlers,
@@ -1669,25 +1671,7 @@ def _schema_for_validation(definition: ToolDefinition) -> dict[str, Any]:
                 "case_sensitive": {"type": "boolean", "default": True},
                 "type": {
                     "type": "string",
-                    "enum": [
-                        "c",
-                        "cpp",
-                        "csharp",
-                        "css",
-                        "go",
-                        "html",
-                        "java",
-                        "javascript",
-                        "json",
-                        "markdown",
-                        "python",
-                        "rust",
-                        "shell",
-                        "text",
-                        "toml",
-                        "typescript",
-                        "yaml",
-                    ],
+                    "enum": list(SEARCH_TEXT_TYPES),
                 },
                 "include_hidden": {"type": "boolean", "default": False},
                 "before_context": {
@@ -1829,6 +1813,14 @@ def _validate_search_text_semantics(
         "before_context" in raw_argument_keys or "after_context" in raw_argument_keys
     ):
         return "context is mutually exclusive with before_context and after_context."
+    glob = arguments.get("glob")
+    if isinstance(glob, str):
+        glob_error = validate_portable_glob_pattern(glob)
+        if glob_error is not None:
+            return glob_error
+    type_name = arguments.get("type")
+    if isinstance(type_name, str) and not is_search_text_type_allowed(type_name):
+        return f"Unsupported search_text type: {type_name}."
     context = arguments.get("context")
     if context is not None:
         arguments["before_context_effective"] = context
@@ -1921,8 +1913,6 @@ def _normalize_tool_arguments(
     normalized_arguments = dict(arguments)
     if "path" in normalized_arguments:
         normalized_arguments["path"] = normalized_arguments["path"].strip()
-    if definition.name == "search_text":
-        normalized_arguments["query"] = normalized_arguments["pattern"]
     canonical_path = canonicalize_path(normalized_arguments["path"], workspace_root)
     normalized_arguments["path"] = str(canonical_path)
     if definition.name == "search_text":

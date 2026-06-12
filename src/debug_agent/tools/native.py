@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-import os
 import fnmatch
 import hashlib
 import codecs
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+from concurrent.futures import TimeoutError as ToolTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 
 from debug_agent.runtime.contracts import ToolDefinition, ToolResult
 from debug_agent.runtime.policy import PermissionEvaluator
 from debug_agent.tools.settings import (
-    DEFAULT_NATIVE_TOOL_LIMIT,
     FIND_FILE_DEFAULT_MAX_RESULTS,
     FIND_FILE_MAX_RESULTS,
     LIST_DIR_DEFAULT_LIMIT,
@@ -20,6 +24,36 @@ from debug_agent.tools.settings import (
     READ_FILE_DEFAULT_LIMIT,
     READ_FILE_MAX_LIMIT,
 )
+
+
+SEARCH_TEXT_TYPES = {
+    "c": ("**/*.c", "**/*.h"),
+    "cpp": ("**/*.cc", "**/*.cpp", "**/*.cxx", "**/*.hh", "**/*.hpp", "**/*.hxx"),
+    "csharp": ("**/*.cs",),
+    "css": ("**/*.css",),
+    "go": ("**/*.go",),
+    "html": ("**/*.html", "**/*.htm"),
+    "java": ("**/*.java",),
+    "javascript": ("**/*.js", "**/*.mjs", "**/*.cjs", "**/*.jsx"),
+    "json": ("**/*.json", "**/*.jsonl"),
+    "markdown": ("**/*.md", "**/*.markdown"),
+    "python": ("**/*.py", "**/*.pyi"),
+    "rust": ("**/*.rs",),
+    "shell": ("**/*.sh", "**/*.bash", "**/*.zsh"),
+    "text": ("**/*.txt",),
+    "toml": ("**/*.toml",),
+    "typescript": ("**/*.ts", "**/*.tsx"),
+    "yaml": ("**/*.yaml", "**/*.yml"),
+}
+
+SEARCH_TEXT_LINE_PREVIEW_CODEPOINTS = 4000
+SEARCH_TEXT_STDERR_PREVIEW_CODEPOINTS = 4000
+SEARCH_TEXT_RG_JSON_RECORD_BYTES = 1024 * 1024
+SEARCH_TEXT_RG_STDOUT_CHUNK_BYTES = 8192
+
+
+def is_search_text_type_allowed(type_name: str) -> bool:
+    return type_name in SEARCH_TEXT_TYPES
 
 
 class NativeToolContext(Protocol):
@@ -36,6 +70,55 @@ class NativeHandlerResult:
     error_message: str | None = None
     reason: str = "tool_execution_failed"
     metadata: dict[str, Any] | None = None
+
+
+class _RipgrepExecutionError(Exception):
+    pass
+
+
+class _RipgrepCandidateSkipped(Exception):
+    def __init__(self, counter: str) -> None:
+        super().__init__(counter)
+        self.counter = counter
+
+
+class _RipgrepRecordSkipped(Exception):
+    def __init__(self, counter: str) -> None:
+        super().__init__(counter)
+        self.counter = counter
+
+
+class _SearchPageCollector:
+    def __init__(self, *, offset: int, limit: int) -> None:
+        self.offset = offset
+        self.limit = limit
+        self.seen = 0
+        self.page: list[Any] = []
+        self.truncated = False
+
+    def add(self, item: Any) -> None:
+        if self.seen < self.offset:
+            self.seen += 1
+            return
+        if len(self.page) < self.limit:
+            self.page.append(item)
+        else:
+            self.truncated = True
+        self.seen += 1
+
+    @property
+    def next_offset(self) -> int | None:
+        return self.offset + len(self.page) if self.truncated else None
+
+    def snapshot(self) -> tuple[int, list[Any], bool]:
+        return self.seen, list(self.page), self.truncated
+
+    def restore(self, snapshot: tuple[int, list[Any], bool]) -> None:
+        self.seen, self.page, self.truncated = snapshot
+
+
+class _SearchContentPager(_SearchPageCollector):
+    pass
 
 
 def tool_definitions() -> list[ToolDefinition]:
@@ -406,29 +489,174 @@ def find_file(context: NativeToolContext, arguments: dict[str, Any]) -> NativeHa
     )
 
 
-def search_text(context: NativeToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
-    query = arguments["query"]
-    start = Path(arguments["path"])
-    limit = arguments.get("limit", DEFAULT_NATIVE_TOOL_LIMIT)
-    matches: list[dict[str, Any]] = []
-    for path in _iter_search_files(context, start):
-        try:
-            with path.open("r", encoding="utf-8") as handle:
-                for index, line in enumerate(handle, start=1):
-                    text = line.rstrip("\n")
-                    if query in text:
-                        matches.append(
-                            {
-                                "path": _display_path(path, context.workspace_root),
-                                "line": index,
-                                "text": text,
-                            }
-                        )
-                        if len(matches) >= limit:
-                            return {"matches": matches}
-        except UnicodeDecodeError:
-            continue
-    return {"matches": matches}
+def search_text(context: NativeToolContext, arguments: dict[str, Any]) -> NativeHandlerResult:
+    root = Path(arguments["path"])
+    pattern = arguments["pattern"]
+    output_mode = arguments.get("output_mode", "content")
+    offset = int(arguments.get("offset", 0))
+    limit = int(arguments.get("maxResults", 100))
+    before_context = int(arguments.get("before_context_effective", 0))
+    after_context = int(arguments.get("after_context_effective", 0))
+    skipped = {"denied": 0, "hidden": 0, "decode_error": 0, "other": 0}
+
+    rg = shutil.which("rg")
+    if rg is None:
+        return NativeHandlerResult(
+            status="error",
+            error_message="rg executable is required for search_text.",
+        )
+    common_args = _ripgrep_common_args(
+        pattern,
+        fixed_strings=bool(arguments.get("fixed_strings", False)),
+        case_sensitive=bool(arguments.get("case_sensitive", True)),
+    )
+    validation = _validate_ripgrep_regex(
+        rg,
+        common_args,
+        fixed_strings=bool(arguments.get("fixed_strings", False)),
+        timeout_seconds=context.effective_timeout_seconds,
+    )
+    if validation is not None:
+        return validation
+    try:
+        glob = PortableGlob(arguments.get("glob", "**"), case_sensitive=True)
+    except ValueError as exc:
+        return NativeHandlerResult(
+            status="error",
+            error_message=str(exc),
+            reason="tool_schema_invalid",
+        )
+    type_globs = _search_type_globs(arguments.get("type"))
+    candidates = _iter_search_text_candidates(
+        context,
+        root,
+        include_hidden=bool(arguments.get("include_hidden", False)),
+        glob=glob,
+        type_globs=type_globs,
+        skipped=skipped,
+    )
+
+    if output_mode == "content":
+        pager = _SearchContentPager(offset=offset, limit=limit)
+        for candidate in candidates:
+            seen_lines: set[int] = set()
+            snapshot = pager.snapshot()
+            try:
+                for item in _iter_ripgrep_matches(
+                    rg, common_args, candidate, context.effective_timeout_seconds
+                ):
+                    skip_counter = item.get("_skip_counter")
+                    if skip_counter in skipped:
+                        skipped[skip_counter] += 1
+                        continue
+                    line_number = item["line_number"]
+                    if line_number in seen_lines:
+                        continue
+                    seen_lines.add(line_number)
+                    pager.add(item)
+            except _RipgrepCandidateSkipped as exc:
+                pager.restore(snapshot)
+                skipped[exc.counter] += 1
+                continue
+            except _RipgrepExecutionError as exc:
+                return NativeHandlerResult(status="error", error_message=str(exc))
+        context_result = _attach_search_context(
+            pager.page, before=before_context, after=after_context
+        )
+        if context_result.status == "error":
+            return context_result
+        output = _search_common_output(
+            root=root,
+            pattern=pattern,
+            output_mode=output_mode,
+            offset=offset,
+            limit=limit,
+            total_returned=len(pager.page),
+            truncated=pager.truncated,
+            next_offset=pager.next_offset,
+            skipped=skipped,
+        )
+        output["matches"] = context_result.output
+        return NativeHandlerResult(status="ok", output=output)
+
+    if output_mode == "files_with_matches":
+        pager = _SearchPageCollector(offset=offset, limit=limit)
+        for candidate in candidates:
+            seen_lines: set[int] = set()
+            matched = False
+            try:
+                for item in _iter_ripgrep_matches(
+                    rg, common_args, candidate, context.effective_timeout_seconds
+                ):
+                    skip_counter = item.get("_skip_counter")
+                    if skip_counter in skipped:
+                        skipped[skip_counter] += 1
+                        continue
+                    line_number = item["line_number"]
+                    if line_number in seen_lines:
+                        continue
+                    seen_lines.add(line_number)
+                    matched = True
+            except _RipgrepCandidateSkipped as exc:
+                skipped[exc.counter] += 1
+                continue
+            except _RipgrepExecutionError as exc:
+                return NativeHandlerResult(status="error", error_message=str(exc))
+            if matched:
+                pager.add(str(candidate))
+        output = _search_common_output(
+            root=root,
+            pattern=pattern,
+            output_mode=output_mode,
+            offset=offset,
+            limit=limit,
+            total_returned=len(pager.page),
+            truncated=pager.truncated,
+            next_offset=pager.next_offset,
+            skipped=skipped,
+        )
+        output["paths"] = pager.page
+        return NativeHandlerResult(status="ok", output=output)
+    if output_mode == "count":
+        pager = _SearchPageCollector(offset=offset, limit=limit)
+        for candidate in candidates:
+            seen_lines: set[int] = set()
+            count = 0
+            try:
+                for item in _iter_ripgrep_matches(
+                    rg, common_args, candidate, context.effective_timeout_seconds
+                ):
+                    skip_counter = item.get("_skip_counter")
+                    if skip_counter in skipped:
+                        skipped[skip_counter] += 1
+                        continue
+                    line_number = item["line_number"]
+                    if line_number in seen_lines:
+                        continue
+                    seen_lines.add(line_number)
+                    count += 1
+            except _RipgrepCandidateSkipped as exc:
+                skipped[exc.counter] += 1
+                continue
+            except _RipgrepExecutionError as exc:
+                return NativeHandlerResult(status="error", error_message=str(exc))
+            if count > 0:
+                pager.add({"path": str(candidate), "count": count})
+        output = _search_common_output(
+            root=root,
+            pattern=pattern,
+            output_mode=output_mode,
+            offset=offset,
+            limit=limit,
+            total_returned=len(pager.page),
+            truncated=pager.truncated,
+            next_offset=pager.next_offset,
+            skipped=skipped,
+        )
+        output["counts"] = pager.page
+        return NativeHandlerResult(status="ok", output=output)
+
+    return NativeHandlerResult(status="error", error_message="Unsupported output_mode.")
 
 
 def write_file(context: NativeToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -471,24 +699,444 @@ def edit_file(context: NativeToolContext, arguments: dict[str, Any]) -> NativeHa
     )
 
 
-def _iter_search_files(context: NativeToolContext, start: Path):
-    if start.is_file():
-        yield start
+def _search_common_output(
+    *,
+    root: Path,
+    pattern: str,
+    output_mode: str,
+    offset: int,
+    limit: int,
+    total_returned: int,
+    truncated: bool,
+    next_offset: int | None,
+    skipped: dict[str, int],
+) -> dict[str, Any]:
+    return {
+        "root": str(root.resolve()),
+        "pattern": pattern,
+        "output_mode": output_mode,
+        "offset": offset,
+        "maxResults": limit,
+        "total_returned": total_returned,
+        "truncated": truncated,
+        "next_offset": next_offset,
+        "skipped_files": dict(skipped),
+    }
+
+
+def _iter_search_text_candidates(
+    context: NativeToolContext,
+    root: Path,
+    *,
+    include_hidden: bool,
+    glob: PortableGlob,
+    type_globs: tuple[PortableGlob, ...] | None,
+    skipped: dict[str, int],
+):
+    for candidate in _iter_search_candidate_files(
+        context, root, include_hidden=include_hidden, skipped=skipped
+    ):
+        try:
+            relative = candidate.relative_to(root).as_posix()
+        except ValueError:
+            relative = candidate.name
+        if relative == ".":
+            relative = candidate.name
+        if not glob.matches(relative):
+            continue
+        if type_globs is not None and not any(type_glob.matches(relative) for type_glob in type_globs):
+            continue
+        try:
+            _prescreen_utf8(candidate)
+        except UnicodeDecodeError:
+            skipped["decode_error"] += 1
+            continue
+        except OSError:
+            skipped["other"] += 1
+            continue
+        yield candidate
+
+
+def _iter_search_candidate_files(
+    context: NativeToolContext,
+    root: Path,
+    *,
+    include_hidden: bool,
+    skipped: dict[str, int],
+):
+    if root.is_file() or root.is_symlink():
+        allowed = _search_candidate_allowed(
+            context, root, root, include_hidden=include_hidden, skipped=skipped
+        )
+        if allowed:
+            yield _normalized_candidate_path(root)
         return
-    for root, dirnames, filenames in os.walk(start):
-        root_path = Path(root)
-        kept_dirs: list[str] = []
-        for dirname in sorted(dirnames):
-            child = root_path / dirname
-            if context.permission_evaluator.classify_path(child).classification == "denied":
+    yield from _iter_search_candidate_directory(
+        context, root, root, include_hidden=include_hidden, skipped=skipped
+    )
+
+
+def _iter_search_candidate_directory(
+    context: NativeToolContext,
+    current_path: Path,
+    root: Path,
+    *,
+    include_hidden: bool,
+    skipped: dict[str, int],
+):
+    try:
+        entries = sorted(
+            os.scandir(current_path),
+            key=lambda entry: str(Path(os.path.normpath(Path(entry.path).absolute()))),
+        )
+    except OSError:
+        skipped["other"] += 1
+        return
+    for entry in entries:
+        child = Path(entry.path)
+        try:
+            relative = child.relative_to(root)
+        except ValueError:
+            skipped["other"] += 1
+            continue
+        if child.is_dir() and not child.is_symlink():
+            if _is_denied(context, child):
                 continue
-            kept_dirs.append(dirname)
-        dirnames[:] = kept_dirs
-        for filename in sorted(filenames):
-            child = root_path / filename
-            if context.permission_evaluator.classify_path(child).classification == "denied":
+            if not include_hidden and _is_hidden_relative(relative):
                 continue
-            yield child
+            yield from _iter_search_candidate_directory(
+                context,
+                child,
+                root,
+                include_hidden=include_hidden,
+                skipped=skipped,
+            )
+            continue
+        allowed = _search_candidate_allowed(
+            context, child, root, include_hidden=include_hidden, skipped=skipped
+        )
+        if allowed:
+            yield _normalized_candidate_path(child)
+
+
+def _search_candidate_allowed(
+    context: NativeToolContext,
+    candidate: Path,
+    root: Path,
+    *,
+    include_hidden: bool,
+    skipped: dict[str, int],
+) -> bool:
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError:
+        skipped["other"] += 1
+        return False
+    if _is_denied(context, candidate):
+        skipped["denied"] += 1
+        return False
+    if not include_hidden and _is_hidden_relative(relative):
+        skipped["hidden"] += 1
+        return False
+    if candidate.is_dir() and not candidate.is_symlink():
+        return False
+    if not candidate.is_file() and not candidate.is_symlink():
+        skipped["other"] += 1
+        return False
+    if candidate.is_symlink():
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(root.resolve())
+        except (OSError, ValueError):
+            skipped["other"] += 1
+            return False
+        if context.permission_evaluator.classify_path(resolved).classification == "denied":
+            skipped["other"] += 1
+            return False
+        if not resolved.is_file():
+            skipped["other"] += 1
+            return False
+    return True
+
+
+def _prescreen_utf8(path: Path) -> None:
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            decoder.decode(chunk, final=False)
+        decoder.decode(b"", final=True)
+
+
+def _search_type_globs(type_name: str | None) -> tuple[PortableGlob, ...] | None:
+    if not type_name:
+        return None
+    if not is_search_text_type_allowed(type_name):
+        raise ValueError(f"Unsupported search_text type: {type_name}.")
+    patterns = SEARCH_TEXT_TYPES[type_name]
+    return tuple(PortableGlob(pattern, case_sensitive=False) for pattern in patterns)
+
+
+def _ripgrep_common_args(
+    pattern: str, *, fixed_strings: bool, case_sensitive: bool
+) -> list[str]:
+    args = ["--json", "--no-config"]
+    if fixed_strings:
+        args.append("-F")
+    if not case_sensitive:
+        args.append("-i")
+    args.extend(["--regexp", pattern])
+    return args
+
+
+def _ripgrep_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env.pop("RIPGREP_CONFIG_PATH", None)
+    return env
+
+
+def _run_rg(argv: list[str], *, timeout_seconds: float) -> Any:
+    try:
+        return subprocess.run(
+            argv,
+            cwd="/",
+            env=_ripgrep_env(),
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ToolTimeoutError from exc
+
+
+def _validate_ripgrep_regex(
+    rg: str,
+    common_args: list[str],
+    *,
+    fixed_strings: bool,
+    timeout_seconds: float,
+) -> NativeHandlerResult | None:
+    version = _run_rg([rg, "--no-config", "--version"], timeout_seconds=timeout_seconds)
+    if version.returncode != 0:
+        return NativeHandlerResult(
+            status="error",
+            error_message=_rg_failure_message(version.stderr or version.stdout),
+        )
+    if fixed_strings:
+        return None
+    with tempfile.TemporaryDirectory(prefix="debug-agent-rg-") as directory:
+        empty_file = Path(directory) / "regex-check.txt"
+        empty_file.write_text("", encoding="utf-8")
+        result = _run_rg(
+            [rg, *common_args, "--", str(empty_file)],
+            timeout_seconds=timeout_seconds,
+        )
+    if result.returncode in (0, 1):
+        return None
+    return NativeHandlerResult(
+        status="error",
+        error_message=_rg_failure_message(result.stderr or result.stdout),
+    )
+
+
+def _iter_ripgrep_matches(
+    rg: str, common_args: list[str], candidate: Path, timeout_seconds: float
+) -> Iterator[dict[str, Any]]:
+    candidate_identity = str(candidate)
+    process = subprocess.Popen(
+        [rg, *common_args, "--", candidate_identity],
+        cwd="/",
+        env=_ripgrep_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=False,
+    )
+    try:
+        assert process.stdout is not None
+        for line in _iter_bounded_ripgrep_stdout_records(process.stdout):
+            item = _parse_ripgrep_match_line(line, candidate_identity)
+            if item is not None:
+                yield item
+        try:
+            returncode = process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            process.kill()
+            raise ToolTimeoutError from exc
+        stderr = _read_bounded_process_stderr(process)
+    finally:
+        if process.poll() is None:
+            process.kill()
+    if returncode == 1:
+        return
+    if returncode != 0:
+        raise _RipgrepExecutionError(_rg_failure_message(stderr))
+
+
+def _iter_bounded_ripgrep_stdout_records(stream: Any) -> Iterator[bytes]:
+    buffer = bytearray()
+    while True:
+        chunk = stream.read(SEARCH_TEXT_RG_STDOUT_CHUNK_BYTES)
+        if not chunk:
+            break
+        if isinstance(chunk, str):
+            chunk = chunk.encode("utf-8")
+        buffer.extend(chunk)
+        if len(buffer) > SEARCH_TEXT_RG_JSON_RECORD_BYTES:
+            raise _RipgrepCandidateSkipped("other")
+        while True:
+            newline = buffer.find(b"\n")
+            if newline < 0:
+                break
+            record = bytes(buffer[: newline + 1])
+            del buffer[: newline + 1]
+            if len(record) > SEARCH_TEXT_RG_JSON_RECORD_BYTES:
+                raise _RipgrepCandidateSkipped("other")
+            yield record
+    if buffer:
+        if len(buffer) > SEARCH_TEXT_RG_JSON_RECORD_BYTES:
+            raise _RipgrepCandidateSkipped("other")
+        yield bytes(buffer)
+
+
+def _parse_ripgrep_match_line(
+    line: bytes | str, candidate_identity: str
+) -> dict[str, Any] | None:
+    if not line:
+        return None
+    if isinstance(line, bytes):
+        try:
+            line = line.decode("utf-8")
+        except UnicodeDecodeError:
+            return {"_skip_counter": "decode_error"}
+    try:
+        record = json.loads(line)
+    except json.JSONDecodeError:
+        return {"_skip_counter": "other"}
+    if record.get("type") != "match":
+        return None
+    data = record.get("data") if isinstance(record.get("data"), dict) else {}
+    line_number = data.get("line_number")
+    try:
+        text = _rg_text_field(data.get("lines"))
+    except _RipgrepRecordSkipped as exc:
+        return {"_skip_counter": exc.counter}
+    if text is None:
+        return None
+    if len(text.encode("utf-8")) > SEARCH_TEXT_RG_JSON_RECORD_BYTES:
+        raise _RipgrepCandidateSkipped("other")
+    if not isinstance(line_number, int):
+        return None
+    preview, truncated = _line_preview(text.rstrip("\r\n"))
+    return {
+        "path": candidate_identity,
+        "line_number": line_number,
+        "line": preview,
+        "is_context": False,
+        "line_truncated": truncated,
+    }
+
+
+def _read_bounded_process_stderr(process: Any) -> str:
+    stream = process.stderr
+    if stream is None:
+        return ""
+    try:
+        data = stream.read(SEARCH_TEXT_STDERR_PREVIEW_CODEPOINTS + 1)
+        if isinstance(data, bytes):
+            data = data.decode("utf-8", errors="replace")
+        return data[:SEARCH_TEXT_STDERR_PREVIEW_CODEPOINTS]
+    except Exception:
+        return ""
+
+
+def _rg_text_field(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    text = value.get("text")
+    if isinstance(text, str):
+        return text
+    raw_bytes = value.get("bytes")
+    if isinstance(raw_bytes, list):
+        try:
+            return bytes(raw_bytes).decode("utf-8")
+        except (UnicodeDecodeError, ValueError):
+            raise _RipgrepRecordSkipped("decode_error")
+    return None
+
+
+def _rg_failure_message(diagnostic: str) -> str:
+    short = " ".join((diagnostic or "unknown rg failure").split())
+    return f"rg execution failure: {short}"
+
+
+def _line_preview(line: str) -> tuple[str, bool]:
+    if len(line) <= SEARCH_TEXT_LINE_PREVIEW_CODEPOINTS:
+        return line, False
+    return line[:SEARCH_TEXT_LINE_PREVIEW_CODEPOINTS], True
+
+
+def _attach_search_context(
+    matches: list[dict[str, Any]], *, before: int, after: int
+) -> NativeHandlerResult:
+    if not matches or (before == 0 and after == 0):
+        return NativeHandlerResult(status="ok", output=matches)
+    by_path: dict[str, set[int]] = {}
+    match_lines: dict[tuple[str, int], dict[str, Any]] = {}
+    for match in matches:
+        path = match["path"]
+        line_number = int(match["line_number"])
+        match_lines[(path, line_number)] = match
+        lines = by_path.setdefault(path, set())
+        start = max(1, line_number - before)
+        end = line_number + after
+        lines.update(range(start, end + 1))
+    rows: list[dict[str, Any]] = []
+    for path, requested_lines in sorted(by_path.items()):
+        try:
+            text_lines = _read_context_lines(Path(path), requested_lines)
+        except (OSError, UnicodeDecodeError) as exc:
+            return NativeHandlerResult(
+                status="error",
+                error_message=f"Unable to attach search context: {exc}",
+            )
+        for line_number in sorted(requested_lines):
+            key = (path, line_number)
+            if key in match_lines:
+                rows.append(match_lines[key])
+                continue
+            if line_number in text_lines:
+                preview, truncated = _line_preview(text_lines[line_number])
+                rows.append(
+                    {
+                        "path": path,
+                        "line_number": line_number,
+                        "line": preview,
+                        "is_context": True,
+                        "line_truncated": truncated,
+                    }
+                )
+    return NativeHandlerResult(
+        status="ok",
+        output=sorted(rows, key=lambda item: (item["path"], item["line_number"], item["is_context"])),
+    )
+
+
+def _read_context_lines(path: Path, requested_lines: set[int]) -> dict[int, str]:
+    if not requested_lines:
+        return {}
+    wanted = set(requested_lines)
+    max_line = max(wanted)
+    found: dict[int, str] = {}
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if line_number in wanted:
+                found[line_number] = line.rstrip("\r\n")
+                if len(found) == len(wanted):
+                    break
+            if line_number >= max_line:
+                break
+    return found
 
 
 def _bytes_end_with_line_boundary(value: bytes) -> bool:

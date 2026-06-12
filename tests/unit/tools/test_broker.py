@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import threading
 import time
+import io
 from hashlib import sha256
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import pytest
 
 from debug_agent.persistence.approval_grants import ApprovalGrantStore
@@ -21,8 +23,115 @@ from debug_agent.runtime.policy import (
     policy_facts_to_snapshot,
 )
 from debug_agent.tools.broker import FakeApprovalProvider, NonInteractiveApprovalProvider, ToolBroker
+import debug_agent.tools.native as native_tools
 from debug_agent.tools.native import NativeHandlerResult
 from debug_agent.tools.shell import FakeShellRunner
+
+
+def _rg_json_match(path: Path, line_number: int, line: str) -> str:
+    return json.dumps(
+        {
+            "type": "match",
+            "data": {
+                "path": {"text": str(path)},
+                "lines": {"text": line},
+                "line_number": line_number,
+            },
+        }
+    )
+
+
+def _install_basic_rg_stub(monkeypatch) -> None:
+    def fake_run(argv, **_kwargs):
+        if "--version" in argv:
+            return SimpleNamespace(returncode=0, stdout="ripgrep 14\n", stderr="")
+        if str(argv[-1]).endswith("regex-check.txt"):
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    def fake_matches(_rg, common_args, candidate, _timeout_seconds):
+        pattern = common_args[common_args.index("--regexp") + 1]
+        ignore_case = "-i" in common_args
+        candidate = Path(candidate)
+        try:
+            for line_number, line in enumerate(candidate.read_text(encoding="utf-8").splitlines(True), start=1):
+                haystack = line.casefold() if ignore_case else line
+                needle = pattern.casefold() if ignore_case else pattern
+                if needle in haystack:
+                    preview = line.rstrip("\r\n")
+                    yield {
+                        "path": str(candidate),
+                        "line_number": line_number,
+                        "line": preview,
+                        "is_context": False,
+                        "line_truncated": False,
+                    }
+        except UnicodeDecodeError:
+            return
+
+    monkeypatch.setattr(
+        native_tools,
+        "shutil",
+        SimpleNamespace(which=lambda name: "/usr/bin/rg"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        native_tools,
+        "subprocess",
+        SimpleNamespace(run=fake_run, TimeoutExpired=TimeoutError),
+        raising=False,
+    )
+    monkeypatch.setattr(native_tools, "_iter_ripgrep_matches", fake_matches)
+
+
+class _FakeRgProcess:
+    def __init__(self, *, stdout: str, returncode: int) -> None:
+        self.stdout = io.BytesIO(stdout.encode("utf-8"))
+        self.stderr = io.BytesIO(b"")
+        self.returncode = returncode
+        self.killed = False
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+
+def _install_popen_rg_stub(monkeypatch, *, calls, stdout_for_candidate) -> None:
+    def fake_run(argv, **kwargs):
+        calls.append({"kind": "run", "argv": list(argv), **kwargs})
+        if "--version" in argv:
+            return SimpleNamespace(returncode=0, stdout="ripgrep 14\n", stderr="")
+        if str(argv[-1]).endswith("regex-check.txt"):
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    def fake_popen(argv, **kwargs):
+        calls.append({"kind": "popen", "argv": list(argv), **kwargs})
+        stdout = stdout_for_candidate(Path(argv[-1]))
+        return _FakeRgProcess(stdout=stdout, returncode=0 if stdout else 1)
+
+    monkeypatch.setattr(
+        native_tools,
+        "shutil",
+        SimpleNamespace(which=lambda name: "/usr/bin/rg"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        native_tools,
+        "subprocess",
+        SimpleNamespace(
+            run=fake_run,
+            Popen=fake_popen,
+            PIPE=object(),
+            TimeoutExpired=TimeoutError,
+        ),
+        raising=False,
+    )
 
 
 class _RecordingTimeoutRouter:
@@ -696,8 +805,9 @@ def test_artifact_ids_or_runtime_references_do_not_bypass_sessions_deny(tmp_path
 
 
 def test_search_text_skips_denied_dirs_and_has_no_explicit_denied_dir_exception(
-    tmp_path,
+    tmp_path, monkeypatch
 ) -> None:
+    _install_basic_rg_stub(monkeypatch)
     runtime = _runtime(tmp_path, approval_mode="yolo")
     workspace = runtime["workspace"]
     facts = runtime["policy_facts"]
@@ -725,16 +835,25 @@ def test_search_text_skips_denied_dirs_and_has_no_explicit_denied_dir_exception(
     )
 
     assert default_search.status == "ok"
-    assert default_search.output == {
-        "matches": [{"path": "src/app.txt", "line": 1, "text": "needle app"}]
-    }
+    assert default_search.output["matches"] == [
+        {
+            "path": str((workspace / "src" / "app.txt").resolve()),
+            "line_number": 1,
+            "line": "needle app",
+            "is_context": False,
+            "line_truncated": False,
+        }
+    ]
+    assert default_search.output["skipped_files"]["denied"] == 0
+    assert default_search.output["skipped_files"]["hidden"] == 0
     assert explicit_denied.status == "denied"
     runtime["db"].close()
 
 
 def test_search_text_outside_workspace_returns_absolute_paths_when_allowed(
-    tmp_path,
+    tmp_path, monkeypatch
 ) -> None:
+    _install_basic_rg_stub(monkeypatch)
     outside_dir = tmp_path / "outside"
     outside_dir.mkdir()
     outside_file = outside_dir / "notes.txt"
@@ -752,11 +871,508 @@ def test_search_text_outside_workspace_returns_absolute_paths_when_allowed(
         "matches": [
             {
                 "path": str(outside_file.resolve()),
-                "line": 1,
-                "text": "needle outside",
+                "line_number": 1,
+                "line": "needle outside",
+                "is_context": False,
+                "line_truncated": False,
             }
-        ]
+        ],
+        "root": str(outside_dir.resolve()),
+        "pattern": "needle",
+        "output_mode": "content",
+        "offset": 0,
+        "maxResults": 100,
+        "total_returned": 1,
+        "truncated": False,
+        "next_offset": None,
+        "skipped_files": {"denied": 0, "hidden": 0, "decode_error": 0, "other": 0},
     }
+    runtime["db"].close()
+
+
+def test_search_text_missing_rg_fails_after_approval_without_cache_update(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    (runtime["workspace"] / "notes.txt").write_text("needle\n", encoding="utf-8")
+    monkeypatch.setattr(
+        native_tools,
+        "shutil",
+        SimpleNamespace(which=lambda name: None),
+        raising=False,
+    )
+
+    result = _invoke(runtime, "search_text", {"pattern": "needle"})
+
+    assert result.status == "error"
+    assert result.error["reason"] == "tool_execution_failed"
+    assert runtime["broker"].file_metadata_cache_snapshot() == {}
+    runtime["db"].close()
+
+
+def test_search_text_invalid_glob_wins_before_denied_path_policy(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+
+    result = _invoke(
+        runtime,
+        "search_text",
+        {"path": ".sessions", "pattern": "needle", "glob": "a**.py"},
+    )
+
+    assert result.status == "error"
+    assert result.error["reason"] == "tool_schema_invalid"
+    assert _event_kinds(runtime) == ["tool_call_failed"]
+    runtime["db"].close()
+
+
+def test_search_text_invokes_controlled_rg_and_returns_output_modes(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    workspace = runtime["workspace"]
+    src = workspace / "src"
+    src.mkdir()
+    first = src / "a.py"
+    second = src / "b.py"
+    first.write_text("before\nneedle one\nneedle two\n", encoding="utf-8")
+    second.write_text("NEEDLE upper\nneedle again\n", encoding="utf-8")
+    calls = []
+
+    def stdout_for_candidate(path: Path) -> str:
+        lines = []
+        if path == first:
+            lines = [
+                _rg_json_match(first, 2, "needle one\n"),
+                _rg_json_match(first, 3, "needle two\n"),
+            ]
+        elif path == second:
+            lines = [_rg_json_match(second, 2, "needle again\n")]
+        return "\n".join(lines)
+
+    _install_popen_rg_stub(
+        monkeypatch,
+        calls=calls,
+        stdout_for_candidate=stdout_for_candidate,
+    )
+
+    content = _invoke(
+        runtime,
+        "search_text",
+        {"path": "src", "pattern": "needle", "maxResults": 1, "after_context": 1},
+    )
+    files = _invoke(
+        runtime,
+        "search_text",
+        {"path": "src", "pattern": "needle", "output_mode": "files_with_matches"},
+    )
+    counts = _invoke(
+        runtime,
+        "search_text",
+        {"path": "src", "pattern": "needle", "output_mode": "count"},
+    )
+
+    search_calls = [call for call in calls if call["kind"] == "popen"]
+    assert content.status == "ok"
+    assert content.output["matches"] == [
+        {
+            "path": str(first.resolve()),
+            "line_number": 2,
+            "line": "needle one",
+            "is_context": False,
+            "line_truncated": False,
+        },
+        {
+            "path": str(first.resolve()),
+            "line_number": 3,
+            "line": "needle two",
+            "is_context": True,
+            "line_truncated": False,
+        },
+    ]
+    assert content.output["total_returned"] == 1
+    assert content.output["truncated"] is True
+    assert content.output["next_offset"] == 1
+    assert "paths" not in content.output
+    assert "counts" not in content.output
+    assert files.output["paths"] == [str(first.resolve()), str(second.resolve())]
+    assert "matches" not in files.output
+    assert counts.output["counts"] == [
+        {"path": str(first.resolve()), "count": 2},
+        {"path": str(second.resolve()), "count": 1},
+    ]
+    assert "matches" not in counts.output
+    assert all(call["argv"][0] == "/usr/bin/rg" for call in calls)
+    assert all("--no-config" in call["argv"] for call in calls)
+    assert all("--context" not in call["argv"] for call in search_calls)
+    assert all("--type" not in call["argv"] for call in search_calls)
+    assert all(call["env"].get("RIPGREP_CONFIG_PATH") is None for call in calls)
+    run_calls = [call for call in calls if call["kind"] == "run"]
+    assert all(call["capture_output"] and call["text"] and not call["check"] for call in run_calls)
+    assert all(call["stdout"] is native_tools.subprocess.PIPE for call in search_calls)
+    assert all(call["stderr"] is native_tools.subprocess.PIPE for call in search_calls)
+    assert all("text" not in call and not call["shell"] for call in search_calls)
+    assert runtime["broker"].file_metadata_cache_snapshot() == {}
+    runtime["db"].close()
+
+
+def test_search_text_preserves_symlink_candidate_identity_for_all_output_modes(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    workspace = runtime["workspace"]
+    src = workspace / "src"
+    src.mkdir()
+    target = src / "target.txt"
+    link_a = src / "link-a.txt"
+    link_b = src / "link-b.txt"
+    target.write_text("needle through symlink\n", encoding="utf-8")
+    link_a.symlink_to(target)
+    link_b.symlink_to(target)
+    calls = []
+
+    _install_popen_rg_stub(
+        monkeypatch,
+        calls=calls,
+        stdout_for_candidate=lambda _candidate: _rg_json_match(target, 1, "needle through symlink\n"),
+    )
+
+    content = _invoke(
+        runtime,
+        "search_text",
+        {"path": "src", "pattern": "needle", "glob": "link-*.txt"},
+    )
+    files = _invoke(
+        runtime,
+        "search_text",
+        {
+            "path": "src",
+            "pattern": "needle",
+            "glob": "link-*.txt",
+            "output_mode": "files_with_matches",
+        },
+    )
+    counts = _invoke(
+        runtime,
+        "search_text",
+        {
+            "path": "src",
+            "pattern": "needle",
+            "glob": "link-*.txt",
+            "output_mode": "count",
+        },
+    )
+
+    expected = sorted([str(link_a.absolute()), str(link_b.absolute())])
+    assert content.status == "ok"
+    assert sorted(match["path"] for match in content.output["matches"]) == expected
+    assert files.status == "ok"
+    assert files.output["paths"] == expected
+    assert counts.status == "ok"
+    assert counts.output["counts"] == [
+        {"path": expected[0], "count": 1},
+        {"path": expected[1], "count": 1},
+    ]
+    assert str(target.resolve()) not in files.output["paths"]
+    search_argvs = [call["argv"] for call in calls if call["kind"] == "popen"]
+    assert sorted(argv[-1] for argv in search_argvs) == sorted(expected * 3)
+    runtime["db"].close()
+
+
+def test_search_text_content_mode_retains_only_page_plus_truncation_probe(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    target = runtime["workspace"] / "notes.txt"
+    target.write_text("\n".join(f"needle {index}" for index in range(20)), encoding="utf-8")
+    max_retained = 0
+
+    class TrackingContentPager(native_tools._SearchContentPager):
+        def add(self, item):
+            nonlocal max_retained
+            super().add(item)
+            max_retained = max(max_retained, len(self.page) + int(self.truncated))
+
+    def fake_matches(_rg, _common_args, candidate, _timeout_seconds):
+        for index in range(20):
+            yield {
+                "path": str(candidate),
+                "line_number": index + 1,
+                "line": f"needle {index}",
+                "is_context": False,
+                "line_truncated": False,
+            }
+
+    _install_basic_rg_stub(monkeypatch)
+    monkeypatch.setattr(native_tools, "_SearchContentPager", TrackingContentPager)
+    monkeypatch.setattr(native_tools, "_iter_ripgrep_matches", fake_matches)
+
+    result = _invoke(
+        runtime,
+        "search_text",
+        {"path": "notes.txt", "pattern": "needle", "offset": 3, "maxResults": 2},
+    )
+
+    assert result.status == "ok"
+    assert [match["line_number"] for match in result.output["matches"]] == [4, 5]
+    assert result.output["total_returned"] == 2
+    assert result.output["truncated"] is True
+    assert result.output["next_offset"] == 5
+    assert max_retained <= 3
+    runtime["db"].close()
+
+
+def test_search_text_context_attachment_does_not_read_whole_file(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    target = runtime["workspace"] / "notes.txt"
+    target.write_text("before\nneedle\nmiddle\nafter\n", encoding="utf-8")
+
+    def fail_read_text(self, *args, **kwargs):
+        raise AssertionError("context attachment must not read the whole file")
+
+    _install_basic_rg_stub(monkeypatch)
+    monkeypatch.setattr(
+        native_tools,
+        "_iter_ripgrep_matches",
+        lambda _rg, _common_args, candidate, _timeout_seconds: iter(
+            [
+                {
+                    "path": str(candidate),
+                    "line_number": 2,
+                    "line": "needle",
+                    "is_context": False,
+                    "line_truncated": False,
+                }
+            ]
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+    result = _invoke(
+        runtime,
+        "search_text",
+        {"path": "notes.txt", "pattern": "needle", "before_context": 1, "after_context": 1},
+    )
+
+    assert result.status == "ok"
+    assert result.output["matches"] == [
+        {
+            "path": str(target.resolve()),
+            "line_number": 1,
+            "line": "before",
+            "is_context": True,
+            "line_truncated": False,
+        },
+        {
+            "path": str(target.resolve()),
+            "line_number": 2,
+            "line": "needle",
+            "is_context": False,
+            "line_truncated": False,
+        },
+        {
+            "path": str(target.resolve()),
+            "line_number": 3,
+            "line": "middle",
+            "is_context": True,
+            "line_truncated": False,
+        },
+    ]
+    runtime["db"].close()
+
+
+def test_search_text_streams_candidates_before_exhausting_candidate_iterator(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    workspace = runtime["workspace"]
+    first = workspace / "first.txt"
+    second = workspace / "second.txt"
+    first.write_text("needle first\n", encoding="utf-8")
+    second.write_text("needle second\n", encoding="utf-8")
+    searched_first = False
+
+    def fake_candidates(_context, _root, *, include_hidden, skipped):
+        yield first
+        if not searched_first:
+            raise AssertionError("candidate iterator was exhausted before first search")
+        yield second
+
+    def fake_matches(_rg, _common_args, candidate, _timeout_seconds):
+        nonlocal searched_first
+        if candidate == first:
+            searched_first = True
+        yield {
+            "path": str(candidate),
+            "line_number": 1,
+            "line": candidate.read_text(encoding="utf-8").strip(),
+            "is_context": False,
+            "line_truncated": False,
+        }
+
+    _install_basic_rg_stub(monkeypatch)
+    monkeypatch.setattr(native_tools, "_iter_search_candidate_files", fake_candidates)
+    monkeypatch.setattr(native_tools, "_iter_ripgrep_matches", fake_matches)
+
+    result = _invoke(
+        runtime,
+        "search_text",
+        {"path": ".", "pattern": "needle", "maxResults": 1},
+    )
+
+    assert result.status == "ok"
+    assert result.output["matches"] == [
+        {
+            "path": str(first),
+            "line_number": 1,
+            "line": "needle first",
+            "is_context": False,
+            "line_truncated": False,
+        }
+    ]
+    assert result.output["truncated"] is True
+    runtime["db"].close()
+
+
+def test_search_text_unknown_type_wins_before_denied_path_policy(tmp_path, monkeypatch) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    sessions = runtime["workspace"] / ".sessions"
+    sessions.mkdir(exist_ok=True)
+    _install_basic_rg_stub(monkeypatch)
+
+    result = _invoke(
+        runtime,
+        "search_text",
+        {"path": ".sessions", "pattern": "needle", "type": "unknown"},
+    )
+
+    assert result.status == "error"
+    assert result.error["reason"] == "tool_schema_invalid"
+    runtime["db"].close()
+
+
+def test_search_text_oversized_ripgrep_record_skips_candidate(tmp_path, monkeypatch) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    target = runtime["workspace"] / "notes.txt"
+    target.write_text("needle\n", encoding="utf-8")
+    calls = []
+    old_limit = native_tools.SEARCH_TEXT_RG_JSON_RECORD_BYTES
+    monkeypatch.setattr(native_tools, "SEARCH_TEXT_RG_JSON_RECORD_BYTES", 64)
+
+    def stdout_for_candidate(_path: Path) -> str:
+        return _rg_json_match(target, 1, "needle " + ("x" * old_limit) + "\n")
+
+    _install_popen_rg_stub(
+        monkeypatch,
+        calls=calls,
+        stdout_for_candidate=stdout_for_candidate,
+    )
+
+    result = _invoke(runtime, "search_text", {"path": "notes.txt", "pattern": "needle"})
+
+    assert result.status == "ok"
+    assert result.output["matches"] == []
+    assert result.output["skipped_files"] == {
+        "denied": 0,
+        "hidden": 0,
+        "decode_error": 0,
+        "other": 1,
+    }
+    runtime["db"].close()
+
+
+def test_search_text_ripgrep_bytes_decode_error_skips_record(tmp_path, monkeypatch) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    target = runtime["workspace"] / "notes.txt"
+    target.write_text("needle\n", encoding="utf-8")
+    calls = []
+
+    def stdout_for_candidate(_path: Path) -> str:
+        return json.dumps(
+            {
+                "type": "match",
+                "data": {
+                    "path": {"text": str(target)},
+                    "lines": {"bytes": [255]},
+                    "line_number": 1,
+                },
+            }
+        )
+
+    _install_popen_rg_stub(
+        monkeypatch,
+        calls=calls,
+        stdout_for_candidate=stdout_for_candidate,
+    )
+
+    result = _invoke(runtime, "search_text", {"path": "notes.txt", "pattern": "needle"})
+
+    assert result.status == "ok"
+    assert result.output["matches"] == []
+    assert result.output["skipped_files"] == {
+        "denied": 0,
+        "hidden": 0,
+        "decode_error": 1,
+        "other": 0,
+    }
+    runtime["db"].close()
+
+
+def test_search_text_filters_glob_type_hidden_decode_and_fixed_strings(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    workspace = runtime["workspace"]
+    (workspace / "src").mkdir()
+    py = workspace / "src" / "app.PY"
+    txt = workspace / "src" / "notes.txt"
+    hidden = workspace / ".hidden.txt"
+    bad = workspace / "src" / "bad.py"
+    py.write_text("needle py\n", encoding="utf-8")
+    txt.write_text("needle text\n", encoding="utf-8")
+    hidden.write_text("needle hidden\n", encoding="utf-8")
+    bad.write_bytes(b"\xff")
+    calls = []
+
+    def stdout_for_candidate(path: Path) -> str:
+        if path == py:
+            return _rg_json_match(py, 1, "needle py\n")
+        return ""
+
+    _install_popen_rg_stub(
+        monkeypatch,
+        calls=calls,
+        stdout_for_candidate=stdout_for_candidate,
+    )
+
+    result = _invoke(
+        runtime,
+        "search_text",
+        {
+            "pattern": "needle",
+            "glob": "src/**",
+            "type": "python",
+            "fixed_strings": True,
+        },
+    )
+
+    search_calls = [call["argv"] for call in calls if call["kind"] == "popen"]
+    assert result.status == "ok"
+    assert result.output["matches"][0]["path"] == str(py.resolve())
+    assert result.output["skipped_files"] == {
+        "denied": 0,
+        "hidden": 1,
+        "decode_error": 1,
+        "other": 0,
+    }
+    assert len(search_calls) == 1
+    assert "-F" in search_calls[0]
+    assert py.as_posix() == search_calls[0][-1]
+    assert all("--regexp" in argv for argv in search_calls)
+    assert not any(str(txt.resolve()) in item for argv in search_calls for item in argv)
+    assert not any(str(hidden.resolve()) in item for argv in search_calls for item in argv)
+    assert not any(str(bad.resolve()) in item for argv in search_calls for item in argv)
     runtime["db"].close()
 
 
@@ -1405,8 +2021,9 @@ def test_native_handlers_do_not_write_audit_events_directly(tmp_path) -> None:
 
 
 def test_tool_audit_payload_includes_broker_normalized_target_for_native_search_and_shell(
-    tmp_path,
+    tmp_path, monkeypatch
 ) -> None:
+    _install_basic_rg_stub(monkeypatch)
     runtime = _runtime(tmp_path, approval_mode="yolo")
     workspace = runtime["workspace"]
     (workspace / "src").mkdir()
@@ -1436,8 +2053,9 @@ def test_tool_audit_payload_includes_broker_normalized_target_for_native_search_
 
 
 def test_phase_3_5_search_defaults_participate_in_scope_and_audit_but_pagination_does_not(
-    tmp_path,
+    tmp_path, monkeypatch
 ) -> None:
+    _install_basic_rg_stub(monkeypatch)
     runtime = _runtime(tmp_path, approval_mode="normal")
     search_root = tmp_path / "outside-src"
     search_root.mkdir()
@@ -1478,7 +2096,10 @@ def test_phase_3_5_search_defaults_participate_in_scope_and_audit_but_pagination
     }
 
 
-def test_search_text_context_presence_is_checked_before_default_injection(tmp_path) -> None:
+def test_search_text_context_presence_is_checked_before_default_injection(
+    tmp_path, monkeypatch
+) -> None:
+    _install_basic_rg_stub(monkeypatch)
     runtime = _runtime(tmp_path, approval_mode="yolo")
     (runtime["workspace"] / "notes.txt").write_text("needle\n", encoding="utf-8")
 

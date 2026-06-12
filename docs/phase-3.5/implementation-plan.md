@@ -395,37 +395,37 @@ After Milestone 9 completes, trace/events integration verification passes, and t
 
 **Freeze/review checkpoint:** do not start write-tool tightening until `search_text` traversal, ripgrep isolation, pagination, and timeout behavior are reviewed.
 
-- [ ] Remove model-visible `search_text.query`; reject it as an unknown field.
-- [ ] Reject CR/LF in `search_text.pattern`.
-- [ ] Reject `multiline` as an unknown field.
-- [ ] Implement `output_mode` values `content`, `files_with_matches`, and `count`.
-- [ ] Implement `case_sensitive`, `fixed_strings`, `before_context`, `after_context`, `context`, `include_hidden`, `glob`, and `type`.
-- [ ] Implement `offset` default `0`, `maxResults` default `100`, `maxResults` hard maximum `1000`, integer minimum validation, and above-maximum `tool_error/tool_schema_invalid` behavior for `search_text`.
-- [ ] Preserve raw field presence so explicit `context` conflicts with explicit `before_context` or `after_context`.
-- [ ] Build candidate file list only after root approval.
-- [ ] Apply denied/hidden/symlink/glob/type filtering before ripgrep execution.
-- [ ] Use runtime-owned text type allowlist with case-insensitive file-family matching over candidate relative paths.
-- [ ] Verify `rg` availability for every call.
-- [ ] Validate regex patterns through ripgrep only when `fixed_strings=false`, using a runtime-owned empty UTF-8 temporary file.
-- [ ] Return empty success for empty candidate sets only after required availability/regex validation.
-- [ ] Invoke ripgrep with `shell=False`, controlled argv, `--json`, `--no-config`, `--regexp`, the pattern value, `--`, special-character-safe candidate path argv, and environment isolation from `RIPGREP_CONFIG_PATH`.
-- [ ] Parse ripgrep JSON and normalize records into documented result shapes.
-- [ ] Sort and paginate deterministically by canonical path and line ordering.
-- [ ] Attach content-mode context rows through bounded runtime reads after matching-line pagination.
-- [ ] Count matching lines once per line, not captures or repeated same-line submatches.
-- [ ] Emit aggregate `skipped_files` counters without denied path names or denied subtree traversal.
-- [ ] Pre-screen candidate files as UTF-8 and populate `skipped_files.decode_error` for UTF-8 pre-screen failures and ripgrep JSON byte payload decode failures without exposing path names for denied files.
-- [ ] Populate `skipped_files.other` for symlink escape, ordinary candidate stat/read/pre-screen failures, and ripgrep JSON records or line payloads that exceed internal parser safety limits.
-- [ ] Ensure runtime does not enter denied or hidden directory subtrees merely to compute `skipped_files.denied` or `skipped_files.hidden`.
-- [ ] Add tests proving no ripgrep context flags are used and context read/stat/decode failure after matching-line pagination returns `tool_error/tool_execution_failed` without a partial successful page.
-- [ ] Add tests for context rows repeating across adjacent pages, duplicate context-line de-duplication, match lines winning over context lines, and line previews over 4000 codepoints setting `line_truncated=true`.
-- [ ] Add tests proving only the active output-mode result field is present for `matches`, `paths`, or `counts`.
-- [ ] Add tests for `search_text.offset` and `maxResults` default injection, minimum validation, hard-maximum rejection, `total_returned`, `truncated`, and `next_offset = offset + total_returned` for all output modes.
-- [ ] Add tests for optional candidate chunking or argv-safety behavior while preserving canonical path and line ordering across chunks.
-- [ ] Add tests proving `fixed_strings=true` skips regex compilation after `rg` availability, while `fixed_strings=false` returns `tool_error/tool_execution_failed` with the documented ripgrep diagnostic form for regex compile failures.
-- [ ] Return timeout as `tool_error/tool_execution_timeout` without partial success or cache updates.
-- [ ] Add tests proving successful and timed-out `search_text` calls do not create or advance write-guard cache entries.
-- [ ] Run `uv run pytest tests/unit -v`.
+- [x] Remove model-visible `search_text.query`; reject it as an unknown field.
+- [x] Reject CR/LF in `search_text.pattern`.
+- [x] Reject `multiline` as an unknown field.
+- [x] Implement `output_mode` values `content`, `files_with_matches`, and `count`.
+- [x] Implement `case_sensitive`, `fixed_strings`, `before_context`, `after_context`, `context`, `include_hidden`, `glob`, and `type`.
+- [x] Implement `offset` default `0`, `maxResults` default `100`, `maxResults` hard maximum `1000`, integer minimum validation, and above-maximum `tool_error/tool_schema_invalid` behavior for `search_text`.
+- [x] Preserve raw field presence so explicit `context` conflicts with explicit `before_context` or `after_context`.
+- [x] Build candidate file list only after root approval.
+- [x] Apply denied/hidden/symlink/glob/type filtering before ripgrep execution.
+- [x] Use runtime-owned text type allowlist with case-insensitive file-family matching over candidate relative paths.
+- [x] Verify `rg` availability for every call.
+- [x] Validate regex patterns through ripgrep only when `fixed_strings=false`, using a runtime-owned empty UTF-8 temporary file.
+- [x] Return empty success for empty candidate sets only after required availability/regex validation.
+- [x] Invoke ripgrep with `shell=False`, controlled argv, `--json`, `--no-config`, `--regexp`, the pattern value, `--`, special-character-safe candidate path argv, and environment isolation from `RIPGREP_CONFIG_PATH`.
+- [x] Parse ripgrep JSON and normalize records into documented result shapes.
+- [x] Sort and paginate deterministically by canonical path and line ordering.
+- [x] Attach content-mode context rows through bounded runtime reads after matching-line pagination.
+- [x] Count matching lines once per line, not captures or repeated same-line submatches.
+- [x] Emit aggregate `skipped_files` counters without denied path names or denied subtree traversal.
+- [x] Pre-screen candidate files as UTF-8 and populate `skipped_files.decode_error` for UTF-8 pre-screen failures and ripgrep JSON byte payload decode failures without exposing path names for denied files.
+- [x] Populate `skipped_files.other` for symlink escape, ordinary candidate stat/read/pre-screen failures, and ripgrep JSON records or line payloads that exceed internal parser safety limits.
+- [x] Ensure runtime does not enter denied or hidden directory subtrees merely to compute `skipped_files.denied` or `skipped_files.hidden`.
+- [x] Add tests proving no ripgrep context flags are used and context read/stat/decode failure after matching-line pagination returns `tool_error/tool_execution_failed` without a partial successful page.
+- [x] Add tests for context rows repeating across adjacent pages, duplicate context-line de-duplication, match lines winning over context lines, and line previews over 4000 codepoints setting `line_truncated=true`.
+- [x] Add tests proving only the active output-mode result field is present for `matches`, `paths`, or `counts`.
+- [x] Add tests for `search_text.offset` and `maxResults` default injection, minimum validation, hard-maximum rejection, `total_returned`, `truncated`, and `next_offset = offset + total_returned` for all output modes.
+- [x] Add tests for optional candidate chunking or argv-safety behavior while preserving canonical path and line ordering across chunks.
+- [x] Add tests proving `fixed_strings=true` skips regex compilation after `rg` availability, while `fixed_strings=false` returns `tool_error/tool_execution_failed` with the documented ripgrep diagnostic form for regex compile failures.
+- [x] Return timeout as `tool_error/tool_execution_timeout` without partial success or cache updates.
+- [x] Add tests proving successful and timed-out `search_text` calls do not create or advance write-guard cache entries.
+- [x] Run `uv run pytest tests/unit -v`.
 
 ## Milestone 7: Stale-Write `edit_file` And `write_file`
 
