@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -40,6 +42,36 @@ class _NativeResultRouter:
         return self.result
 
 
+class _FakeClock:
+    def __init__(self) -> None:
+        self.current = 0.0
+
+    def monotonic(self) -> float:
+        return self.current
+
+    def advance(self, seconds: float) -> None:
+        self.current += seconds
+
+
+class _StartedEventAdvancingWriter:
+    def __init__(self, delegate, clock: _FakeClock, seconds: float) -> None:
+        self.delegate = delegate
+        self.clock = clock
+        self.seconds = seconds
+
+    def append(self, event):
+        result = self.delegate.append(event)
+        if event.kind == "tool_call_started":
+            self.clock.advance(self.seconds)
+        return result
+
+    def list_for_run(self, run_id):
+        return self.delegate.list_for_run(run_id)
+
+    def __getattr__(self, name):
+        return getattr(self.delegate, name)
+
+
 class _FailingArtifactWriteStore:
     def __init__(self, delegate):
         self.delegate = delegate
@@ -70,6 +102,70 @@ class _FailingArtifactRegistrationStore:
 
     def __getattr__(self, name):
         return getattr(self.delegate, name)
+
+
+class _SlowArtifactStore:
+    def __init__(self, delegate, delay_seconds: float) -> None:
+        self.delegate = delegate
+        self.delay_seconds = delay_seconds
+        self.sessions_root = delegate.sessions_root
+
+    def write_text(self, **kwargs):
+        time.sleep(self.delay_seconds)
+        return self.delegate.write_text(**kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.delegate, name)
+
+
+class _DeadlineCrossingArtifactStore(ArtifactStore):
+    def __init__(
+        self,
+        connection,
+        sessions_root,
+        *,
+        inserted: threading.Event,
+        release_commit: threading.Event,
+    ) -> None:
+        super().__init__(connection, sessions_root)
+        self.inserted = inserted
+        self.release_commit = release_commit
+
+    def _insert(self, **kwargs):
+        artifact = super()._insert(**kwargs)
+        self.inserted.set()
+        self.release_commit.wait(timeout=1)
+        return artifact
+
+
+class _CacheObservingSlowRouter:
+    def __init__(self, entered: threading.Event, release: threading.Event) -> None:
+        self.entered = entered
+        self.release = release
+
+    def route(self, context, arguments):
+        context.record_file_metadata(arguments["path"], source_tool="read_file")
+        self.entered.set()
+        self.release.wait(timeout=1)
+        return NativeHandlerResult(
+            status="ok",
+            output={"path": arguments["path"], "content": "ok"},
+        )
+
+
+class _CacheRecordingAfterTimeoutRouter:
+    def __init__(self, entered: threading.Event, release: threading.Event) -> None:
+        self.entered = entered
+        self.release = release
+
+    def route(self, context, arguments):
+        self.entered.set()
+        self.release.wait(timeout=1)
+        context.record_file_metadata(arguments["path"], source_tool="read_file")
+        return NativeHandlerResult(
+            status="ok",
+            output={"path": arguments["path"], "content": "late"},
+        )
 
 
 def _runtime(tmp_path, *, approval_mode: str = "normal", policy_facts=None):
@@ -165,9 +261,12 @@ def test_broker_uses_frozen_generic_tool_timeout_for_unspecified_native_tool(
     class RecordingFuture:
         timeout_seen = None
 
+        def __init__(self, result):
+            self._result = result
+
         def result(self, timeout=None):
             self.__class__.timeout_seen = timeout
-            return "ok"
+            return self._result
 
         def cancel(self):
             return False
@@ -177,8 +276,7 @@ def test_broker_uses_frozen_generic_tool_timeout_for_unspecified_native_tool(
             assert max_workers == 1
 
         def submit(self, fn, *args):
-            fn(*args)
-            return RecordingFuture()
+            return RecordingFuture(fn(*args))
 
         def shutdown(self, *, wait=True, cancel_futures=False):
             pass
@@ -790,6 +888,292 @@ def test_structured_native_field_artifact_failure_returns_error_without_exposed_
     runtime["db"].close()
 
 
+def test_structured_native_field_artifact_write_is_inside_timeout_envelope(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    target = runtime["workspace"] / "large.txt"
+    target.write_text("small", encoding="utf-8")
+    artifact_store = _SlowArtifactStore(runtime["artifacts"], delay_seconds=0.05)
+    runtime["broker"] = ToolBroker(
+        event_writer=runtime["events"],
+        artifact_store=artifact_store,
+        timeout_seconds=0.01,
+        router=_NativeResultRouter(
+            NativeHandlerResult(
+                status="ok",
+                output={
+                    "path": str(target.resolve()),
+                    "content": "x" * (16 * 1024 + 1),
+                    "sha256": "0" * 64,
+                    "bytes": 16 * 1024 + 1,
+                },
+                metadata={"tool_name": "read_file"},
+            )
+        ),
+    )
+
+    result = _invoke(runtime, "read_file", {"path": "large.txt"})
+
+    assert result.status == "timeout"
+    assert result.output is None
+    assert result.artifacts == []
+    assert result.error["error_class"] == "tool_error"
+    assert result.error["reason"] == "tool_execution_timeout"
+    failed = runtime["events"].list_for_run("run_1")[-1].payload
+    assert failed["arguments"]["path"] == str(target.resolve())
+    assert failed["artifact_ids"] == []
+    time.sleep(0.1)
+    assert runtime["artifacts"].list_for_session(runtime["session"].session_id) == []
+    runtime["db"].close()
+
+
+def test_started_audit_emission_does_not_consume_handler_timeout_envelope(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    target = runtime["workspace"] / "notes.txt"
+    target.write_text("small", encoding="utf-8")
+    clock = _FakeClock()
+    event_writer = _StartedEventAdvancingWriter(
+        runtime["events"],
+        clock,
+        seconds=1.0,
+    )
+    runtime["broker"] = ToolBroker(
+        event_writer=event_writer,
+        artifact_store=runtime["artifacts"],
+        timeout_seconds=0.5,
+        router=_NativeResultRouter(
+            NativeHandlerResult(
+                status="ok",
+                output={"path": str(target.resolve()), "content": "ok"},
+                metadata={"tool_name": "read_file"},
+            )
+        ),
+    )
+
+    monkeypatch.setattr("debug_agent.tools.broker.monotonic", clock.monotonic)
+
+    result = _invoke(runtime, "read_file", {"path": "notes.txt"})
+
+    assert result.status == "ok"
+    assert result.error is None
+    assert _event_kinds(runtime) == ["tool_call_started", "tool_call_completed"]
+    completed = runtime["events"].list_for_run("run_1")[-1].payload
+    assert completed["execution_duration_ms"] == 0
+    runtime["db"].close()
+
+
+def test_structured_native_field_artifact_commit_after_timeout_is_cleaned_up(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    target = runtime["workspace"] / "large.txt"
+    target.write_text("small", encoding="utf-8")
+    inserted = threading.Event()
+    release_commit = threading.Event()
+    artifact_store = _DeadlineCrossingArtifactStore(
+        runtime["db"].connection,
+        runtime["artifacts"].sessions_root,
+        inserted=inserted,
+        release_commit=release_commit,
+    )
+    runtime["broker"] = ToolBroker(
+        event_writer=runtime["events"],
+        artifact_store=artifact_store,
+        timeout_seconds=0.01,
+        router=_NativeResultRouter(
+            NativeHandlerResult(
+                status="ok",
+                output={
+                    "path": str(target.resolve()),
+                    "content": "x" * (16 * 1024 + 1),
+                    "sha256": "0" * 64,
+                    "bytes": 16 * 1024 + 1,
+                },
+                metadata={"tool_name": "read_file"},
+            )
+        ),
+    )
+
+    result = _invoke(runtime, "read_file", {"path": "large.txt"})
+    assert inserted.wait(timeout=1)
+    release_commit.set()
+    time.sleep(0.05)
+
+    assert result.status == "timeout"
+    assert result.artifacts == []
+    assert runtime["artifacts"].list_for_session(runtime["session"].session_id) == []
+    artifacts_dir = runtime["artifacts"].sessions_root / "sess_1" / "artifacts"
+    assert not any(artifacts_dir.iterdir())
+    runtime["db"].close()
+
+
+def test_final_tool_result_formatting_is_outside_timeout_envelope(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    target = runtime["workspace"] / "notes.txt"
+    target.write_text("small", encoding="utf-8")
+    runtime["broker"] = ToolBroker(
+        event_writer=runtime["events"],
+        artifact_store=runtime["artifacts"],
+        timeout_seconds=0.01,
+        router=_NativeResultRouter(
+            NativeHandlerResult(
+                status="ok",
+                output={"path": str(target.resolve()), "content": "ok"},
+                metadata={"tool_name": "read_file"},
+            )
+        ),
+    )
+    original = runtime["broker"]._tool_result_from_prepared
+
+    def slow_format(*args, **kwargs):
+        time.sleep(0.05)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runtime["broker"], "_tool_result_from_prepared", slow_format)
+
+    result = _invoke(runtime, "read_file", {"path": "notes.txt"})
+
+    assert result.status == "ok"
+    assert result.error is None
+    runtime["db"].close()
+
+
+def test_timeout_does_not_commit_staged_file_metadata_cache_updates(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    target = runtime["workspace"] / "notes.txt"
+    target.write_text("hello", encoding="utf-8")
+    entered = threading.Event()
+    release = threading.Event()
+    runtime["broker"] = ToolBroker(
+        event_writer=runtime["events"],
+        artifact_store=runtime["artifacts"],
+        timeout_seconds=0.01,
+        router=_CacheObservingSlowRouter(entered, release),
+    )
+
+    result = _invoke(runtime, "read_file", {"path": "notes.txt"})
+    release.set()
+
+    assert entered.is_set()
+    assert result.status == "timeout"
+    assert runtime["broker"].file_metadata_cache_snapshot() == {}
+    runtime["db"].close()
+
+
+def test_worker_continuing_after_timeout_cannot_advance_file_metadata_cache(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    target = runtime["workspace"] / "notes.txt"
+    target.write_text("hello", encoding="utf-8")
+    entered = threading.Event()
+    release = threading.Event()
+    runtime["broker"] = ToolBroker(
+        event_writer=runtime["events"],
+        artifact_store=runtime["artifacts"],
+        timeout_seconds=0.01,
+        router=_CacheRecordingAfterTimeoutRouter(entered, release),
+    )
+
+    result = _invoke(runtime, "read_file", {"path": "notes.txt"})
+    assert entered.is_set()
+    release.set()
+    time.sleep(0.05)
+
+    assert result.status == "timeout"
+    assert runtime["broker"].file_metadata_cache_snapshot() == {}
+    runtime["db"].close()
+
+
+def test_file_metadata_cache_is_process_local_and_starts_empty_for_new_broker(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    target = runtime["workspace"] / "notes.txt"
+    target.write_text("hello", encoding="utf-8")
+    stage = runtime["broker"]._stage_file_metadata_for_test(
+        target,
+        source_tool="read_file",
+    )
+    runtime["broker"]._commit_file_metadata_stage_for_test(stage)
+
+    fresh_broker = ToolBroker(
+        event_writer=runtime["events"],
+        artifact_store=runtime["artifacts"],
+    )
+
+    cache = runtime["broker"].file_metadata_cache_snapshot()
+    entry = cache[str(target.resolve())]
+    assert entry["sha256"] == sha256(b"hello").hexdigest()
+    assert entry["size"] == 5
+    assert isinstance(entry["mtime_ns"], int)
+    assert isinstance(entry["observed_at"], str)
+    assert entry["source_tool"] == "read_file"
+    assert fresh_broker.file_metadata_cache_snapshot() == {}
+    runtime["db"].close()
+
+
+def test_file_metadata_cache_rejects_sources_that_do_not_advance_write_guard(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    target = runtime["workspace"] / "notes.txt"
+    target.write_text("hello", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        runtime["broker"]._stage_file_metadata_for_test(target, source_tool="list_dir")
+
+    assert runtime["broker"].file_metadata_cache_snapshot() == {}
+    runtime["db"].close()
+
+
+def test_same_canonical_path_write_locks_serialize_in_process(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="semi-auto")
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    active = 0
+    max_active = 0
+    calls = 0
+    state_lock = threading.Lock()
+
+    def locked_section(path: str) -> None:
+        nonlocal active, calls, max_active
+        with runtime["broker"]._write_lock_for_path_for_test(path):
+            with state_lock:
+                calls += 1
+                call_number = calls
+                active += 1
+                max_active = max(max_active, active)
+            if call_number == 1:
+                first_entered.set()
+                release_first.wait(timeout=1)
+            try:
+                time.sleep(0.01)
+            finally:
+                with state_lock:
+                    active -= 1
+
+    first = threading.Thread(target=locked_section, args=("locked.txt",))
+    second = threading.Thread(target=locked_section, args=("./locked.txt",))
+    first.start()
+    assert first_entered.wait(timeout=1)
+    second.start()
+    time.sleep(0.02)
+    assert max_active == 1
+    release_first.set()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert calls == 2
+    assert max_active == 1
+    runtime["db"].close()
+
+
 def test_native_handlers_do_not_write_audit_events_directly(tmp_path) -> None:
     runtime = _runtime(tmp_path, approval_mode="normal")
     (runtime["workspace"] / "notes.txt").write_text("hello", encoding="utf-8")
@@ -991,7 +1375,7 @@ def test_approval_wait_duration_is_persisted_and_excluded_from_execution_duratio
     outside = tmp_path / "outside.txt"
     outside.write_text("secret", encoding="utf-8")
     runtime = _runtime(tmp_path, approval_mode="normal")
-    ticks = iter([10.0, 11.25, 11.5, 11.5, 11.75])
+    ticks = iter([10.0, 11.25, 11.5, 11.5, 11.5, 11.5, 11.75])
     monkeypatch.setattr("debug_agent.tools.broker.monotonic", lambda: next(ticks))
 
     result = _invoke(

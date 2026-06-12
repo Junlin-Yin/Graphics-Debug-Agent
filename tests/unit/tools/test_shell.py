@@ -267,11 +267,19 @@ def test_shell_cancelled_returns_tool_call_cancelled_result(tmp_path) -> None:
 
     result = _invoke(runtime, {"argv": ["sleep", "10"]})
 
+    failed = [
+        event.payload
+        for event in runtime["events"].list_for_run("run_1")
+        if event.kind == "tool_call_failed"
+    ][0]
     assert result.status == "cancelled"
     assert result.error["error_class"] == "cancelled"
     assert result.error["reason"] == "tool_call_cancelled"
     assert result.error["scope"] == "tool"
     assert result.metadata["tool_name"] == "shell_exec"
+    assert failed["arguments"]["argv"] == ["sleep", "10"]
+    assert failed["arguments"]["cwd"] == str(runtime["workspace"].resolve())
+    assert failed["arguments"]["effective_timeout_seconds"] == 5
     assert _event_kinds(runtime) == ["tool_call_started", "tool_call_failed"]
     runtime["db"].close()
 

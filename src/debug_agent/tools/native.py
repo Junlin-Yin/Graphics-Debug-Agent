@@ -14,6 +14,8 @@ class NativeToolContext(Protocol):
     workspace_root: Path
     permission_evaluator: PermissionEvaluator
 
+    def write_lock_for_path(self, path: str | Path): ...
+
 
 @dataclass(frozen=True)
 class NativeHandlerResult:
@@ -219,14 +221,15 @@ def search_text(context: NativeToolContext, arguments: dict[str, Any]) -> dict[s
     return {"matches": matches}
 
 
-def write_file(_context: NativeToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+def write_file(context: NativeToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
     target = Path(arguments["path"])
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(arguments["content"], encoding="utf-8")
+    with context.write_lock_for_path(target):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(arguments["content"], encoding="utf-8")
     return {"path": target.as_posix(), "bytes": len(arguments["content"].encode("utf-8"))}
 
 
-def edit_file(_context: NativeToolContext, arguments: dict[str, Any]) -> NativeHandlerResult:
+def edit_file(context: NativeToolContext, arguments: dict[str, Any]) -> NativeHandlerResult:
     old_text = arguments["old_text"]
     if old_text == "":
         return NativeHandlerResult(
@@ -234,20 +237,21 @@ def edit_file(_context: NativeToolContext, arguments: dict[str, Any]) -> NativeH
             error_message="old_text must be non-empty.",
         )
     target = Path(arguments["path"])
-    raw = target.read_bytes()
-    text = raw.decode("utf-8")
-    line_ending = _dominant_line_ending(raw)
-    normalized = _normalize_lf(text)
-    old_normalized = _normalize_lf(old_text)
-    new_normalized = _normalize_lf(arguments["new_text"])
-    if old_normalized not in normalized:
-        return NativeHandlerResult(
-            status="error",
-            error_message="old_text was not found.",
-        )
-    replaced = normalized.replace(old_normalized, new_normalized, 1)
-    output_text = replaced.replace("\n", line_ending)
-    target.write_text(output_text, encoding="utf-8", newline="")
+    with context.write_lock_for_path(target):
+        raw = target.read_bytes()
+        text = raw.decode("utf-8")
+        line_ending = _dominant_line_ending(raw)
+        normalized = _normalize_lf(text)
+        old_normalized = _normalize_lf(old_text)
+        new_normalized = _normalize_lf(arguments["new_text"])
+        if old_normalized not in normalized:
+            return NativeHandlerResult(
+                status="error",
+                error_message="old_text was not found.",
+            )
+        replaced = normalized.replace(old_normalized, new_normalized, 1)
+        output_text = replaced.replace("\n", line_ending)
+        target.write_text(output_text, encoding="utf-8", newline="")
     return NativeHandlerResult(
         status="ok",
         output={

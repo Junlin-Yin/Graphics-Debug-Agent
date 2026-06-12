@@ -4,6 +4,7 @@ import json
 import hashlib
 import os
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -26,7 +27,10 @@ class ArtifactStore:
         content: str,
         metadata: dict,
         artifact_id: str | None = None,
+        deadline_check: Callable[[], None] | None = None,
     ) -> Artifact:
+        if deadline_check is not None:
+            deadline_check()
         artifact_id = artifact_id or f"art_{uuid4().hex}"
         relative_path = Path(session_id) / "artifacts" / Path(filename).name
         absolute_path = self._sessions_root() / relative_path
@@ -36,12 +40,18 @@ class ArtifactStore:
         )
         try:
             temp_path.write_text(content, encoding="utf-8")
+            if deadline_check is not None:
+                deadline_check()
             os.replace(temp_path, absolute_path)
+            if deadline_check is not None:
+                deadline_check()
         except Exception:
             temp_path.unlink(missing_ok=True)
             raise
         payload_sha256 = _payload_sha256(content.encode("utf-8"))
-        return self._insert(
+        if deadline_check is not None:
+            deadline_check()
+        artifact = self._insert(
             artifact_id=artifact_id,
             session_id=session_id,
             run_id=run_id,
@@ -49,6 +59,16 @@ class ArtifactStore:
             artifact_type="text",
             metadata={**metadata, "payload_sha256": payload_sha256},
         )
+        try:
+            if deadline_check is not None:
+                deadline_check()
+        except Exception:
+            self._delete_accepted_artifact(
+                artifact_id=artifact.artifact_id,
+                relative_path=artifact.relative_path,
+            )
+            raise
+        return artifact
 
     def register_existing_file(
         self,
@@ -157,6 +177,17 @@ class ArtifactStore:
         )
         self.connection.commit()
         return artifact
+
+    def _delete_accepted_artifact(self, *, artifact_id: str, relative_path: str) -> None:
+        self.connection.execute(
+            "DELETE FROM artifacts WHERE artifact_id = ?",
+            (artifact_id,),
+        )
+        self.connection.commit()
+        try:
+            (self._sessions_root() / relative_path).unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def _sessions_root(self) -> Path:
         return self.sessions_root.resolve()

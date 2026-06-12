@@ -32,6 +32,42 @@ def _config(response: str = "fake answer") -> dict:
     }
 
 
+def test_start_resumed_repl_starts_with_empty_file_metadata_cache(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "notes.txt"
+    target.write_text("hello", encoding="utf-8")
+    started = RuntimeOrchestrator(workspace_root=workspace).start_repl(_config())
+    assert started.runtime is not None
+    session_id = started.runtime.session_id
+    original_broker = started.runtime.executor.adapter.tool_broker
+    assert original_broker is not None
+    try:
+        stage = original_broker._stage_file_metadata_for_test(
+            target,
+            source_tool="read_file",
+        )
+        original_broker._commit_file_metadata_stage_for_test(stage)
+        original_cache = original_broker.file_metadata_cache_snapshot()
+        assert str(target.resolve()) in original_cache
+
+        started.runtime.run_turn("first prompt")
+        started.runtime.cancel_idle()
+    finally:
+        started.runtime.close()
+
+    resumed = RuntimeOrchestrator(workspace_root=workspace).start_resumed_repl(session_id)
+
+    assert resumed.runtime is not None
+    resumed_broker = resumed.runtime.executor.adapter.tool_broker
+    assert resumed_broker is not None
+    try:
+        assert resumed_broker is not original_broker
+        assert resumed_broker.file_metadata_cache_snapshot() == {}
+    finally:
+        resumed.runtime.close()
+
+
 def test_resume_revives_one_shot_same_lineage_without_conversation_append(
     tmp_path,
 ) -> None:

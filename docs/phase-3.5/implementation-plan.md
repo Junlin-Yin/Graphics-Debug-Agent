@@ -338,18 +338,18 @@ After Milestone 9 completes, trace/events integration verification passes, and t
 
 **Freeze/review checkpoint:** do not expose changed native tool handlers until Milestones 4A, 4B, and 4C have all been reviewed.
 
-- [ ] Start generic tool timeout measurement after interactive approval and before handler/traversal/provider/command work.
-- [ ] Include ArtifactStore registration and artifact writes inside the timeout envelope.
-- [ ] Keep approval wait, audit emission, and final result envelope formatting outside the timeout envelope.
-- [ ] Map brokered timeout to `status="timeout"` and `tool_error/tool_execution_timeout`.
-- [ ] Store normalized or redacted behavior-affecting arguments in ToolBroker audit events for timed-out and cancelled calls.
-- [ ] Add process-local volatile file metadata cache keyed by canonical absolute path.
-- [ ] Store cache entries with `sha256`, `size`, `mtime_ns`, `observed_at`, and `source_tool`.
-- [ ] Ensure cache entries can be created only by `read_file`, successful guarded `edit_file`, successful overwrite `write_file`, and successful create-new `write_file`.
-- [ ] Add resume tests proving the volatile file metadata cache starts empty and is not checkpoint or durable truth.
-- [ ] Add per-canonical-path in-process write serialization.
-- [ ] Add broker-level tests proving timed-out generic handler/traversal/read test seams return no partial success and do not advance the file metadata cache; real `search_text` timeout coverage belongs to Milestone 6.
-- [ ] Run `uv run pytest tests/unit -v`.
+- [x] Start generic tool timeout measurement after interactive approval and before handler/traversal/provider/command work.
+- [x] Include ArtifactStore registration and artifact writes inside the timeout envelope.
+- [x] Keep approval wait, audit emission, and final result envelope formatting outside the timeout envelope.
+- [x] Map brokered timeout to `status="timeout"` and `tool_error/tool_execution_timeout`.
+- [x] Store normalized or redacted behavior-affecting arguments in ToolBroker audit events for timed-out and cancelled calls.
+- [x] Add process-local volatile file metadata cache keyed by canonical absolute path.
+- [x] Store cache entries with `sha256`, `size`, `mtime_ns`, `observed_at`, and `source_tool`.
+- [x] Ensure cache entries can be created only by `read_file`, successful guarded `edit_file`, successful overwrite `write_file`, and successful create-new `write_file`.
+- [x] Add resume tests proving the volatile file metadata cache starts empty and is not checkpoint or durable truth.
+- [x] Add per-canonical-path in-process write serialization.
+- [x] Add broker-level tests proving timed-out generic handler/traversal/read test seams return no partial success and do not advance the file metadata cache; real `search_text` timeout coverage belongs to Milestone 6.
+- [x] Run `uv run pytest tests/unit -v`.
 
 ## Milestone 5: Portable Glob, `find_file`, `read_file`, And `list_dir`
 

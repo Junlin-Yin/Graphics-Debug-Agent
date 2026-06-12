@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from contextlib import contextmanager
 from copy import deepcopy
 from hashlib import sha256
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
@@ -48,6 +50,14 @@ _FIELD_ARTIFACT_ORDER = (
     ("search_text", "counts"),
     ("shell_exec", "stdout"),
     ("shell_exec", "stderr"),
+)
+
+_CACHE_ADVANCING_SOURCE_TOOLS = frozenset(
+    {
+        "read_file",
+        "edit_file",
+        "write_file",
+    }
 )
 
 
@@ -106,6 +116,109 @@ class NormalizedBrokerArguments:
 
 
 @dataclass(frozen=True)
+class FileMetadataCacheEntry:
+    sha256: str
+    size: int
+    mtime_ns: int
+    observed_at: str
+    source_tool: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sha256": self.sha256,
+            "size": self.size,
+            "mtime_ns": self.mtime_ns,
+            "observed_at": self.observed_at,
+            "source_tool": self.source_tool,
+        }
+
+
+@dataclass(frozen=True)
+class PreparedToolResult:
+    status: str
+    output: Any = None
+    error_message: str | None = None
+    error_class: str = "tool_error"
+    reason: str | None = None
+    artifacts: tuple[Any, ...] = ()
+    metadata: dict[str, Any] | None = None
+    redacted_output: Any = None
+
+
+class _ToolDeadlineExceeded(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class _ToolDeadline:
+    expires_at: float
+
+    def check(self) -> None:
+        if monotonic() >= self.expires_at:
+            raise _ToolDeadlineExceeded
+
+
+class FileMetadataCache:
+    def __init__(self) -> None:
+        self._entries: dict[str, FileMetadataCacheEntry] = {}
+        self._lock = threading.RLock()
+
+    def snapshot(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            return {path: entry.to_dict() for path, entry in self._entries.items()}
+
+    def commit(self, updates: list[tuple[str, FileMetadataCacheEntry]]) -> None:
+        if not updates:
+            return
+        with self._lock:
+            for path, entry in updates:
+                self._entries[path] = entry
+
+
+class FileMetadataUpdateStage:
+    def __init__(self, cache: FileMetadataCache) -> None:
+        self._cache = cache
+        self._updates: list[tuple[str, FileMetadataCacheEntry]] = []
+        self._lock = threading.Lock()
+        self._abandoned = False
+
+    def record(self, path: str | Path, *, source_tool: str) -> None:
+        update = _file_metadata_update(path, source_tool=source_tool)
+        with self._lock:
+            if self._abandoned:
+                return
+            self._updates.append(update)
+
+    def take_updates(self) -> list[tuple[str, FileMetadataCacheEntry]]:
+        with self._lock:
+            if self._abandoned:
+                self._updates.clear()
+                return []
+            updates = list(self._updates)
+            self._updates.clear()
+            return updates
+
+    def abandon(self) -> None:
+        with self._lock:
+            self._abandoned = True
+            self._updates.clear()
+
+
+class WriteLockRegistry:
+    def __init__(self) -> None:
+        self._locks: dict[str, threading.RLock] = {}
+        self._registry_lock = threading.Lock()
+
+    @contextmanager
+    def lock_for_path(self, path: str | Path):
+        canonical = str(Path(path).resolve())
+        with self._registry_lock:
+            lock = self._locks.setdefault(canonical, threading.RLock())
+        with lock:
+            yield
+
+
+@dataclass(frozen=True)
 class ToolUseContext:
     session_id: str
     run_id: str
@@ -130,6 +243,18 @@ class ToolUseContext:
     provider_cancellation_registry: Any = None
     effective_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS
     cancellation_timeout_seconds: float = 10
+    file_metadata_cache_stage: FileMetadataUpdateStage | None = None
+    write_lock_registry: WriteLockRegistry | None = None
+
+    def record_file_metadata(self, path: str | Path, *, source_tool: str) -> None:
+        if self.file_metadata_cache_stage is None:
+            raise RuntimeError("File metadata cache stage is unavailable.")
+        self.file_metadata_cache_stage.record(path, source_tool=source_tool)
+
+    def write_lock_for_path(self, path: str | Path):
+        if self.write_lock_registry is None:
+            raise RuntimeError("Write lock registry is unavailable.")
+        return self.write_lock_registry.lock_for_path(path)
 
 
 class ToolRouter:
@@ -178,6 +303,8 @@ class ToolBroker:
         self.event_writer = event_writer
         self.artifact_store = artifact_store
         self.timeout_seconds = timeout_seconds
+        self._file_metadata_cache = FileMetadataCache()
+        self._write_locks = WriteLockRegistry()
         definitions = [
             *tool_definitions(),
             view_image_tools.tool_definition(),
@@ -186,6 +313,24 @@ class ToolBroker:
         ]
         self._definitions = {definition.name: definition for definition in definitions}
         self._router = router or ToolRouter()
+
+    def file_metadata_cache_snapshot(self) -> dict[str, dict[str, Any]]:
+        return self._file_metadata_cache.snapshot()
+
+    def _stage_file_metadata_for_test(
+        self, path: str | Path, *, source_tool: str
+    ) -> FileMetadataUpdateStage:
+        stage = FileMetadataUpdateStage(self._file_metadata_cache)
+        stage.record(path, source_tool=source_tool)
+        return stage
+
+    def _commit_file_metadata_stage_for_test(
+        self, stage: FileMetadataUpdateStage
+    ) -> None:
+        self._file_metadata_cache.commit(stage.take_updates())
+
+    def _write_lock_for_path_for_test(self, path: str | Path):
+        return self._write_locks.lock_for_path(path)
 
     def invoke(
         self,
@@ -560,7 +705,24 @@ class ToolBroker:
                 )
                 return result
 
+        self._write_event(
+            session_id=session_id,
+            run_id=run_id,
+            kind="tool_call_started",
+            audit_recorder=tool_audit_recorder,
+            payload={
+                "tool_name": tool_name,
+                "arguments": _audit_arguments(
+                    tool_name=tool_name,
+                    arguments=normalized_arguments,
+                ),
+                "status": "started",
+            },
+        )
+
         execution_start = monotonic()
+        deadline = _ToolDeadline(execution_start + route_timeout_seconds)
+        cache_stage = FileMetadataUpdateStage(self._file_metadata_cache)
         tool_context = ToolUseContext(
             session_id=session_id,
             run_id=run_id,
@@ -588,28 +750,25 @@ class ToolBroker:
             cancellation_timeout_seconds=_effective_cancellation_timeout(
                 frozen_config=context.get("frozen_config", {})
             ),
-        )
-        self._write_event(
-            session_id=session_id,
-            run_id=run_id,
-            kind="tool_call_started",
-            audit_recorder=tool_audit_recorder,
-            payload={
-                "tool_name": tool_name,
-                "arguments": _audit_arguments(
-                    tool_name=tool_name,
-                    arguments=normalized_arguments,
-                ),
-                "status": "started",
-            },
+            file_metadata_cache_stage=cache_stage,
+            write_lock_registry=self._write_locks,
         )
 
         executor: ThreadPoolExecutor | None = None
         try:
             executor = ThreadPoolExecutor(max_workers=1)
-            future = executor.submit(self._router.route, tool_context, normalized_arguments)
-            handler_output = future.result(timeout=route_timeout_seconds)
-        except TimeoutError:
+            future = executor.submit(
+                self._execute_tool_call_inside_timeout,
+                session_id,
+                run_id,
+                tool_name,
+                tool_context,
+                normalized_arguments,
+                deadline,
+            )
+            prepared = future.result(timeout=route_timeout_seconds)
+        except (TimeoutError, _ToolDeadlineExceeded):
+            cache_stage.abandon()
             future.cancel()
             if executor is not None:
                 executor.shutdown(wait=False, cancel_futures=True)
@@ -664,13 +823,12 @@ class ToolBroker:
         else:
             if executor is not None:
                 executor.shutdown(wait=True)
-
         try:
-            result = self._handler_result(
+            result = self._tool_result_from_prepared(
                 session_id=session_id,
                 run_id=run_id,
                 tool_name=tool_name,
-                output=handler_output,
+                prepared=prepared,
             )
         except Exception as exc:
             result = tool_error_result(str(exc), source=tool_name)
@@ -690,6 +848,10 @@ class ToolBroker:
                 ),
             )
             return result
+        if result.status == "ok":
+            self._file_metadata_cache.commit(cache_stage.take_updates())
+        else:
+            cache_stage.abandon()
         event_kind = "tool_call_completed" if result.status == "ok" else "tool_call_failed"
         self._write_event(
             session_id=session_id,
@@ -714,6 +876,232 @@ class ToolBroker:
         )
         return result
 
+    def _execute_tool_call_inside_timeout(
+        self,
+        session_id: str,
+        run_id: str,
+        tool_name: str,
+        tool_context: ToolUseContext,
+        normalized_arguments: dict[str, Any],
+        deadline: _ToolDeadline,
+    ) -> PreparedToolResult:
+        deadline.check()
+        handler_output = self._router.route(tool_context, normalized_arguments)
+        deadline.check()
+        return self._prepare_handler_result(
+            session_id=session_id,
+            run_id=run_id,
+            tool_name=tool_name,
+            output=handler_output,
+            deadline_check=deadline.check,
+        )
+
+    def _prepare_handler_result(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        tool_name: str,
+        output: str | dict[str, Any] | NativeHandlerResult,
+        deadline_check: Any = None,
+    ) -> PreparedToolResult:
+        if isinstance(output, NativeHandlerResult):
+            if output.status == "error":
+                return PreparedToolResult(
+                    status="error",
+                    error_message=output.error_message or "Tool failed.",
+                    reason=output.reason or "tool_execution_failed",
+                    metadata=output.metadata or {},
+                )
+            return self._prepare_native_ok_result(
+                session_id=session_id,
+                run_id=run_id,
+                tool_name=tool_name,
+                output=output.output or {},
+                metadata=output.metadata or {},
+                deadline_check=deadline_check,
+            )
+        if isinstance(output, ViewImageResult):
+            if output.status == "ok":
+                artifacts: tuple[Any, ...] = ()
+                if (
+                    output.raw_provider_text is not None
+                    and len(output.raw_provider_text.encode("utf-8"))
+                    > LARGE_OUTPUT_THRESHOLD_BYTES
+                ):
+                    artifact = self.artifact_store.write_text(
+                        session_id=session_id,
+                        run_id=run_id,
+                        artifact_id=f"art_{uuid4().hex}",
+                        filename=f"{tool_name}_raw_provider_output.txt",
+                        content=output.raw_provider_text,
+                        metadata={
+                            "tool_name": tool_name,
+                            "bytes": len(output.raw_provider_text.encode("utf-8")),
+                            "source": "raw_provider_output",
+                        },
+                        deadline_check=deadline_check,
+                    )
+                    artifacts = (artifact,)
+                return PreparedToolResult(
+                    status="view_image",
+                    output=output,
+                    artifacts=artifacts,
+                )
+            return PreparedToolResult(
+                status="view_image",
+                output=output,
+            )
+        if isinstance(output, ShellHandlerResult):
+            if output.status == "cancelled":
+                return PreparedToolResult(
+                    status="cancelled",
+                    error_message=output.error_message or "Tool call cancelled.",
+                    metadata={"tool_name": tool_name, **(output.metadata or {})},
+                )
+            if output.status == "timeout":
+                return PreparedToolResult(
+                    status="timeout",
+                    metadata=output.metadata or {},
+                )
+            if output.status == "error":
+                return PreparedToolResult(
+                    status="error",
+                    error_message=output.error_message or "Tool failed.",
+                    reason=output.reason or "tool_execution_failed",
+                    metadata=output.metadata or {},
+                )
+            return self._prepare_native_ok_result(
+                session_id=session_id,
+                run_id=run_id,
+                tool_name=tool_name,
+                output=output.output or {"stdout": "", "stderr": "", "returncode": 0},
+                metadata=output.metadata or {},
+                deadline_check=deadline_check,
+            )
+        if isinstance(output, RuntimeControlHandlerResult):
+            if output.status == "denied":
+                return PreparedToolResult(
+                    status="denied",
+                    error_message=output.error_message
+                    or "Runtime-control target denied.",
+                    error_class=output.error_class,
+                    reason="tool_schema_invalid"
+                    if output.error_class == "tool_error"
+                    else None,
+                )
+            if output.status == "error":
+                return PreparedToolResult(
+                    status="error",
+                    error_message=output.error_message or "Tool failed.",
+                    metadata=output.metadata or {},
+                )
+            return PreparedToolResult(
+                status="ok",
+                output=output.output or {},
+                metadata=output.metadata or {},
+                redacted_output=(output.metadata or {}).get("redacted_output")
+                if tool_name == "todo" and output.metadata is not None
+                else None,
+            )
+        return self._prepare_ok_result(
+            session_id=session_id,
+            run_id=run_id,
+            tool_name=tool_name,
+            output=output,
+            metadata={},
+            deadline_check=deadline_check,
+        )
+
+    def _tool_result_from_prepared(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        tool_name: str,
+        prepared: PreparedToolResult,
+    ) -> ToolResult:
+        metadata = prepared.metadata or {}
+        if prepared.status == "error":
+            return tool_error_result(
+                prepared.error_message or "Tool failed.",
+                source=tool_name,
+                metadata=metadata,
+                reason=prepared.reason or "tool_execution_failed",
+            )
+        if prepared.status == "timeout":
+            return _timeout_result(
+                float(metadata.get("effective_timeout_seconds", 0)),
+                metadata=metadata,
+            )
+        if prepared.status == "cancelled":
+            return _cancelled_tool_result(
+                prepared.error_message or "Tool call cancelled.",
+                metadata=metadata,
+            )
+        if prepared.status == "denied":
+            return _denied_result(
+                prepared.error_message or "Runtime-control target denied.",
+                error_class=prepared.error_class,
+                reason=prepared.reason,
+            )
+        if prepared.status == "view_image":
+            view_output = prepared.output
+            result = view_image_tools.tool_result_from_view_image(
+                view_output, source=tool_name
+            )
+            if result.status == "ok" and prepared.artifacts:
+                for artifact in prepared.artifacts:
+                    self._write_event(
+                        session_id=session_id,
+                        run_id=run_id,
+                        kind="artifact_registered",
+                        payload={
+                            "artifact_id": artifact.artifact_id,
+                            "artifact_type": artifact.artifact_type,
+                            "relative_path": artifact.relative_path,
+                            "metadata": artifact.metadata,
+                        },
+                    )
+                return ToolResult(
+                    status=result.status,
+                    output=result.output,
+                    error=result.error,
+                    artifacts=[artifact.artifact_id for artifact in prepared.artifacts],
+                    metadata=result.metadata,
+                    redacted_output=result.redacted_output,
+                )
+            return result
+        if prepared.status == "ok":
+            if prepared.redacted_output is not None and tool_name == "todo":
+                return ToolResult(
+                    status="ok",
+                    output=prepared.output,
+                    error=None,
+                    artifacts=[artifact.artifact_id for artifact in prepared.artifacts],
+                    metadata={
+                        key: value
+                        for key, value in metadata.items()
+                        if key != "redacted_output"
+                    },
+                    redacted_output=prepared.redacted_output,
+                )
+            for artifact in prepared.artifacts:
+                self._write_artifact_registered_event(
+                    session_id=session_id,
+                    run_id=run_id,
+                    artifact=artifact,
+                )
+            return ToolResult(
+                status="ok",
+                output=prepared.output,
+                error=None,
+                artifacts=[artifact.artifact_id for artifact in prepared.artifacts],
+                metadata=metadata,
+                redacted_output=prepared.redacted_output,
+            )
+        return tool_error_result("Tool failed.", source=tool_name)
+
     def _handler_result(
         self,
         *,
@@ -722,126 +1110,54 @@ class ToolBroker:
         tool_name: str,
         output: str | dict[str, Any] | NativeHandlerResult,
     ) -> ToolResult:
-        if isinstance(output, NativeHandlerResult):
-            if output.status == "error":
-                return tool_error_result(
-                    output.error_message or "Tool failed.",
-                    source=tool_name,
-                    metadata=output.metadata or {},
-                    reason=output.reason or "tool_execution_failed",
-                )
-            return self._native_ok_result(
-                session_id=session_id,
-                run_id=run_id,
-                tool_name=tool_name,
-                output=output.output or {},
-                metadata=output.metadata or {},
-            )
-        if isinstance(output, ViewImageResult):
-            result = view_image_tools.tool_result_from_view_image(output, source=tool_name)
-            if (
-                result.status == "ok"
-                and output.raw_provider_text is not None
-                and len(output.raw_provider_text.encode("utf-8"))
-                > LARGE_OUTPUT_THRESHOLD_BYTES
-            ):
-                artifact = self.artifact_store.write_text(
-                    session_id=session_id,
-                    run_id=run_id,
-                    artifact_id=f"art_{uuid4().hex}",
-                    filename=f"{tool_name}_raw_provider_output.txt",
-                    content=output.raw_provider_text,
-                    metadata={
-                        "tool_name": tool_name,
-                        "bytes": len(output.raw_provider_text.encode("utf-8")),
-                        "source": "raw_provider_output",
-                    },
-                )
-                self._write_event(
-                    session_id=session_id,
-                    run_id=run_id,
-                    kind="artifact_registered",
-                    payload={
-                        "artifact_id": artifact.artifact_id,
-                        "artifact_type": artifact.artifact_type,
-                        "relative_path": artifact.relative_path,
-                        "metadata": artifact.metadata,
-                    },
-                )
-                return ToolResult(
-                    status=result.status,
-                    output=result.output,
-                    error=result.error,
-                    artifacts=[artifact.artifact_id],
-                    metadata=result.metadata,
-                    redacted_output=result.redacted_output,
-                )
-            return result
-        if isinstance(output, ShellHandlerResult):
-            if output.status == "cancelled":
-                return _cancelled_tool_result(
-                    output.error_message or "Tool call cancelled.",
-                    metadata={"tool_name": tool_name, **(output.metadata or {})},
-                )
-            if output.status == "timeout":
-                return _timeout_result(
-                    float((output.metadata or {}).get("effective_timeout_seconds", 0)),
-                    metadata=output.metadata or {},
-                )
-            if output.status == "error":
-                return tool_error_result(
-                    output.error_message or "Tool failed.",
-                    source=tool_name,
-                    metadata=output.metadata or {},
-                    reason=output.reason or "tool_execution_failed",
-                )
-            return self._native_ok_result(
-                session_id=session_id,
-                run_id=run_id,
-                tool_name=tool_name,
-                output=output.output or {"stdout": "", "stderr": "", "returncode": 0},
-                metadata=output.metadata or {},
-            )
-        if isinstance(output, RuntimeControlHandlerResult):
-            if output.status == "denied":
-                return _denied_result(
-                    output.error_message or "Runtime-control target denied.",
-                    error_class=output.error_class,
-                    reason="tool_schema_invalid"
-                    if output.error_class == "tool_error"
-                    else None,
-                )
-            if output.status == "error":
-                return tool_error_result(output.error_message or "Tool failed.", source=tool_name)
-            result = self._ok_result(
-                session_id=session_id,
-                run_id=run_id,
-                tool_name=tool_name,
-                output=output.output or {},
-                metadata=output.metadata or {},
-            )
-            if (
-                tool_name == "todo"
-                and output.metadata is not None
-                and "redacted_output" in output.metadata
-            ):
-                metadata = dict(result.metadata)
-                redacted_output = metadata.pop("redacted_output")
-                return ToolResult(
-                    status=result.status,
-                    output=result.output,
-                    error=result.error,
-                    artifacts=result.artifacts,
-                    metadata=metadata,
-                    redacted_output=redacted_output,
-                )
-            return result
-        return self._ok_result(
+        return self._tool_result_from_prepared(
             session_id=session_id,
             run_id=run_id,
             tool_name=tool_name,
+            prepared=self._prepare_handler_result(
+                session_id=session_id,
+                run_id=run_id,
+                tool_name=tool_name,
+                output=output,
+            ),
+        )
+
+    def _prepare_ok_result(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        tool_name: str,
+        output: str | dict[str, Any],
+        metadata: dict[str, Any],
+        deadline_check: Any = None,
+    ) -> PreparedToolResult:
+        artifact_text = _artifact_text(output)
+        output_size = len(artifact_text.encode("utf-8"))
+        if output_size > LARGE_OUTPUT_THRESHOLD_BYTES:
+            artifact = self.artifact_store.write_text(
+                session_id=session_id,
+                run_id=run_id,
+                artifact_id=f"art_{uuid4().hex}",
+                filename=f"{tool_name}_output.txt",
+                content=artifact_text,
+                metadata={
+                    "tool_name": tool_name,
+                    "bytes": output_size,
+                },
+                deadline_check=deadline_check,
+            )
+            return PreparedToolResult(
+                status="ok",
+                output=None,
+                artifacts=(artifact,),
+                metadata={"bytes": output_size, **metadata},
+                redacted_output=f"[output stored as artifact: {artifact.artifact_id}]",
+            )
+        return PreparedToolResult(
+            status="ok",
             output=output,
-            metadata={},
+            metadata=metadata,
         )
 
     def _ok_result(
@@ -904,34 +1220,51 @@ class ToolBroker:
         output: dict[str, Any],
         metadata: dict[str, Any],
     ) -> ToolResult:
+        return self._tool_result_from_prepared(
+            session_id=session_id,
+            run_id=run_id,
+            tool_name=tool_name,
+            prepared=self._prepare_native_ok_result(
+                session_id=session_id,
+                run_id=run_id,
+                tool_name=tool_name,
+                output=output,
+                metadata=metadata,
+            ),
+        )
+
+    def _prepare_native_ok_result(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        tool_name: str,
+        output: dict[str, Any],
+        metadata: dict[str, Any],
+        deadline_check: Any = None,
+    ) -> PreparedToolResult:
         artifacted_output, artifacts = self._field_artifacted_native_output(
             session_id=session_id,
             run_id=run_id,
             tool_name=tool_name,
             output=output,
+            deadline_check=deadline_check,
         )
         if artifacted_output is None:
-            return tool_error_result(
-                (
+            return PreparedToolResult(
+                status="error",
+                error_message=(
                     "Native tool output exceeded the durable inline threshold after "
                     "field-level artifacting; narrow the request or reduce pagination."
                 ),
-                source=tool_name,
+                reason="tool_execution_failed",
                 metadata=metadata,
             )
-        for artifact in artifacts:
-            self._write_artifact_registered_event(
-                session_id=session_id,
-                run_id=run_id,
-                artifact=artifact,
-            )
-        return ToolResult(
+        return PreparedToolResult(
             status="ok",
             output=artifacted_output,
-            error=None,
-            artifacts=[artifact.artifact_id for artifact in artifacts],
+            artifacts=tuple(artifacts),
             metadata=metadata,
-            redacted_output=None,
         )
 
     def _field_artifacted_native_output(
@@ -941,6 +1274,7 @@ class ToolBroker:
         run_id: str,
         tool_name: str,
         output: dict[str, Any],
+        deadline_check: Any = None,
     ) -> tuple[dict[str, Any] | None, list[Any]]:
         normalized = deepcopy(output)
         if _observation_size(normalized) <= LARGE_OUTPUT_THRESHOLD_BYTES:
@@ -955,6 +1289,7 @@ class ToolBroker:
                 tool_name=tool_name,
                 field_name=field_name,
                 value=normalized[field_name],
+                deadline_check=deadline_check,
             )
             normalized[field_name] = _artifact_reference(artifact)
             artifacts.append(artifact)
@@ -972,6 +1307,7 @@ class ToolBroker:
         tool_name: str,
         field_name: str,
         value: Any,
+        deadline_check: Any = None,
     ):
         content = _artifact_text(value)
         content_bytes = content.encode("utf-8")
@@ -986,6 +1322,7 @@ class ToolBroker:
                 "field": field_name,
                 "bytes": len(content_bytes),
             },
+            deadline_check=deadline_check,
         )
         return artifact
 
@@ -1181,6 +1518,29 @@ def _copy_schema_default(default: Any) -> Any:
     if isinstance(default, (dict, list)):
         return json.loads(json.dumps(default))
     return default
+
+
+def _file_metadata_update(
+    path: str | Path, *, source_tool: str
+) -> tuple[str, FileMetadataCacheEntry]:
+    if source_tool not in _CACHE_ADVANCING_SOURCE_TOOLS:
+        raise ValueError(f"{source_tool} is not allowed to update file metadata cache.")
+    canonical = Path(path).resolve()
+    stat_result = canonical.stat()
+    digest = sha256()
+    with canonical.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return (
+        str(canonical),
+        FileMetadataCacheEntry(
+            sha256=digest.hexdigest(),
+            size=stat_result.st_size,
+            mtime_ns=stat_result.st_mtime_ns,
+            observed_at=utc_now_iso(),
+            source_tool=source_tool,
+        ),
+    )
 
 
 def _join_schema_path(prefix: str, key: str) -> str:
