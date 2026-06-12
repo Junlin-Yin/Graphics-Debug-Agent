@@ -497,7 +497,9 @@ def test_present_path_strings_are_trimmed_and_empty_paths_are_schema_invalid(
 
 def test_read_file_auto_allows_trusted_workspace_under_normal(tmp_path) -> None:
     runtime = _runtime(tmp_path, approval_mode="normal")
-    (runtime["workspace"] / "notes.txt").write_text("a\nb\nc\n", encoding="utf-8")
+    (runtime["workspace"] / "notes.txt").write_text(
+        "a\nb\nc\n", encoding="utf-8", newline="\n"
+    )
 
     result = _invoke(runtime, "read_file", {"path": "notes.txt", "limit": 2})
 
@@ -1562,7 +1564,7 @@ def test_search_text_filters_glob_type_hidden_decode_and_fixed_strings(
     }
     assert len(search_calls) == 1
     assert "-F" in search_calls[0]
-    assert py.as_posix() == search_calls[0][-1]
+    assert Path(search_calls[0][-1]) == py.resolve()
     assert all("--regexp" in argv for argv in search_calls)
     assert not any(str(txt.resolve()) in item for argv in search_calls for item in argv)
     assert not any(str(hidden.resolve()) in item for argv in search_calls for item in argv)
@@ -1633,7 +1635,7 @@ def test_list_dir_filters_hidden_denied_and_ignore_patterns(tmp_path) -> None:
 def test_read_file_pagination_utf8_and_cache_update(tmp_path) -> None:
     runtime = _runtime(tmp_path, approval_mode="normal")
     target = runtime["workspace"] / "notes.txt"
-    target.write_text("one\ntwo\nthree", encoding="utf-8")
+    target.write_text("one\ntwo\nthree", encoding="utf-8", newline="\n")
     bad = runtime["workspace"] / "bad.bin"
     bad.write_bytes(b"\xff")
 
