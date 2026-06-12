@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import re
+import hashlib
+import os
 import sqlite3
 from dataclasses import dataclass
 import json
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.checkpoints import CheckpointStore
@@ -14,7 +16,7 @@ from debug_agent.persistence.errors import StoreError
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
-from debug_agent.persistence.todo_plans import TodoPlanStore
+from debug_agent.runtime.contracts import TOOL_RESULT_STATUSES, utc_now_iso
 
 
 @dataclass(frozen=True)
@@ -24,10 +26,13 @@ class TraceRenderResult:
     session_id: str
     workspace_root: str
     run_count: int
-    event_count: int
     artifact_count: int
     terminal_status: str
     error_summary: str | None
+
+
+class TraceRenderError(StoreError):
+    pass
 
 
 class TraceWriter:
@@ -36,175 +41,522 @@ class TraceWriter:
         self.sessions_root = sessions_root.resolve()
 
     def refresh_if_stale(self, session_id: str) -> TraceRenderResult:
-        data = self._load(session_id)
-        trace_path = self.sessions_root / session_id / "trace.md"
-        current_metadata = _trace_metadata(data["events"])
-        rendered_metadata = _read_rendered_metadata(trace_path)
-        refreshed = rendered_metadata != current_metadata
-        if refreshed:
-            trace_path.parent.mkdir(parents=True, exist_ok=True)
-            trace_path.write_text(_render_trace(data, current_metadata), encoding="utf-8")
+        data = self._load_conversation_trace(session_id)
+        trace_path = self.sessions_root / session_id / "logs" / "trace.md"
+        rendered = _render_conversation_trace(data)
+        _atomic_write_text(trace_path, rendered)
         return TraceRenderResult(
             trace_path=trace_path,
-            refreshed=refreshed,
+            refreshed=True,
             session_id=session_id,
             workspace_root=data["session"].workspace_root,
-            run_count=len(data["runs"]),
-            event_count=current_metadata["event_count"],
+            run_count=1 if data["run"] is not None else 0,
             artifact_count=len(data["artifacts"]),
             terminal_status=data["session"].status,
             error_summary=data["session"].error_summary,
         )
 
-    def _load(self, session_id: str) -> dict[str, Any]:
-        artifact_store = ArtifactStore(self.connection, self.sessions_root)
-        artifacts = artifact_store.list_for_session(session_id)
-        runs = RunStore(self.connection).list_for_session(session_id)
-        session = SessionStore(self.connection).get(session_id)
-        events = EventWriter(
-            self.connection, self.sessions_root
-        ).list_for_session(session_id)
-        latest_run = runs[-1] if runs else None
-        return {
-            "session": session,
-            "runs": runs,
-            "events": events,
-            "checkpoints": CheckpointStore(self.connection).list_for_session(session_id),
-            "context_snapshots": _load_context_snapshots(self.connection, session_id),
-            "todo_plans": _load_todo_plans(self.connection, runs),
-            "approval_grants": _load_approval_grants(self.connection, session_id),
-            "artifacts": artifacts,
-            "artifact_exists": {
-                artifact.artifact_id: (
-                    self.sessions_root / artifact.relative_path
-                ).exists()
-                for artifact in artifacts
-            },
-            "phase3_observability": build_phase3_observability_summary(
+    def _load_conversation_trace(self, session_id: str) -> dict[str, Any]:
+        try:
+            self.connection.execute("BEGIN")
+            session = SessionStore(self.connection).get(session_id)
+            run = RunStore(self.connection).latest_for_session(session.session_id)
+            rows = [] if run is None else ConversationStore(
                 self.connection,
-                session=session,
-                latest_run=latest_run,
-                events=events,
-            ),
-        }
+                artifact_store=ArtifactStore(self.connection, self.sessions_root),
+            ).list_messages(run.run_id)
+            artifacts = ArtifactStore(self.connection, self.sessions_root).list_for_session(
+                session.session_id
+            )
+            _validate_trace_rows(
+                session_id=session.session_id,
+                run_id=run.run_id if run is not None else None,
+                rows=rows,
+                artifacts=artifacts,
+                sessions_root=self.sessions_root,
+            )
+            data = {
+                "session": session,
+                "run": run,
+                "rows": rows,
+                "artifacts": artifacts,
+                "exported_at": utc_now_iso(),
+            }
+            self.connection.execute("ROLLBACK")
+            return data
+        except TraceRenderError:
+            _rollback_if_needed(self.connection)
+            raise
+        except sqlite3.OperationalError as exc:
+            _rollback_if_needed(self.connection)
+            if "busy" in str(exc).lower() or "locked" in str(exc).lower():
+                raise StoreError(
+                    error_class="persistence_error",
+                    message="persistence_error/sqlite_busy_timeout: SQLite remained busy while reading trace data.",
+                    recoverable=True,
+                ) from exc
+            raise StoreError(
+                error_class="persistence_error",
+                message=f"persistence_error/persistence_read_failed: Trace read failed: {exc}",
+                recoverable=False,
+            ) from exc
+        except StoreError:
+            _rollback_if_needed(self.connection)
+            raise
+        except sqlite3.DatabaseError as exc:
+            _rollback_if_needed(self.connection)
+            raise StoreError(
+                error_class="persistence_error",
+                message=f"persistence_error/persistence_read_failed: Trace read failed: {exc}",
+                recoverable=False,
+            ) from exc
 
-
-def _render_trace(data: dict[str, Any], metadata: dict[str, Any]) -> str:
+def _render_conversation_trace(data: dict[str, Any]) -> str:
     session = data["session"]
+    run = data["run"]
+    rows = [row for row in data["rows"] if row.kind != "context_summary"]
+    assistant_count = sum(
+        1 for row in rows if row.kind in {"assistant_output", "assistant_tool_call"}
+    )
+    tool_call_count = sum(
+        len(_tool_calls(row)) for row in rows if row.kind == "assistant_tool_call"
+    )
     lines = [
-        f"<!-- event_count: {metadata['event_count']} -->",
-        f"<!-- latest_event_id: {metadata['latest_event_id'] or ''} -->",
-        f"# debug-agent trace {session.session_id}",
+        "# debug-agent conversation trace",
         "",
-        "## Session Summary",
-        f"- session_id: {session.session_id}",
-        f"- workspace_root: {session.workspace_root}",
-        f"- status: {session.status}",
-        f"- approval_mode: {session.approval_mode}",
-        f"- active_run_id: {session.active_run_id or ''}",
-        f"- latest_checkpoint_id: {session.latest_checkpoint_id or ''}",
-        f"- created_at: {session.created_at}",
-        f"- updated_at: {session.updated_at}",
-        f"- error_summary: {session.error_summary or ''}",
+        f"*Exported on {data['exported_at']}*",
         "",
-        "## Runs",
+        "**📊 Session Information**",
+        f"- **Session ID**: `{session.session_id}`",
+        f"- **Run ID**: `{run.run_id if run is not None else ''}`",
+        f"- **Workspace**: `{session.workspace_root}`",
+        f"- **Status**: `{session.status}`",
     ]
-    for run in data["runs"]:
-        active_skills = ", ".join(
-            _format_active_skill(record) for record in run.active_skills
-        )
-        lines.append(
-            f"- {run.run_id}: type={run.run_type} status={run.status} "
-            f"latest_checkpoint_id={run.latest_checkpoint_id or ''} "
-            f"context_snapshot_id={run.context_snapshot_id or ''} "
-            f"active_skills=[{active_skills}] "
-            f"error_summary={run.error_summary or ''}"
-        )
-    lines.extend(["", "## Todo Plans"])
-    if data["todo_plans"]:
-        for plan in data["todo_plans"]:
-            counts = plan["counts"]
-            lines.append(
-                f"- {plan['run_id']}: v{plan['plan_version']} "
-                f"{counts['pending']} pending, "
-                f"{counts['in_progress']} in_progress, "
-                f"{counts['completed']} completed"
+    if session.status in {"completed", "failed"} and session.terminal_reason:
+        lines.append(f"- **Terminal Reason**: `{session.terminal_reason}`")
+    lines.extend(
+        [
+            f"- **Started**: {session.created_at}",
+            f"- **Last Updated**: {session.updated_at}",
+            f"- **Approval Mode**: `{session.approval_mode}`",
+            f"- **Total Messages**: {len(rows)}",
+            f"- **Total User Messages**: {sum(1 for row in rows if row.kind == 'user_input')}",
+            f"- **Total Assistant Messages**: {assistant_count}",
+            f"- **Total Tool Calls**: {tool_call_count}",
+        ]
+    )
+    tool_results = _tool_results_by_pair(rows)
+    artifact_by_id = {artifact.artifact_id: artifact for artifact in data["artifacts"]}
+    for row in rows:
+        if row.kind == "user_input":
+            _append_message(
+                lines,
+                "## 👤 User",
+                row,
+                _message_content(row, artifact_by_id),
             )
-            for item in plan["items"]:
-                active_form = (
-                    f" activeForm={item['activeForm']}"
-                    if "activeForm" in item
-                    else ""
-                )
-                lines.append(
-                    f"  - {item['index']}. {item['status']}: "
-                    f"{item['content']}{active_form}"
-                )
-    else:
-        lines.append("- none")
-    lines.extend(["", "## Timeline"])
-    for event in data["events"]:
-        lines.append(
-            f"- {event.timestamp} {event.kind} run={event.run_id} "
-            f"payload={_summarize_payload(event.payload, event.kind)}"
-        )
-    lines.extend(["", "## Checkpoints"])
-    for checkpoint in data["checkpoints"]:
-        lines.append(
-            f"- {checkpoint.created_at} {checkpoint.checkpoint_id}: "
-            f"kind={checkpoint.kind} run={checkpoint.run_id} "
-            f"summary={checkpoint.summary or ''}"
-        )
-    lines.extend(["", "## Phase 3 Observability"])
-    lines.extend(_render_phase3_observability(data["phase3_observability"]))
-    lines.extend(["", "## Context Snapshots"])
-    if data["context_snapshots"]:
-        for snapshot in data["context_snapshots"]:
-            lines.append(
-                f"- {snapshot['created_at']} {snapshot['context_snapshot_id']}: "
-                f"trigger={snapshot['trigger']} run={snapshot['run_id']} "
-                f"omitted_tool_results={snapshot['omitted_tool_result_count']} "
-                f"evicted_messages={snapshot['evicted_message_count']} "
-                f"evicted_groups={snapshot['evicted_model_call_group_count']} "
-                f"artifacts={snapshot['artifact_refs']} "
-                f"payload_artifact_id={snapshot['payload_artifact_id'] or ''} "
-                f"active_skills=[{', '.join(_format_active_skill(record) for record in snapshot['active_skill_records'])}]"
+        elif row.kind == "assistant_output":
+            _append_message(
+                lines,
+                "## 🤖 Assistant",
+                row,
+                _message_content(row, artifact_by_id),
             )
-    else:
-        lines.append("- none")
-    lines.extend(["", "## Approval Grants"])
-    if data["approval_grants"]:
-        for grant in data["approval_grants"]:
-            lines.append(
-                f"- {grant['created_at']} {grant['grant_id']}: "
-                f"tool={grant['tool_name']} risk={grant['risk_level']} "
-                f"decision={grant['decision']} scope={grant['grant_scope']} "
-                f"scope_signature={grant['scope_signature']}"
-            )
-    else:
-        lines.append("- none")
-    lines.extend(["", "## Artifacts"])
-    for artifact in data["artifacts"]:
-        exists = data["artifact_exists"].get(artifact.artifact_id, False)
-        status = "present" if exists else "missing"
-        lines.append(
-            f"- {artifact.artifact_id}: type={artifact.artifact_type} "
-            f"path={artifact.relative_path} exists={str(exists).lower()} "
-            f"status={status} run={artifact.run_id or ''}"
-        )
-    lines.extend(["", "## Errors"])
-    error_events = [event for event in data["events"] if event.kind.endswith("_failed")]
-    if session.error_summary:
-        lines.append(f"- session_error: {session.error_summary}")
-    for event in error_events:
-        lines.append(
-            f"- {event.timestamp} {event.kind}: "
-            f"{_summarize_payload(event.payload, event.kind)}"
-        )
-    if not session.error_summary and not error_events:
-        lines.append("- none")
+        elif row.kind == "assistant_tool_call":
+            _append_tool_call_message(lines, row, tool_results)
+        elif row.kind in {"failure_fact", "cancellation_fact"}:
+            _append_runtime_fact(lines, row)
+        elif row.kind == "tool_result":
+            continue
     lines.append("")
     return "\n".join(lines)
+
+
+def _append_message(
+    lines: list[str], heading: str, row: Any, content: str
+) -> None:
+    lines.extend(["", "---", "", heading, _message_meta(row), ""])
+    lines.append(content)
+
+
+def _append_tool_call_message(
+    lines: list[str],
+    row: Any,
+    tool_results: dict[tuple[str | None, str], Any],
+) -> None:
+    lines.extend(["", "---", "", "## 🤖 Assistant", _message_meta(row), ""])
+    text = row.content.get("text") if isinstance(row.content, dict) else None
+    if isinstance(text, str) and text:
+        lines.extend([text, ""])
+    lines.append("### 🔧 Tool Calls")
+    for call in _tool_calls(row):
+        call_id = str(call["id"])
+        result = tool_results[(row.model_call_id, call_id)]
+        status = _tool_result_status(result)
+        icon = _status_icon(status)
+        name = str(call["name"])
+        lines.extend(
+            [
+                "",
+                f"**{icon} {name}** (`{name}`)",
+                f"- **Status**: `{status}`",
+                f"- **Call ID**: `{call_id}`",
+                f"- **Tool Result Index**: {result.message_index}",
+                f"- **Timestamp**: {result.accepted_at}",
+                "- **Arguments**:",
+            ]
+        )
+        lines.extend(_indented_preview(_redacted_arguments(name, call.get("args", {}))))
+        lines.append("- **Result**:")
+        lines.extend(_indented_preview(_tool_result_preview(result)))
+
+
+def _append_runtime_fact(lines: list[str], row: Any) -> None:
+    content = row.content if isinstance(row.content, dict) else {}
+    error_class = content.get("error_class") or content.get("class") or row.kind
+    reason = content.get("reason") or row.kind
+    message = content.get("message") or ""
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "## ⚠️ Runtime Fact",
+            f"*{row.accepted_at}* • **Message Index**: {row.message_index} • **Kind**: `{row.kind}`",
+            "",
+            f"`{error_class}/{reason}`: {message}",
+        ]
+    )
+
+
+def _message_meta(row: Any) -> str:
+    suffix = f" • **Turn**: `{row.turn_id}`" if row.turn_id else ""
+    return f"*{row.accepted_at}* • **Message Index**: {row.message_index}{suffix}"
+
+
+def _message_content(row: Any, artifact_by_id: dict[str, Any]) -> str:
+    content = row.content
+    if row.artifact_id:
+        return json.dumps(
+            _row_artifact_reference(row, artifact_by_id),
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+    if isinstance(content, dict) and isinstance(content.get("content"), str):
+        return content["content"]
+    if isinstance(content, str):
+        return content
+    return json.dumps(content, ensure_ascii=False, sort_keys=True, indent=2)
+
+
+def _row_artifact_reference(row: Any, artifact_by_id: dict[str, Any]) -> dict[str, Any]:
+    artifact = artifact_by_id.get(row.artifact_id)
+    if artifact is None:
+        raise StoreError(
+            error_class="persistence_error",
+            message=f"persistence_error/artifact_missing: Missing artifact record {row.artifact_id}.",
+            recoverable=False,
+        )
+    _validate_row_artifact_metadata(row, artifact)
+    reference: dict[str, Any] = {
+        "artifact_id": artifact.artifact_id,
+        "relative_path": artifact.relative_path,
+    }
+    if isinstance(row.metadata, dict):
+        for key in ("preview", "preview_metadata", "reference", "reference_metadata"):
+            if key in row.metadata:
+                reference[key] = row.metadata[key]
+    return reference
+
+
+def _validate_trace_rows(
+    *,
+    session_id: str,
+    run_id: str | None,
+    rows: list[Any],
+    artifacts: list[Any],
+    sessions_root: Path,
+) -> None:
+    if run_id is not None:
+        if any(row.session_id != session_id or row.run_id != run_id for row in rows):
+            _invalid_trace("Conversation row session/run scope mismatch.")
+    rendered_rows = [row for row in rows if row.kind != "context_summary"]
+    indexes = [row.message_index for row in rows]
+    if indexes != list(range(1, len(rows) + 1)):
+        _invalid_trace("Conversation message indexes are not contiguous.")
+    groups: dict[str, list[Any]] = {}
+    for row in rows:
+        if row.group_status != "closed":
+            _invalid_trace("Accepted conversation row is not in a closed group.")
+        if row.role not in {"user", "assistant", "tool", "runtime"}:
+            _invalid_trace("Conversation row uses unsupported role.")
+        if row.kind not in {
+            "user_input",
+            "assistant_output",
+            "assistant_tool_call",
+            "tool_result",
+            "failure_fact",
+            "cancellation_fact",
+            "context_summary",
+        }:
+            _invalid_trace("Conversation row uses unsupported kind.")
+        groups.setdefault(row.message_group_id, []).append(row)
+        if row.kind == "tool_result":
+            status = _tool_result_status(row)
+            if status not in TOOL_RESULT_STATUSES:
+                _invalid_trace("Tool result uses unsupported status.")
+        _validate_row_artifacts(row, artifacts, sessions_root)
+    for group_rows in groups.values():
+        positions = sorted(row.group_position for row in group_rows)
+        expected = group_rows[0].group_row_count
+        if positions != list(range(expected)) or len(group_rows) != expected:
+            _invalid_trace("Conversation group positions are not contiguous.")
+    calls: dict[tuple[str | None, str], None] = {}
+    results: dict[tuple[str | None, str], int] = {}
+    for row in rendered_rows:
+        if row.kind == "assistant_tool_call":
+            if not row.model_call_id:
+                _invalid_trace("Assistant tool-call row is missing model_call_id.")
+            for call in _tool_calls(row):
+                key = (row.model_call_id, str(call["id"]))
+                if key in calls:
+                    _invalid_trace("Duplicate assistant tool call.")
+                calls[key] = None
+        elif row.kind == "tool_result":
+            if not row.model_call_id or not row.tool_call_id:
+                _invalid_trace("Tool result row is missing pairing identifiers.")
+            key = (row.model_call_id, row.tool_call_id)
+            results[key] = results.get(key, 0) + 1
+    if set(calls) != set(results) or any(count != 1 for count in results.values()):
+        _invalid_trace("conversation_cut_invalid: tool call/result pairing is invalid.")
+
+
+def _validate_row_artifacts(row: Any, artifacts: list[Any], sessions_root: Path) -> None:
+    artifact_by_id = {artifact.artifact_id: artifact for artifact in artifacts}
+    if row.artifact_id:
+        _validate_artifact_reference(
+            artifact_id=row.artifact_id,
+            expected_relative_path=None,
+            row=row,
+            artifact_by_id=artifact_by_id,
+            sessions_root=sessions_root,
+        )
+        _validate_row_artifact_metadata(row, artifact_by_id[row.artifact_id])
+    if row.kind == "tool_result" and isinstance(row.content, dict):
+        artifact_ids = row.content.get("artifact_ids", [])
+        if artifact_ids is None:
+            artifact_ids = []
+        if not isinstance(artifact_ids, list) or not all(
+            isinstance(item, str) for item in artifact_ids
+        ):
+            _invalid_trace("Tool result artifact_ids is malformed.")
+        inline_refs = _inline_artifact_refs(row.content.get("content"))
+        inline_ids = [ref["artifact_id"] for ref in inline_refs]
+        if set(artifact_ids) != set(inline_ids) or len(artifact_ids) != len(inline_ids):
+            _invalid_trace(
+                "Tool result artifact_ids do not match inline artifact references."
+            )
+        for ref in inline_refs:
+            _validate_artifact_reference(
+                artifact_id=ref["artifact_id"],
+                expected_relative_path=ref.get("relative_path"),
+                row=row,
+                artifact_by_id=artifact_by_id,
+                sessions_root=sessions_root,
+            )
+
+
+def _validate_artifact_reference(
+    *,
+    artifact_id: str,
+    expected_relative_path: Any,
+    row: Any,
+    artifact_by_id: dict[str, Any],
+    sessions_root: Path,
+) -> None:
+    artifact = artifact_by_id.get(artifact_id)
+    if artifact is None:
+        raise StoreError(
+            error_class="persistence_error",
+            message=f"persistence_error/artifact_missing: Missing artifact record {artifact_id}.",
+            recoverable=False,
+        )
+    if artifact.session_id != row.session_id:
+        _invalid_trace("Artifact session scope does not match conversation row.")
+    if artifact.run_id not in {None, row.run_id}:
+        _invalid_trace("Artifact run scope does not match conversation row.")
+    if expected_relative_path is not None and expected_relative_path != artifact.relative_path:
+        _invalid_trace("Artifact relative_path conflicts with ArtifactStore record.")
+    if not (sessions_root / artifact.relative_path).exists():
+        raise StoreError(
+            error_class="persistence_error",
+            message=f"persistence_error/artifact_missing: Missing artifact content {artifact_id}.",
+            recoverable=False,
+        )
+
+
+def _validate_row_artifact_metadata(row: Any, artifact: Any) -> None:
+    if row.kind not in {"user_input", "assistant_output"}:
+        return
+    metadata = row.metadata if isinstance(row.metadata, dict) else {}
+    reference = metadata.get("reference")
+    if not isinstance(reference, dict):
+        raise StoreError(
+            error_class="persistence_error",
+            message=(
+                "persistence_error/artifact_missing: "
+                "Artifact-backed row reference metadata is missing."
+            ),
+            recoverable=False,
+        )
+    if reference.get("artifact_id") != row.artifact_id:
+        _invalid_trace("Artifact-backed row artifact_id metadata conflicts.")
+    if reference.get("relative_path") != artifact.relative_path:
+        _invalid_trace("Artifact-backed row relative_path metadata conflicts.")
+
+
+def _inline_artifact_refs(value: Any) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        if isinstance(value.get("artifact_id"), str):
+            refs.append(
+                {
+                    "artifact_id": value["artifact_id"],
+                    "relative_path": value.get("relative_path"),
+                }
+            )
+        for child in value.values():
+            refs.extend(_inline_artifact_refs(child))
+    elif isinstance(value, list):
+        for child in value:
+            refs.extend(_inline_artifact_refs(child))
+    return refs
+
+
+def _tool_calls(row: Any) -> list[dict[str, Any]]:
+    content = row.content
+    if not isinstance(content, dict) or not isinstance(content.get("tool_calls"), list):
+        _invalid_trace("Assistant tool-call content is malformed.")
+    calls: list[dict[str, Any]] = []
+    for call in content["tool_calls"]:
+        if not isinstance(call, dict) or not call.get("id") or not call.get("name"):
+            _invalid_trace("Assistant tool-call item is malformed.")
+        calls.append(call)
+    return calls
+
+
+def _tool_results_by_pair(rows: list[Any]) -> dict[tuple[str | None, str], Any]:
+    return {
+        (row.model_call_id, row.tool_call_id): row
+        for row in rows
+        if row.kind == "tool_result" and row.tool_call_id is not None
+    }
+
+
+def _tool_result_status(row: Any) -> str:
+    if not isinstance(row.content, dict):
+        _invalid_trace("Tool result content is malformed.")
+    status = row.content.get("status")
+    metadata_status = row.metadata.get("status") if isinstance(row.metadata, dict) else None
+    if metadata_status is not None and metadata_status != status:
+        _invalid_trace("Tool result metadata status conflicts with content status.")
+    if not isinstance(status, str):
+        _invalid_trace("Tool result status is missing.")
+    return status
+
+
+def _tool_result_preview(row: Any) -> Any:
+    content = row.content if isinstance(row.content, dict) else {}
+    return content.get("content")
+
+
+def _redacted_arguments(tool_name: str, args: Any) -> Any:
+    if not isinstance(args, dict):
+        return args
+    redacted = dict(args)
+    if tool_name == "write_file" and isinstance(redacted.get("content"), str):
+        redacted["content"] = _redaction_object(redacted["content"])
+    if tool_name == "edit_file":
+        for key in ("old_text", "new_text"):
+            if isinstance(redacted.get(key), str):
+                redacted[key] = _redaction_object(redacted[key])
+    return redacted
+
+
+def _redaction_object(value: str) -> dict[str, Any]:
+    payload = value.encode("utf-8")
+    return {
+        "redacted": True,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "bytes": len(payload),
+    }
+
+
+def _indented_preview(value: Any) -> list[str]:
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)
+    elif value is None:
+        text = "null"
+    else:
+        text = str(value)
+    lines = text.splitlines() or [""]
+    truncated = False
+    if len(lines) > 100:
+        lines = lines[:100]
+        truncated = True
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:4000]
+        lines = text.splitlines()
+        truncated = True
+    if truncated:
+        lines.append("[truncated]")
+    return [f"    {line}" for line in lines]
+
+
+def _status_icon(status: str) -> str:
+    if status == "ok":
+        return "✅"
+    if status in {"error", "denied"}:
+        return "❌"
+    if status == "timeout":
+        return "⏱️"
+    if status == "cancelled":
+        return "⏹️"
+    _invalid_trace("Tool result uses unsupported status.")
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temp_path.write_text(content, encoding="utf-8")
+        os.replace(temp_path, path)
+    except Exception as exc:
+        temp_path.unlink(missing_ok=True)
+        raise StoreError(
+            error_class="ui_error",
+            message=f"ui_error/trace_render_failed: Trace render/write failed: {exc}",
+            source="ui",
+            recoverable=False,
+        ) from exc
+
+
+def _rollback_if_needed(connection: sqlite3.Connection) -> None:
+    try:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+    except sqlite3.DatabaseError:
+        pass
+
+
+def _invalid_trace(message: str) -> None:
+    raise TraceRenderError(
+        error_class="persistence_error",
+        message=f"persistence_error/conversation_cut_invalid: {message}",
+        recoverable=False,
+    )
 
 
 def build_phase3_observability_summary(
@@ -534,443 +886,6 @@ def _render_phase3_observability(summary: dict[str, Any]) -> list[str]:
     if not summary["stale_fail_close"]:
         lines.append("- stale_fail_closed: none")
     return lines
-
-
-def _trace_metadata(events: list[Any]) -> dict[str, Any]:
-    return {
-        "event_count": len(events),
-        "latest_event_id": events[-1].event_id if events else None,
-    }
-
-
-def _read_rendered_metadata(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    text = path.read_text(encoding="utf-8")
-    event_count = re.search(r"<!-- event_count: (\d+) -->", text)
-    latest_event = re.search(r"<!-- latest_event_id: ([^ ]*) -->", text)
-    if event_count is None or latest_event is None:
-        return None
-    latest_event_id = latest_event.group(1) or None
-    return {"event_count": int(event_count.group(1)), "latest_event_id": latest_event_id}
-
-
-def _summarize_payload(payload: dict[str, Any], kind: str | None = None) -> str:
-    if kind == "model_call_completed":
-        return _summarize_model_completed(payload)
-    if kind == "tool_call_completed":
-        return _summarize_tool_completed(payload)
-    if kind == "skill_snapshot_created":
-        return _summarize_skill_snapshot(payload)
-    if kind == "skill_activated":
-        return _summarize_skill_activation(payload)
-    if kind == "skill_resource_loaded":
-        return _summarize_skill_resource_loaded(payload)
-    if kind == "approval_requested":
-        return _summarize_approval_requested(payload)
-    if kind == "approval_decision_recorded":
-        return _summarize_approval_decision(payload)
-    if kind == "approval_mode_changed":
-        return _summarize_approval_mode_changed(payload)
-    if kind == "tool_call_denied":
-        return _summarize_tool_denied(payload)
-    if kind == "tool_call_failed":
-        return _summarize_tool_failed(payload)
-    if kind == "artifact_registered":
-        return _summarize_artifact_registered(payload)
-    if kind == "context_optimized":
-        return _summarize_context_optimized(payload)
-    if kind == "compression_failed":
-        return _summarize_compression_failed(payload)
-    if kind == "context_limit_exceeded":
-        return _summarize_context_limit_exceeded(payload)
-    if kind == "todo_updated":
-        return _summarize_todo_updated(payload)
-    text = str(payload)
-    if len(text) <= 240:
-        return text
-    return text[:237] + "..."
-
-
-def _summarize_model_completed(payload: dict[str, Any]) -> str:
-    response = payload.get("redacted_output") or payload.get("content") or ""
-    tool_names = [
-        str(call.get("name", ""))
-        for call in payload.get("tool_calls", [])
-        if isinstance(call, dict)
-    ]
-    return (
-        f"{{'duration': {payload.get('duration')}, "
-        f"response={_shorten(str(response))}, "
-        f"tool_calls={','.join(tool_names)}, "
-        f"artifact_ids={payload.get('artifact_ids', [])}, "
-        f"usage={payload.get('usage', {})}}}"
-    )
-
-
-def _summarize_tool_completed(payload: dict[str, Any]) -> str:
-    if payload.get("tool_name") == "view_image":
-        return _summarize_view_image_tool_event(payload)
-    result = payload.get("result", {})
-    result_text = ""
-    if isinstance(result, dict):
-        result_text = str(result.get("redacted_output") or result.get("output") or "")
-    return (
-        f"{{'duration': {payload.get('duration')}, "
-        f"tool_name={payload.get('tool_name', '')}, "
-        f"status={payload.get('status', '')}, "
-        f"result={_shorten(result_text)}, "
-        f"artifact_ids={payload.get('artifact_ids', [])}}}"
-    )
-
-
-def _summarize_skill_snapshot(payload: dict[str, Any]) -> str:
-    return (
-        "{"
-        f"skill={payload.get('skill_name', '')}, "
-        f"mode={payload.get('execution_mode', '')}, "
-        f"scope={payload.get('source_scope', '')}, "
-        f"hash={payload.get('content_hash', '')}, "
-        f"resources={payload.get('resource_count', 0)}"
-        "}"
-    )
-
-
-def _summarize_skill_activation(payload: dict[str, Any]) -> str:
-    return (
-        "{"
-        f"skill={payload.get('skill_name', '')}, "
-        f"hash={payload.get('content_hash', '')}, "
-        f"reason={payload.get('activation_reason', '')}, "
-        f"scope={payload.get('scope', '')}"
-        "}"
-    )
-
-
-def _summarize_skill_resource_loaded(payload: dict[str, Any]) -> str:
-    return (
-        "{"
-        f"skill={payload.get('skill_name', '')}, "
-        f"skill_hash={payload.get('skill_content_hash', '')}, "
-        f"resource={payload.get('resource_path', '')}, "
-        f"resource_kind={payload.get('resource_kind', '')}, "
-        f"resource_hash={payload.get('resource_content_hash', '')}, "
-        f"media={payload.get('media_kind', '')}, "
-        f"bytes={payload.get('size_bytes', 0)}, "
-        f"artifact_id={payload.get('artifact_id') or ''}"
-        "}"
-    )
-
-
-def _summarize_approval_requested(payload: dict[str, Any]) -> str:
-    return (
-        "{"
-        f"tool={payload.get('tool_name', '')}, "
-        f"risk={payload.get('risk_level', '')}, "
-        f"target={_shorten(str(payload.get('target', '')))}, "
-        f"scope_signature={payload.get('scope_signature', '')}"
-        "}"
-    )
-
-
-def _summarize_approval_decision(payload: dict[str, Any]) -> str:
-    return (
-        "{"
-        f"tool={payload.get('tool_name', '')}, "
-        f"decision={payload.get('decision', '')}, "
-        f"grant_scope={payload.get('grant_scope', '')}, "
-        f"scope_signature={payload.get('scope_signature', '')}"
-        "}"
-    )
-
-
-def _summarize_approval_mode_changed(payload: dict[str, Any]) -> str:
-    return (
-        "{"
-        f"old_mode={payload.get('old_mode', '')}, "
-        f"new_mode={payload.get('new_mode', '')}"
-        "}"
-    )
-
-
-def _summarize_tool_denied(payload: dict[str, Any]) -> str:
-    if payload.get("tool_name") == "view_image":
-        return _summarize_view_image_tool_event(payload)
-    result = payload.get("result", {})
-    error = result.get("error", {}) if isinstance(result, dict) else {}
-    arguments = payload.get("arguments", {})
-    return (
-        "{"
-        f"tool={payload.get('tool_name', '')}, "
-        f"error_class={error.get('error_class', '') if isinstance(error, dict) else ''}, "
-        f"message={_shorten(str(error.get('message', '')) if isinstance(error, dict) else '')}, "
-        f"arguments={_shorten(str(arguments))}"
-        "}"
-    )
-
-
-def _summarize_tool_failed(payload: dict[str, Any]) -> str:
-    if payload.get("tool_name") == "view_image":
-        return _summarize_view_image_tool_event(payload)
-    result = payload.get("result", {})
-    error = result.get("error", {}) if isinstance(result, dict) else {}
-    metadata = result.get("metadata", {}) if isinstance(result, dict) else {}
-    return (
-        "{"
-        f"tool={payload.get('tool_name', '')}, "
-        f"status={payload.get('status', '')}, "
-        f"error_class={error.get('error_class', '') if isinstance(error, dict) else ''}, "
-        f"timeout={metadata.get('effective_timeout_seconds', '') if isinstance(metadata, dict) else ''}, "
-        f"message={_shorten(str(error.get('message', '')) if isinstance(error, dict) else '')}"
-        "}"
-    )
-
-
-def _summarize_artifact_registered(payload: dict[str, Any]) -> str:
-    metadata = payload.get("metadata", {})
-    return (
-        "{"
-        f"artifact_id={payload.get('artifact_id', '')}, "
-        f"type={payload.get('artifact_type', '')}, "
-        f"path={payload.get('relative_path', '')}, "
-        f"metadata={_shorten(str(metadata))}"
-        "}"
-    )
-
-
-def _summarize_context_optimized(payload: dict[str, Any]) -> str:
-    return (
-        "{"
-        f"trigger={payload.get('trigger', '')}, "
-        f"context_snapshot_id={payload.get('context_snapshot_id', '')}, "
-        f"checkpoint_id={payload.get('checkpoint_id', '')}, "
-        f"omitted={payload.get('omitted_tool_result_count', 0)}, "
-        f"evicted_messages={payload.get('evicted_message_count', 0)}, "
-        f"evicted_groups={payload.get('evicted_model_call_group_count', 0)}, "
-        f"reduced={payload.get('reduced_from_tokens', '')}->{payload.get('reduced_to_tokens', '')}, "
-        f"artifacts={payload.get('artifact_refs', [])}"
-        "}"
-    )
-
-
-def _summarize_compression_failed(payload: dict[str, Any]) -> str:
-    return (
-        "{"
-        f"error_class={payload.get('error_class', '')}, "
-        f"reason={payload.get('reason', '')}, "
-        f"message={_shorten(str(payload.get('message', '')))}"
-        "}"
-    )
-
-
-def _summarize_context_limit_exceeded(payload: dict[str, Any]) -> str:
-    return (
-        "{"
-        f"error_class={payload.get('error_class', '')}, "
-        f"estimated={payload.get('estimated_tokens', '')}, "
-        f"window={payload.get('window_tokens', '')}, "
-        f"optimization_applied={payload.get('optimization_applied', [])}, "
-        f"message={_shorten(str(payload.get('message', '')))}"
-        "}"
-    )
-
-
-def _summarize_todo_updated(payload: dict[str, Any]) -> str:
-    raw_counts = payload.get("counts", {})
-    counts = {
-        "pending": raw_counts.get("pending", 0) if isinstance(raw_counts, dict) else 0,
-        "in_progress": raw_counts.get("in_progress", 0)
-        if isinstance(raw_counts, dict)
-        else 0,
-        "completed": raw_counts.get("completed", 0)
-        if isinstance(raw_counts, dict)
-        else 0,
-    }
-    return (
-        "{"
-        f"previous_plan_version={payload.get('previous_plan_version', '')}, "
-        f"plan_version={payload.get('plan_version', '')}, "
-        f"item_count={payload.get('item_count', 0)}, "
-        f"counts={counts}"
-        "}"
-    )
-
-
-def _summarize_view_image_tool_event(payload: dict[str, Any]) -> str:
-    result = payload.get("result", {})
-    result_dict = result if isinstance(result, dict) else {}
-    error = result_dict.get("error", {})
-    output = result_dict.get("output", {})
-    metadata = result_dict.get("metadata", {})
-    output_dict = output if isinstance(output, dict) else {}
-    metadata_dict = metadata if isinstance(metadata, dict) else {}
-    images = payload.get("images")
-    if not isinstance(images, list):
-        images = metadata_dict.get("images")
-    image_summary = _summarize_view_image_images(images if isinstance(images, list) else [])
-    analysis = output_dict.get("analysis", "")
-    error_class = error.get("error_class", "") if isinstance(error, dict) else ""
-    if not error_class:
-        top_level_error_class = payload.get("error_class")
-        error_class = (
-            top_level_error_class if isinstance(top_level_error_class, str) else ""
-        )
-    query_source = payload.get("effective_query_source")
-    if not isinstance(query_source, str):
-        query_source = metadata_dict.get("effective_query_source")
-    if not isinstance(query_source, str):
-        arguments = payload.get("arguments")
-        if isinstance(arguments, dict):
-            query_source = arguments.get("effective_query_source")
-    if not isinstance(query_source, str):
-        query_source = ""
-    return (
-        "{"
-        f"tool=view_image, "
-        f"status={payload.get('status', result_dict.get('status', ''))}, "
-        f"error_class={error_class}, "
-        f"provider={payload.get('vision_provider', metadata_dict.get('vision_provider', ''))}, "
-        f"model={payload.get('vision_model', metadata_dict.get('vision_model', ''))}, "
-        f"duration_ms={payload.get('duration_ms', metadata_dict.get('duration_ms', ''))}, "
-        f"effective_query_source={query_source}, "
-        f"projected_request_bytes={payload.get('projected_request_bytes', metadata_dict.get('projected_request_bytes', ''))}, "
-        f"images=[{image_summary}], "
-        f"analysis={_shorten(str(analysis))}"
-        "}"
-    )
-
-
-def _summarize_view_image_images(images: list[Any]) -> str:
-    parts: list[str] = []
-    for image in images:
-        if not isinstance(image, dict):
-            continue
-        parts.append(
-            "{"
-            f"path={image.get('path', '')}, "
-            f"mime={image.get('mime_type', '')}, "
-            f"size={image.get('byte_size', '')}, "
-            f"sha256={image.get('sha256', '')}, "
-            f"dimensions={image.get('width', '')}x{image.get('height', '')}"
-            "}"
-        )
-    return ", ".join(parts)
-
-
-def _load_todo_plans(connection: sqlite3.Connection, runs: list[Any]) -> list[dict[str, Any]]:
-    store = TodoPlanStore(connection)
-    plans: list[dict[str, Any]] = []
-    for run in runs:
-        plan = store.get_current(run.run_id)
-        if plan.version == 0:
-            continue
-        plans.append(
-            {
-                "run_id": run.run_id,
-                "plan_version": plan.version,
-                "counts": _todo_counts(plan.items),
-                "items": [
-                    {
-                        key: value
-                        for key, value in item.items()
-                        if key in {"index", "status", "content", "activeForm"}
-                    }
-                    for item in plan.items
-                ],
-            }
-        )
-    return plans
-
-
-def _todo_counts(items: list[dict[str, Any]]) -> dict[str, int]:
-    return {
-        "pending": sum(1 for item in items if item.get("status") == "pending"),
-        "in_progress": sum(
-            1 for item in items if item.get("status") == "in_progress"
-        ),
-        "completed": sum(1 for item in items if item.get("status") == "completed"),
-    }
-
-
-def _load_context_snapshots(
-    connection: sqlite3.Connection, session_id: str
-) -> list[dict[str, Any]]:
-    rows = connection.execute(
-        """
-        SELECT context_snapshot_id, session_id, run_id, trigger,
-               source_checkpoint_id, active_skill_records_json, summary,
-               retained_messages_json, omitted_tool_result_count,
-               evicted_message_count, evicted_model_call_group_count,
-               artifact_refs_json, token_estimate_json, payload_artifact_id,
-               created_at, version
-        FROM context_snapshots
-        WHERE session_id = ?
-        ORDER BY created_at ASC, rowid ASC
-        """,
-        (session_id,),
-    ).fetchall()
-    snapshots: list[dict[str, Any]] = []
-    for row in rows:
-        snapshots.append(
-            {
-                "context_snapshot_id": row[0],
-                "session_id": row[1],
-                "run_id": row[2],
-                "trigger": row[3],
-                "source_checkpoint_id": row[4],
-                "active_skill_records": json.loads(row[5]),
-                "summary": row[6],
-                "retained_messages": json.loads(row[7]),
-                "omitted_tool_result_count": row[8],
-                "evicted_message_count": row[9],
-                "evicted_model_call_group_count": row[10],
-                "artifact_refs": json.loads(row[11]),
-                "token_estimate": json.loads(row[12]),
-                "payload_artifact_id": row[13],
-                "created_at": row[14],
-                "version": row[15],
-            }
-        )
-    return snapshots
-
-
-def _load_approval_grants(
-    connection: sqlite3.Connection, session_id: str
-) -> list[dict[str, Any]]:
-    rows = connection.execute(
-        """
-        SELECT grant_id, session_id, run_id, tool_name, risk_level,
-               scope_signature, decision, grant_scope, approval_request,
-               created_at, version
-        FROM approval_grants
-        WHERE session_id = ?
-        ORDER BY created_at ASC, rowid ASC
-        """,
-        (session_id,),
-    ).fetchall()
-    return [
-        {
-            "grant_id": row[0],
-            "session_id": row[1],
-            "run_id": row[2],
-            "tool_name": row[3],
-            "risk_level": row[4],
-            "scope_signature": row[5],
-            "decision": row[6],
-            "grant_scope": row[7],
-            "approval_request": row[8],
-            "created_at": row[9],
-            "version": row[10],
-        }
-        for row in rows
-    ]
-
-
-def _format_active_skill(record: dict[str, Any]) -> str:
-    return (
-        f"{record.get('name', '')}@{record.get('content_hash', '')}"
-        f":{record.get('activation_reason', '')}:{record.get('scope', '')}"
-    )
 
 
 def _shorten(text: str) -> str:

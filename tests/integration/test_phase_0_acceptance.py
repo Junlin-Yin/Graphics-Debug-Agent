@@ -102,10 +102,12 @@ def test_phase_1_one_shot_status_trace_and_persistence_acceptance(tmp_path) -> N
         event_rows = conn.execute("SELECT rowid FROM run_events ORDER BY rowid").fetchall()
         assert event_rows == sorted(event_rows)
 
-    log_path = workspace / ".sessions" / session_id / "logs" / "engine.log"
-    trace_path = workspace / ".sessions" / session_id / "trace.md"
+    log_path = workspace / ".sessions" / session_id / "logs" / "events.jsonl"
+    trace_path = workspace / ".sessions" / session_id / "logs" / "trace.md"
     assert log_path.is_file()
     assert trace_path.is_file()
+    assert not (workspace / ".sessions" / session_id / "logs" / "engine.log").exists()
+    assert not (workspace / ".sessions" / session_id / "trace.md").exists()
     log_events = {
         json.loads(line)["event"]
         for line in log_path.read_text(encoding="utf-8").splitlines()
@@ -113,10 +115,12 @@ def test_phase_1_one_shot_status_trace_and_persistence_acceptance(tmp_path) -> N
     }
     assert {"session_started", "model_call_started", "checkpoint_written"} <= log_events
     trace_text = trace_path.read_text(encoding="utf-8")
-    assert "session_started" in trace_text
-    assert "model_call_started" in trace_text
-    assert "checkpoint_written" in trace_text
-    assert "session_completed" in trace_text
+    assert "session_started" not in trace_text
+    assert "model_call_started" not in trace_text
+    assert "checkpoint_written" not in trace_text
+    assert "session_completed" not in trace_text
+    assert "## 👤 User" in trace_text
+    assert "## 🤖 Assistant" in trace_text
 
 
 def test_phase_0_repl_two_turn_acceptance(tmp_path) -> None:
@@ -219,9 +223,9 @@ def test_phase_0_toolbroker_artifact_and_trace_acceptance(tmp_path) -> None:
             "tool_call_completed",
         ]
         trace_text = trace.trace_path.read_text(encoding="utf-8")
-        assert "artifact_registered" in trace_text
-        assert "tool_call_completed" in trace_text
-        assert result.artifacts[0] in trace_text
+        assert "artifact_registered" not in trace_text
+        assert "tool_call_completed" not in trace_text
+        assert result.artifacts[0] not in trace_text
     finally:
         db.close()
 
@@ -359,9 +363,9 @@ def test_phase_0_trace_surfaces_missing_artifact_path(tmp_path) -> None:
         trace = TraceWriter(db.connection, db.path.parent).refresh_if_stale(session.session_id)
 
         trace_text = trace.trace_path.read_text(encoding="utf-8")
-        assert "art_missing_path" in trace_text
-        assert "exists=false" in trace_text
-        assert "missing" in trace_text
+        assert "art_missing_path" not in trace_text
+        assert "exists=false" not in trace_text
+        assert "status=missing" not in trace_text
     finally:
         db.close()
 

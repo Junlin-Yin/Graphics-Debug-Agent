@@ -220,6 +220,9 @@ class ReplController:
         if command == "/exit":
             self.runtime.complete()
             if self.view is not None:
+                warning = self.runtime.consume_trace_refresh_warning()
+                if warning is not None:
+                    self.view.show_error(warning)
                 self.view.show_session_closed(self._session_close_summary("closed"))
             self.exit_code = 0
             return False
@@ -716,6 +719,9 @@ class ReplController:
             return False
         if command == "/exit":
             self.runtime.complete()
+            warning = self.runtime.consume_trace_refresh_warning()
+            if warning is not None:
+                print(warning, file=output)
             return False
         print(f"Unsupported Phase 1 slash command: {command}", file=output)
         return True

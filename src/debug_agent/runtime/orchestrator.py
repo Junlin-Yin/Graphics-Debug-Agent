@@ -156,6 +156,7 @@ class ReplRuntime:
         self._active_cancellation_token: _RuntimeCancellationToken | None = None
         self._active_provider_handles: list[Any] = []
         self._active_shell_handles: list[Any] = []
+        self._trace_refresh_warning: str | None = None
 
     def run_turn(
         self,
@@ -528,8 +529,9 @@ class ReplRuntime:
             _append_event(
                 self.events, session.session_id, run.run_id, "session_completed", {}
             )
-            TraceWriter(self.db.connection, self.db.path.parent).refresh_if_stale(
-                session.session_id
+            self._trace_refresh_warning = _refresh_trace_observability(
+                TraceWriter(self.db.connection, self.db.path.parent),
+                session.session_id,
             )
             self._release_active_ownership()
             self.close()
@@ -557,6 +559,12 @@ class ReplRuntime:
                 _close_executor_provider_resources(self.executor)
                 self.db.close()
                 self.closed = True
+
+    def consume_trace_refresh_warning(self) -> str | None:
+        with self._lock:
+            warning = self._trace_refresh_warning
+            self._trace_refresh_warning = None
+            return warning
 
     def _release_active_ownership(self) -> None:
         if self.owner_token is None:
@@ -656,7 +664,10 @@ class RuntimeOrchestrator:
                 reason="workspace_owner_active",
                 message=_active_conflict_message(active.session_id),
             )
-        TraceWriter(db.connection, db.path.parent).refresh_if_stale(active.session_id)
+        _refresh_trace_observability(
+            TraceWriter(db.connection, db.path.parent),
+            active.session_id,
+        )
         return OneShotResult(
             exit_code=0,
             assistant_output=None,
@@ -930,8 +941,9 @@ class RuntimeOrchestrator:
                 session = sessions.get(session.session_id)
                 _append_event(events, session.session_id, run.run_id, "run_completed", {})
                 _append_event(events, session.session_id, run.run_id, "session_completed", {})
-                TraceWriter(db.connection, sessions_root).refresh_if_stale(
-                    session.session_id
+                trace_warning = _refresh_trace_observability(
+                    TraceWriter(db.connection, sessions_root),
+                    session.session_id,
                 )
                 _release_ownership_after_terminalization(
                     sessions=sessions,
@@ -945,9 +957,12 @@ class RuntimeOrchestrator:
                     exit_code=0,
                     assistant_output=agent_result.assistant_output,
                     error=None,
-                    message=_startup_success_message(
+                    message=_with_trace_warning(
+                        _startup_success_message(
                         db,
                         agent_result.assistant_output or "",
+                        ),
+                        trace_warning,
                     ),
                     session_id=session.session_id,
                     run_id=run.run_id,
@@ -1092,8 +1107,12 @@ class RuntimeOrchestrator:
                     session_id
                 )
             except StoreError as exc:
+                error_class, reason = _store_error_code(exc)
                 return TraceResult(
-                    exit_code=ERROR_LOOKUP_NOT_FOUND,
+                    exit_code=map_error_to_exit_code(
+                        {"error_class": error_class, "reason": reason},
+                        boundary="trace",
+                    ),
                     trace_path=Path(),
                     summary={},
                     message=exc.message,
@@ -1104,7 +1123,6 @@ class RuntimeOrchestrator:
                 "session_id": result.session_id,
                 "workspace_root": result.workspace_root,
                 "run_count": result.run_count,
-                "event_count": result.event_count,
                 "artifact_count": result.artifact_count,
                 "terminal_status": result.terminal_status,
                 "error_summary": result.error_summary,
@@ -1522,9 +1540,6 @@ class RuntimeOrchestrator:
                     run.run_id,
                     "run_resumed",
                     {"checkpoint_id": checkpoint.checkpoint_id},
-                )
-                TraceWriter(db.connection, db.path.parent).refresh_if_stale(
-                    session.session_id
                 )
             except StoreError as exc:
                 return _resume_error(
@@ -2089,6 +2104,35 @@ def _close_executor_provider_resources(executor: PromptAgentExecutor) -> None:
         close_provider_resource(model)
 
 
+def _refresh_trace_observability(
+    trace_writer: TraceWriter,
+    session_id: str,
+) -> str | None:
+    try:
+        trace_writer.refresh_if_stale(session_id)
+    except Exception as exc:
+        return f"Trace refresh failed: {exc}"
+    return None
+
+
+def _with_trace_warning(message: str, warning: str | None) -> str:
+    if not warning:
+        return message
+    return f"{message}\n\n{warning}"
+
+
+def _store_error_code(exc: StoreError) -> tuple[str, str]:
+    text = exc.message
+    prefix, separator, _ = text.partition(":")
+    if separator and "/" in prefix:
+        error_class, reason = prefix.split("/", 1)
+        if error_class and reason:
+            return error_class, reason
+    if exc.error_class == "user_error":
+        return "user_error", "lookup_not_found"
+    return exc.error_class, "persistence_read_failed"
+
+
 def _mark_failed_terminal(
     *,
     sessions: SessionStore,
@@ -2203,12 +2247,20 @@ def _mark_failed_terminal(
         {**_error_payload(error), "error": terminal_error},
     )
     if trace_writer is not None:
-        trace_writer.refresh_if_stale(session.session_id)
+        trace_warning = _refresh_trace_observability(
+            trace_writer,
+            session.session_id,
+        )
+    else:
+        trace_warning = None
     return OneShotResult(
         exit_code=1,
         assistant_output=None,
         error=terminal_error,
-        message=str(terminal_error.get("message") or error["message"]),
+        message=_with_trace_warning(
+            str(terminal_error.get("message") or error["message"]),
+            trace_warning,
+        ),
         session_id=session.session_id,
         run_id=run.run_id,
         terminal_failure_summary=not startup_failure,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from debug_agent.observability.logging import (
-    EngineLogWriter,
+    EventsJsonlWriter,
     _level_for_event,
     approval_log_message,
     artifact_log_message,
@@ -15,9 +15,9 @@ from debug_agent.observability.logging import (
 from debug_agent.runtime.contracts import RunEvent
 
 
-def test_engine_log_writer_emits_json_lines_with_required_fields(tmp_path) -> None:
-    log_path = tmp_path / "sess_1" / "logs" / "engine.log"
-    writer = EngineLogWriter(log_path)
+def test_events_jsonl_writer_emits_json_lines_with_required_fields(tmp_path) -> None:
+    log_path = tmp_path / "sess_1" / "logs" / "events.jsonl"
+    writer = EventsJsonlWriter(log_path)
 
     writer.write(
         timestamp="2026-05-12T00:00:00Z",
@@ -58,7 +58,7 @@ def test_skill_observability_events_are_info_level() -> None:
     assert _level_for_event("skill_resource_loaded") == "INFO"
 
 
-def test_skill_events_write_engine_log_fact_messages(tmp_path) -> None:
+def test_skill_events_write_events_jsonl_fact_messages(tmp_path) -> None:
     event = RunEvent(
         event_id="evt_skill_resource",
         timestamp="2026-05-12T00:00:00Z",
@@ -77,12 +77,14 @@ def test_skill_events_write_engine_log_fact_messages(tmp_path) -> None:
 
     write_event_log(tmp_path, event)
 
-    log_path = tmp_path / "sess_1" / "logs" / "engine.log"
+    log_path = tmp_path / "sess_1" / "logs" / "events.jsonl"
     payload = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
     assert payload["message"] == (
         "skill_resource_loaded skill=alpha resource=references/guide.md kind=reference"
     )
     assert payload["metadata"]["payload"]["resource_content_hash"] == "sha256:guide"
+    assert payload["metadata"]["event_id"] == "evt_skill_resource"
+    assert not (tmp_path / "sess_1" / "logs" / "engine.log").exists()
 
 
 def test_phase1_engine_log_helpers_render_required_fact_messages() -> None:

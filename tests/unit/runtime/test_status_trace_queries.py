@@ -78,11 +78,14 @@ def test_trace_query_refreshes_trace_and_returns_summary_after_one_shot(
     assert trace.summary["session_id"] == one_shot.session_id
     assert trace.summary["workspace_root"] == str(workspace.resolve())
     assert trace.summary["run_count"] == 1
-    assert trace.summary["event_count"] >= 1
     assert trace.summary["artifact_count"] == 0
     assert trace.summary["terminal_status"] == "completed"
     assert trace.trace_path.is_file()
-    assert "## Timeline" in trace.trace_path.read_text(encoding="utf-8")
+    assert trace.trace_path.parent.name == "logs"
+    trace_text = trace.trace_path.read_text(encoding="utf-8")
+    assert "## 👤 User" in trace_text
+    assert "## 🤖 Assistant" in trace_text
+    assert "## Timeline" not in trace_text
 
 
 def test_terminal_checkpoint_eligibility_requires_current_terminal_lifecycle(
@@ -96,6 +99,10 @@ def test_terminal_checkpoint_eligibility_requires_current_terminal_lifecycle(
     one_shot = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
         "hello", _config()
     )
+    trace_path = (
+        workspace / ".sessions" / one_shot.session_id / "logs" / "trace.md"
+    )
+    trace_path.write_text("trace before resume", encoding="utf-8")
 
     completed_status = RuntimeOrchestrator(workspace_root=workspace).status(
         one_shot.session_id
@@ -104,6 +111,7 @@ def test_terminal_checkpoint_eligibility_requires_current_terminal_lifecycle(
 
     resume = RuntimeOrchestrator(workspace_root=workspace).resume(one_shot.session_id)
     assert resume.exit_code == 0
+    assert trace_path.read_text(encoding="utf-8") == "trace before resume"
 
     running_status = RuntimeOrchestrator(workspace_root=workspace).status(
         one_shot.session_id
@@ -120,9 +128,10 @@ def test_terminal_checkpoint_eligibility_requires_current_terminal_lifecycle(
     assert running_status.fields["terminal_checkpoint"]["checkpoint_valid"] is True
     assert running_status.fields["terminal_checkpoint"]["eligible"] is False
     trace_text = running_trace.trace_path.read_text(encoding="utf-8")
-    assert "terminal_reason=terminal_completion" in trace_text
-    assert "checkpoint_valid=true" in trace_text
-    assert "eligible=false" in trace_text
+    assert "- **Status**: `running`" in trace_text
+    assert "Terminal Reason" not in trace_text
+    assert "checkpoint_valid=true" not in trace_text
+    assert "eligible=false" not in trace_text
 
 
 def test_status_and_trace_render_phase3_observability_without_recovery_authority(
@@ -269,19 +278,13 @@ def test_status_and_trace_render_phase3_observability_without_recovery_authority
     }
 
     trace_text = trace.trace_path.read_text(encoding="utf-8")
-    assert "## Phase 3 Observability" in trace_text
-    assert "terminal_reason=terminal_completion" in trace_text
-    assert "conversation_high_watermark=2" in trace_text
-    assert "projection_high_watermark=2" in trace_text
-    assert "model_error/provider_timeout" in trace_text
-    assert "model_visible_projection={'error_class': 'model_error'" in trace_text
-    assert "retry_attempt strategy=repeat_call attempt=1/2" in trace_text
-    assert "retry_exhausted strategy=repeat_call attempt=2/2" in trace_text
-    assert "remote_stop_confirmed=false" in trace_text
-    assert "billing_stop_confirmed=false" in trace_text
-    assert "resume outcome=succeeded" in trace_text
-    assert "stale_fail_closed terminal_reason=terminal_stale" in trace_text
-    assert "token_fenced=true" in trace_text
+    assert "## Phase 3 Observability" not in trace_text
+    assert "model_error/provider_timeout" not in trace_text
+    assert "retry_attempt strategy=repeat_call attempt=1/2" not in trace_text
+    assert "resume outcome=succeeded" not in trace_text
+    assert "stale_fail_closed terminal_reason=terminal_stale" not in trace_text
+    assert "hello" in trace_text
+    assert "fake answer" in trace_text
 
 
 def test_status_query_returns_missing_session_error(tmp_path) -> None:

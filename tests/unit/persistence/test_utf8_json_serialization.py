@@ -240,7 +240,7 @@ def test_engine_log_and_context_payload_artifacts_preserve_non_ascii_json(
     )
 
     log_text = (
-        db.path.parent / session.session_id / "logs" / "engine.log"
+        db.path.parent / session.session_id / "logs" / "events.jsonl"
     ).read_text(encoding="utf-8")
     assert UNICODE_TEXT in log_text
     assert "\\u" not in log_text

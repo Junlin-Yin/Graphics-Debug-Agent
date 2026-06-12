@@ -145,6 +145,7 @@ class FakeRuntime:
         )
         self.compress_calls = 0
         self.approval_mode_changes: list[tuple[str, str]] = []
+        self.trace_refresh_warning: str | None = None
 
     def run_turn(self, user_input: str, agent_stream_callback=None) -> AgentRunResult:
         self.run_inputs.append(user_input)
@@ -175,6 +176,11 @@ class FakeRuntime:
 
     def complete(self) -> None:
         self.completed = True
+
+    def consume_trace_refresh_warning(self) -> str | None:
+        warning = self.trace_refresh_warning
+        self.trace_refresh_warning = None
+        return warning
 
     def cycle_approval_mode(self) -> tuple[str, str]:
         order = ["normal", "semi-auto", "yolo"]
@@ -1949,6 +1955,37 @@ def test_exit_slash_command_completes_runtime_and_shows_summary() -> None:
     assert runtime.completed is True
     assert view.closed_summaries[-1].session_id == "sess_123456789"
     assert view.closed_summaries[-1].status == "closed"
+
+
+def test_exit_slash_command_shows_trace_refresh_warning_as_error() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    runtime.trace_refresh_warning = "Trace refresh failed: ui_error/trace_render_failed"
+    controller = ReplController(runtime=runtime, view=view)
+
+    should_continue = controller.on_slash_command("/exit")
+
+    assert should_continue is False
+    assert runtime.completed is True
+    assert view.errors == ["Trace refresh failed: ui_error/trace_render_failed"]
+    assert view.closed_summaries[-1].status == "closed"
+
+
+def test_plain_exit_slash_command_prints_trace_refresh_warning() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    output = io.StringIO()
+    runtime = FakeRuntime()
+    runtime.trace_refresh_warning = "Trace refresh failed: ui_error/trace_render_failed"
+    controller = ReplController(runtime=runtime)
+
+    should_continue = controller.handle_line("/exit", output)
+
+    assert should_continue is False
+    assert runtime.completed is True
+    assert "Trace refresh failed: ui_error/trace_render_failed" in output.getvalue()
 
 
 def test_completed_turn_adapts_tool_results_into_tool_blocks() -> None:

@@ -68,6 +68,7 @@ def map_error_to_exit_code(
         return ERROR_TOOL_CALL
     if error_class == "persistence_error" and reason in {
         "persistence_read_failed",
+        "sqlite_busy_timeout",
         "checkpoint_missing",
         "checkpoint_invalid",
         "conversation_cut_invalid",
@@ -93,7 +94,10 @@ def map_error_to_exit_code(
         "resume_checkpoint_required",
     }:
         return ERROR_EXECUTION_FAILED
-    if error_class == "ui_error" and reason == "stream_render_failed" and boundary == "trace":
+    if error_class == "ui_error" and reason in {
+        "stream_render_failed",
+        "trace_render_failed",
+    } and boundary == "trace":
         return ERROR_TRACE_RENDER
     if error_class == "cancelled" and reason == "user_cancel_process":
         return INTERRUPTED

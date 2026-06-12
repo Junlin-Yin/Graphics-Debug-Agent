@@ -509,34 +509,34 @@ After Milestone 9 completes, trace/events integration verification passes, and t
 
 **Freeze/review checkpoint:** do not cut over default user-facing prompt execution to Phase 3.5 or perform final UI polish until trace/events paths, render validation, non-authoritative failure semantics, and trace/events integration verification are reviewed.
 
-- [ ] Rename `EngineLogWriter` to `EventsJsonlWriter` and update imports/tests.
-- [ ] Change JSONL observability output path from `logs/engine.log` to `logs/events.jsonl`.
-- [ ] Preserve the existing JSONL entry schema while changing only the canonical writer name and output path.
-- [ ] Ensure `write_event_log` entries for persisted run-event observations include `metadata.event_id`.
-- [ ] Ensure `write_runtime_log` entries remain runtime diagnostic observations and may lack `metadata.event_id`.
-- [ ] Add tests proving `status`, `trace`, `resume`, checkpoint validation, and recovery do not read `events.jsonl` as runtime truth.
-- [ ] Change trace output path from `.sessions/<session_id>/trace.md` to `.sessions/<session_id>/logs/trace.md`.
-- [ ] Remove legacy trace/log compatibility, migration, copy, or symlink behavior.
-- [ ] Render trace header and session summary exactly from the Phase 3.5 observability spec.
-- [ ] Render user messages, assistant final messages, assistant tool-call groups with paired tool results, and runtime failure/cancellation facts.
-- [ ] Filter `context_summary` rows without replacement notice.
-- [ ] Exclude ordinary run events, checkpoint internals, approval internals, context compression internals, admin timeline events, and event counts from trace.
-- [ ] Validate durable rows, closed groups, contiguous positions, tool-call/result pairing, supported statuses, artifact references, and session/run scope before rendering.
-- [ ] Preserve user and assistant content as-is without Markdown escaping or sanitization.
-- [ ] Render tool arguments/results as indented plain preview blocks, not fenced code blocks.
-- [ ] Redact write/edit sensitive arguments in trace using documented redaction hashes and byte counts.
-- [ ] Use unique same-directory temporary files and atomic replace for automatic and manual trace writes.
-- [ ] Ensure concurrent automatic and manual trace writes are last-writer-wins while the final `logs/trace.md` is always one complete render.
-- [ ] Make `debug-agent trace <session_id>` rebuild trace from a consistent SQLite read transaction without claiming ownership.
-- [ ] Ensure manual `debug-agent trace <session_id>` may run against a running session, does not wait for or block on an active runner, and never changes active owner state.
-- [ ] Map SQLite busy after bounded read handling to `persistence_error/sqlite_busy_timeout`; map ordinary trace read failures to `persistence_error/persistence_read_failed`.
-- [ ] Ensure manual trace failures leave existing `logs/trace.md` unchanged.
-- [ ] Map manual trace render/write failure after lookup succeeds to `ui_error/trace_render_failed` and CLI `ERROR_TRACE_RENDER = 11`.
-- [ ] Ensure automatic trace refresh failures after terminal checkpoint success do not alter lifecycle, exit code, runtime truth, or events JSONL.
-- [ ] Show automatic trace refresh failure in the current CLI/UI surface, including a REPL/TUI error block, without persisting that failure as runtime truth.
-- [ ] Run `uv run pytest tests/unit -v`.
-- [ ] Run `uv run pytest tests/integration -v` with coverage focused on trace generation and events path behavior.
-- [ ] Record trace/events integration verification evidence for review. Default user-facing prompt execution remains on the existing Phase 3 path until this milestone has passed review.
+- [x] Rename `EngineLogWriter` to `EventsJsonlWriter` and update imports/tests.
+- [x] Change JSONL observability output path from `logs/engine.log` to `logs/events.jsonl`.
+- [x] Preserve the existing JSONL entry schema while changing only the canonical writer name and output path.
+- [x] Ensure `write_event_log` entries for persisted run-event observations include `metadata.event_id`.
+- [x] Ensure `write_runtime_log` entries remain runtime diagnostic observations and may lack `metadata.event_id`.
+- [x] Add tests proving `status`, `trace`, `resume`, checkpoint validation, and recovery do not read `events.jsonl` as runtime truth.
+- [x] Change trace output path from `.sessions/<session_id>/trace.md` to `.sessions/<session_id>/logs/trace.md`.
+- [x] Remove legacy trace/log compatibility, migration, copy, or symlink behavior.
+- [x] Render trace header and session summary exactly from the Phase 3.5 observability spec.
+- [x] Render user messages, assistant final messages, assistant tool-call groups with paired tool results, and runtime failure/cancellation facts.
+- [x] Filter `context_summary` rows without replacement notice.
+- [x] Exclude ordinary run events, checkpoint internals, approval internals, context compression internals, admin timeline events, and event counts from trace.
+- [x] Validate durable rows, closed groups, contiguous positions, tool-call/result pairing, supported statuses, artifact references, and session/run scope before rendering.
+- [x] Preserve user and assistant content as-is without Markdown escaping or sanitization.
+- [x] Render tool arguments/results as indented plain preview blocks, not fenced code blocks.
+- [x] Redact write/edit sensitive arguments in trace using documented redaction hashes and byte counts.
+- [x] Use unique same-directory temporary files and atomic replace for automatic and manual trace writes.
+- [x] Ensure concurrent automatic and manual trace writes are last-writer-wins while the final `logs/trace.md` is always one complete render.
+- [x] Make `debug-agent trace <session_id>` rebuild trace from a consistent SQLite read transaction without claiming ownership.
+- [x] Ensure manual `debug-agent trace <session_id>` may run against a running session, does not wait for or block on an active runner, and never changes active owner state.
+- [x] Map SQLite busy after bounded read handling to `persistence_error/sqlite_busy_timeout`; map ordinary trace read failures to `persistence_error/persistence_read_failed`.
+- [x] Ensure manual trace failures leave existing `logs/trace.md` unchanged.
+- [x] Map manual trace render/write failure after lookup succeeds to `ui_error/trace_render_failed` and CLI `ERROR_TRACE_RENDER = 11`.
+- [x] Ensure automatic trace refresh failures after terminal checkpoint success do not alter lifecycle, exit code, runtime truth, or events JSONL.
+- [x] Show automatic trace refresh failure in the current CLI/UI surface, including a REPL/TUI error block, without persisting that failure as runtime truth.
+- [x] Run `uv run pytest tests/unit -v`.
+- [x] Run `uv run pytest tests/integration -v` with coverage focused on trace generation and events path behavior.
+- [x] Record trace/events integration verification evidence for review. Default user-facing prompt execution remains on the existing Phase 3 path until this milestone has passed review.
 
 ## Milestone 10: REPL/TUI Presentation, Status/Trace Surface, And Acceptance Prep
 

@@ -112,28 +112,25 @@ def test_status_and_trace_commands_inspect_completed_one_shot(tmp_path) -> None:
     assert "trace_path:" in trace.stdout
     assert f"session_id: {session_id}" in trace.stdout
     assert "terminal_status: completed" in trace.stdout
-    trace_path = workspace / ".sessions" / session_id / "trace.md"
+    trace_path = workspace / ".sessions" / session_id / "logs" / "trace.md"
     assert trace_path.is_file()
     trace_text = trace_path.read_text(encoding="utf-8")
-    assert "## Session Summary" in trace_text
-    assert "## Phase 3 Observability" in trace_text
-    assert "terminal_reason=terminal_completion" in trace_text
-    assert "conversation_high_watermark=2" in trace_text
-    assert "projection_high_watermark=2" in trace_text
-    assert "retry: none" in trace_text
-    assert "cancellation: none" in trace_text
-    assert "resume: none" in trace_text
-    assert "stale_fail_closed: none" in trace_text
-    assert "model_call_started" in trace_text
-    assert "checkpoint_written" in trace_text
-    assert "session_completed" in trace_text
+    assert "# debug-agent conversation trace" in trace_text
+    assert "**📊 Session Information**" in trace_text
+    assert "## 👤 User" in trace_text
+    assert "## 🤖 Assistant" in trace_text
+    assert "## Phase 3 Observability" not in trace_text
+    assert "model_call_started" not in trace_text
+    assert "checkpoint_written" not in trace_text
+    assert not (workspace / ".sessions" / session_id / "trace.md").exists()
 
 
-def test_one_shot_writes_engine_log_json_lines(tmp_path) -> None:
+def test_one_shot_writes_events_jsonl_lines(tmp_path) -> None:
     _, _, workspace, session_id = _run_one_shot(tmp_path)
 
-    log_path = workspace / ".sessions" / session_id / "logs" / "engine.log"
+    log_path = workspace / ".sessions" / session_id / "logs" / "events.jsonl"
     assert log_path.is_file()
+    assert not (workspace / ".sessions" / session_id / "logs" / "engine.log").exists()
     entries = [
         json.loads(line)
         for line in log_path.read_text(encoding="utf-8").splitlines()
@@ -293,17 +290,15 @@ def test_trace_command_renders_phase1_skill_approval_tool_and_compression_events
 
     assert trace.returncode == 0
     trace_text = (
-        workspace / ".sessions" / "sess_phase1_trace" / "trace.md"
+        workspace / ".sessions" / "sess_phase1_trace" / "logs" / "trace.md"
     ).read_text(encoding="utf-8")
-    assert "skill_snapshot_created" in trace_text
-    assert "skill_activated" in trace_text
-    assert "approval_requested" in trace_text
-    assert "approval_decision_recorded" in trace_text
-    assert "tool_call_denied" in trace_text
-    assert "Shell command denied by policy." in trace_text
-    assert "context_optimized" in trace_text
-    assert "trigger=compression" in trace_text
-    assert "reduced=1200->450" in trace_text
+    assert "skill_snapshot_created" not in trace_text
+    assert "skill_activated" not in trace_text
+    assert "approval_requested" not in trace_text
+    assert "approval_decision_recorded" not in trace_text
+    assert "tool_call_denied" not in trace_text
+    assert "context_optimized" not in trace_text
+    assert "reduced=1200->450" not in trace_text
 
 
 def test_startup_status_and_trace_fail_closed_on_legacy_schema(tmp_path) -> None:

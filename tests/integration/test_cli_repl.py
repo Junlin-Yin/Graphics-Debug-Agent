@@ -596,7 +596,8 @@ def test_repl_idle_approval_mode_cycle_persists_event_and_engine_log(
     assert payload["new_mode"] == "semi-auto"
     assert view.status_bars[-1].approval_mode == "semi-auto"
 
-    log_path = workspace / ".sessions" / session_id / "logs" / "engine.log"
+    log_path = workspace / ".sessions" / session_id / "logs" / "events.jsonl"
+    assert not (workspace / ".sessions" / session_id / "logs" / "engine.log").exists()
     log_events = [
         json.loads(line)
         for line in log_path.read_text(encoding="utf-8").splitlines()
