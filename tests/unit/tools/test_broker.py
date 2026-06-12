@@ -697,6 +697,7 @@ def test_edit_file_replaces_first_exact_match_on_normalized_lf_view(tmp_path) ->
     runtime = _runtime(tmp_path, approval_mode="semi-auto")
     target = runtime["workspace"] / "mixed.txt"
     target.write_bytes(b"first\r\nold\r\nsecond\r\nold\r\n")
+    _invoke(runtime, "read_file", {"path": "mixed.txt"})
 
     result = _invoke(
         runtime,
@@ -727,6 +728,7 @@ def test_edit_file_returns_tool_error_when_old_text_absent_or_not_found(tmp_path
     assert absent.status == "error"
     assert missing.status == "error"
     assert absent.error["error_class"] == "tool_error"
+    assert absent.error["reason"] == "tool_schema_invalid"
     assert missing.error["error_class"] == "tool_error"
     runtime["db"].close()
 
@@ -735,6 +737,7 @@ def test_edit_file_lf_fallback_when_no_dominant_line_ending(tmp_path) -> None:
     runtime = _runtime(tmp_path, approval_mode="semi-auto")
     target = runtime["workspace"] / "single.txt"
     target.write_text("old", encoding="utf-8")
+    _invoke(runtime, "read_file", {"path": "single.txt"})
 
     result = _invoke(
         runtime,
@@ -744,6 +747,197 @@ def test_edit_file_lf_fallback_when_no_dominant_line_ending(tmp_path) -> None:
 
     assert result.status == "ok"
     assert target.read_bytes() == b"new\nline"
+    runtime["db"].close()
+
+
+def test_edit_file_requires_fresh_cache_and_replace_all_for_multiple_matches(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="semi-auto")
+    target = runtime["workspace"] / "notes.txt"
+    target.write_text("old\nold\n", encoding="utf-8")
+
+    missing_cache = _invoke(
+        runtime,
+        "edit_file",
+        {"path": "notes.txt", "old_text": "old", "new_text": "new"},
+    )
+    _invoke(runtime, "read_file", {"path": "notes.txt"})
+    multiple = _invoke(
+        runtime,
+        "edit_file",
+        {"path": "notes.txt", "old_text": "old", "new_text": "new"},
+    )
+    all_matches = _invoke(
+        runtime,
+        "edit_file",
+        {
+            "path": "notes.txt",
+            "old_text": "old",
+            "new_text": "new",
+            "replace_all": True,
+        },
+    )
+    assert target.read_text(encoding="utf-8") == "new\nnew\n"
+    target.write_text("external\n", encoding="utf-8")
+    stale = _invoke(
+        runtime,
+        "edit_file",
+        {"path": "notes.txt", "old_text": "external", "new_text": "guarded"},
+    )
+
+    assert missing_cache.status == "error"
+    assert "read_file first" in missing_cache.error["message"]
+    assert multiple.status == "error"
+    assert "exactly one match" in multiple.error["message"]
+    assert all_matches.status == "ok"
+    assert all_matches.output["replacements"] == 2
+    assert all_matches.output["guard"] == {"used": True, "cache_source": "read_file"}
+    assert stale.status == "error"
+    assert "read_file again" in stale.error["message"]
+    runtime["db"].close()
+
+
+def test_write_file_overwrite_requires_cache_and_updates_guarded_cache(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="semi-auto")
+    target = runtime["workspace"] / "empty.txt"
+    target.write_text("", encoding="utf-8")
+
+    missing_cache = _invoke(
+        runtime,
+        "write_file",
+        {"path": "empty.txt", "content": "first"},
+    )
+    _invoke(runtime, "read_file", {"path": "empty.txt"})
+    overwrite = _invoke(
+        runtime,
+        "write_file",
+        {"path": "empty.txt", "content": "first"},
+    )
+    target.write_text("external", encoding="utf-8")
+    stale = _invoke(
+        runtime,
+        "write_file",
+        {"path": "empty.txt", "content": "second"},
+    )
+
+    assert missing_cache.status == "error"
+    assert "read_file first" in missing_cache.error["message"]
+    assert overwrite.status == "ok"
+    assert overwrite.output["created"] is False
+    assert overwrite.output["overwritten"] is True
+    assert overwrite.output["sha256_before"] == sha256(b"").hexdigest()
+    assert overwrite.output["sha256_after"] == sha256(b"first").hexdigest()
+    assert overwrite.output["guard"] == {"used": True, "cache_source": "read_file"}
+    assert stale.status == "error"
+    assert "read_file again" in stale.error["message"]
+    cache = runtime["broker"].file_metadata_cache_snapshot()
+    assert cache[str(target.resolve())]["sha256"] == sha256(b"first").hexdigest()
+    runtime["db"].close()
+
+
+def test_write_file_parent_directory_approval_scope_and_audit(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    provider = FakeApprovalProvider("approved_once")
+    grants = ApprovalGrantStore(runtime["db"].connection)
+
+    result = _invoke(
+        runtime,
+        "write_file",
+        {"path": "nested/new/file.txt", "content": "created"},
+        approval_provider=provider,
+        approval_grants=grants,
+    )
+
+    planned = [
+        str((runtime["workspace"] / "nested").resolve()),
+        str((runtime["workspace"] / "nested" / "new").resolve()),
+    ]
+    events = runtime["events"].list_for_run("run_1")
+    completed = [event.payload for event in events if event.kind == "tool_call_completed"][0]
+    approval_rows = runtime["db"].connection.execute(
+        "SELECT scope_signature, approval_request FROM approval_grants"
+    ).fetchall()
+
+    assert result.status == "ok"
+    assert result.output["created"] is True
+    assert result.output["overwritten"] is False
+    assert result.output["guard"] == {"used": False, "cache_source": None}
+    assert provider.requests[0][1]["planned_parent_directories"] == planned
+    assert "Planned parent directories:" in provider.requests[0][0]
+    assert all(directory in provider.requests[0][0] for directory in planned)
+    assert "planned_parents:" + ",".join(planned) in approval_rows[0][0]
+    assert all(directory in approval_rows[0][1] for directory in planned)
+    assert completed["arguments"]["planned_parent_directories"] == planned
+    runtime["db"].close()
+
+
+def test_write_file_create_new_target_race_fails_without_overwrite(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="semi-auto")
+    target = runtime["workspace"] / "race.txt"
+    original_open = Path.open
+    armed = {"value": True}
+
+    def racing_open(self, mode="r", *args, **kwargs):
+        if self.resolve() == target.resolve() and "x" in mode and armed["value"]:
+            armed["value"] = False
+            target.write_text("raced", encoding="utf-8")
+        return original_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", racing_open)
+
+    result = _invoke(
+        runtime,
+        "write_file",
+        {"path": "race.txt", "content": "new"},
+    )
+
+    assert result.status == "error"
+    assert result.error["reason"] == "tool_execution_failed"
+    assert target.read_text(encoding="utf-8") == "raced"
+    assert runtime["broker"].file_metadata_cache_snapshot() == {}
+    runtime["db"].close()
+
+
+def test_write_file_timeout_after_parent_creation_audits_side_effects_without_cache(
+    tmp_path,
+) -> None:
+    class _TimeoutAfterFirstParentRouter:
+        def route(self, context, arguments):
+            parent = Path(arguments["planned_parent_directories"][0])
+            parent.mkdir()
+            context.record_created_directory(parent)
+            time.sleep(0.01)
+            context.check_deadline()
+            return NativeHandlerResult(status="ok", output={})
+
+    runtime = _runtime(tmp_path, approval_mode="semi-auto")
+    runtime["broker"] = ToolBroker(
+        event_writer=runtime["events"],
+        artifact_store=runtime["artifacts"],
+        timeout_seconds=0.01,
+        router=_TimeoutAfterFirstParentRouter(),
+    )
+
+    result = _invoke(
+        runtime,
+        "write_file",
+        {"path": "nested/file.txt", "content": "late"},
+        timeout_seconds=0.001,
+    )
+    failed = [event.payload for event in runtime["events"].list_for_run("run_1") if event.kind == "tool_call_failed"][-1]
+
+    assert result.status == "timeout"
+    assert (runtime["workspace"] / "nested").is_dir()
+    assert not (runtime["workspace"] / "nested" / "file.txt").exists()
+    assert failed["side_effects"]["created_directories"] == [
+        str((runtime["workspace"] / "nested").resolve())
+    ]
+    assert failed["file_write_completed"] is False
+    assert failed["cache_updated"] is False
+    assert runtime["broker"].file_metadata_cache_snapshot() == {}
     runtime["db"].close()
 
 
@@ -2131,6 +2325,7 @@ def test_write_and_edit_audit_arguments_are_redacted_without_changing_approval_s
     target.write_text("old", encoding="utf-8")
 
     write = _invoke(runtime, "write_file", {"path": "new.txt", "content": "secret"})
+    read = _invoke(runtime, "read_file", {"path": "notes.txt"})
     edit = _invoke(
         runtime,
         "edit_file",
@@ -2143,9 +2338,14 @@ def test_write_and_edit_audit_arguments_are_redacted_without_changing_approval_s
         if event.kind == "tool_call_completed"
     ]
     assert write.status == "ok"
+    assert read.status == "ok"
     assert edit.status == "ok"
-    write_args = completed[0]["arguments"]
-    edit_args = completed[1]["arguments"]
+    write_args = [
+        payload for payload in completed if payload["tool_name"] == "write_file"
+    ][0]["arguments"]
+    edit_args = [
+        payload for payload in completed if payload["tool_name"] == "edit_file"
+    ][0]["arguments"]
     assert "content" not in write_args
     assert write_args["content_sha256"] == sha256(b"secret").hexdigest()
     assert write_args["content_bytes"] == len(b"secret")

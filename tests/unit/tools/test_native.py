@@ -4,6 +4,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 from debug_agent.tools import native
 from debug_agent.tools.native import tool_definitions
@@ -22,6 +23,23 @@ class _TrackingWriteLockContext:
             lock = self._locks.setdefault(canonical, threading.RLock())
         with lock:
             yield
+
+    def guard_existing_file(self, path):
+        import hashlib
+
+        return SimpleNamespace(
+            source_tool="read_file",
+            sha256=hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+        )
+
+    def record_file_metadata(self, path, *, source_tool):
+        return None
+
+    def check_deadline(self):
+        return None
+
+    def record_created_directory(self, path):
+        return None
 
 
 def test_native_tool_definitions_are_phase1_metadata() -> None:
@@ -121,6 +139,10 @@ def test_native_tool_schemas_require_fields_and_positive_limits() -> None:
         "default": 0,
     }
     assert search_schema["context"] == {"type": "integer", "minimum": 0, "maximum": 10}
+    assert definitions["edit_file"].input_schema["properties"]["replace_all"] == {
+        "type": "boolean",
+        "default": False,
+    }
 
 
 def test_shell_exec_definition_is_not_a_native_tool() -> None:
@@ -136,6 +158,7 @@ def test_write_file_uses_context_write_lock_for_same_canonical_path(
     tmp_path, monkeypatch
 ) -> None:
     target = tmp_path / "locked.txt"
+    target.write_text("seed", encoding="utf-8")
     context = _TrackingWriteLockContext()
     active = 0
     max_active = 0
@@ -143,12 +166,12 @@ def test_write_file_uses_context_write_lock_for_same_canonical_path(
     first_entered = threading.Event()
     release_first = threading.Event()
     state_lock = threading.Lock()
-    original_write_text = Path.write_text
+    original_atomic_write_text = native._atomic_write_text
 
-    def tracking_write_text(self, *args, **kwargs):
+    def tracking_atomic_write_text(path, *args, **kwargs):
         nonlocal active, calls, max_active
-        if self.resolve() != target.resolve():
-            return original_write_text(self, *args, **kwargs)
+        if Path(path).resolve() != target.resolve():
+            return original_atomic_write_text(path, *args, **kwargs)
         with state_lock:
             calls += 1
             call_number = calls
@@ -159,12 +182,12 @@ def test_write_file_uses_context_write_lock_for_same_canonical_path(
             release_first.wait(timeout=1)
         try:
             time.sleep(0.01)
-            return original_write_text(self, *args, **kwargs)
+            return original_atomic_write_text(path, *args, **kwargs)
         finally:
             with state_lock:
                 active -= 1
 
-    monkeypatch.setattr(Path, "write_text", tracking_write_text)
+    monkeypatch.setattr(native, "_atomic_write_text", tracking_atomic_write_text)
 
     first = threading.Thread(
         target=native.write_file,
@@ -191,7 +214,7 @@ def test_edit_file_uses_context_write_lock_for_same_canonical_path(
     tmp_path, monkeypatch
 ) -> None:
     target = tmp_path / "locked.txt"
-    target.write_text("old old", encoding="utf-8")
+    target.write_text("old", encoding="utf-8")
     context = _TrackingWriteLockContext()
     active = 0
     max_active = 0
@@ -199,12 +222,12 @@ def test_edit_file_uses_context_write_lock_for_same_canonical_path(
     first_entered = threading.Event()
     release_first = threading.Event()
     state_lock = threading.Lock()
-    original_write_text = Path.write_text
+    original_atomic_write_text = native._atomic_write_text
 
-    def tracking_write_text(self, *args, **kwargs):
+    def tracking_atomic_write_text(path, *args, **kwargs):
         nonlocal active, calls, max_active
-        if self.resolve() != target.resolve():
-            return original_write_text(self, *args, **kwargs)
+        if Path(path).resolve() != target.resolve():
+            return original_atomic_write_text(path, *args, **kwargs)
         with state_lock:
             calls += 1
             call_number = calls
@@ -215,20 +238,20 @@ def test_edit_file_uses_context_write_lock_for_same_canonical_path(
             release_first.wait(timeout=1)
         try:
             time.sleep(0.01)
-            return original_write_text(self, *args, **kwargs)
+            return original_atomic_write_text(path, *args, **kwargs)
         finally:
             with state_lock:
                 active -= 1
 
-    monkeypatch.setattr(Path, "write_text", tracking_write_text)
+    monkeypatch.setattr(native, "_atomic_write_text", tracking_atomic_write_text)
 
     first = threading.Thread(
         target=native.edit_file,
-        args=(context, {"path": str(target), "old_text": "old", "new_text": "new"}),
+        args=(context, {"path": str(target), "old_text": "old", "new_text": "old"}),
     )
     second = threading.Thread(
         target=native.edit_file,
-        args=(context, {"path": str(target), "old_text": "old", "new_text": "new"}),
+        args=(context, {"path": str(target), "old_text": "old", "new_text": "old"}),
     )
     first.start()
     assert first_entered.wait(timeout=1)

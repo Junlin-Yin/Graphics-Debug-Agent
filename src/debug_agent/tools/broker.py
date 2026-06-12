@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from hashlib import sha256
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
 from typing import Any, Protocol
@@ -183,6 +183,11 @@ class FileMetadataCache:
         with self._lock:
             return {path: entry.to_dict() for path, entry in self._entries.items()}
 
+    def get(self, path: str | Path) -> FileMetadataCacheEntry | None:
+        canonical = str(Path(path).resolve())
+        with self._lock:
+            return self._entries.get(canonical)
+
     def commit(self, updates: list[tuple[str, FileMetadataCacheEntry]]) -> None:
         if not updates:
             return
@@ -260,12 +265,49 @@ class ToolUseContext:
     effective_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS
     cancellation_timeout_seconds: float = 10
     file_metadata_cache_stage: FileMetadataUpdateStage | None = None
+    file_metadata_cache: FileMetadataCache | None = None
     write_lock_registry: WriteLockRegistry | None = None
+    tool_deadline: _ToolDeadline | None = None
+    created_directories: list[str] = field(default_factory=list)
+    side_effect_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def record_file_metadata(self, path: str | Path, *, source_tool: str) -> None:
         if self.file_metadata_cache_stage is None:
             raise RuntimeError("File metadata cache stage is unavailable.")
         self.file_metadata_cache_stage.record(path, source_tool=source_tool)
+
+    def guard_existing_file(self, path: str | Path) -> FileMetadataCacheEntry:
+        if self.file_metadata_cache is None:
+            raise RuntimeError("File metadata cache is unavailable.")
+        canonical = Path(path).resolve()
+        entry = self.file_metadata_cache.get(canonical)
+        if entry is None:
+            raise RuntimeError("read_file first before modifying an existing file.")
+        current_sha = _file_sha256(canonical)
+        if current_sha != entry.sha256:
+            raise RuntimeError("File changed since last observation; run read_file again.")
+        return entry
+
+    def check_deadline(self) -> None:
+        if self.tool_deadline is not None:
+            self.tool_deadline.check()
+
+    def record_created_directory(self, path: str | Path) -> None:
+        canonical = str(Path(path).resolve())
+        with self.side_effect_lock:
+            if canonical not in self.created_directories:
+                self.created_directories.append(canonical)
+
+    def write_side_effect_metadata(self) -> dict[str, Any]:
+        with self.side_effect_lock:
+            created = list(self.created_directories)
+        if not created:
+            return {}
+        return {
+            "side_effects": {"created_directories": created},
+            "file_write_completed": False,
+            "cache_updated": False,
+        }
 
     def write_lock_for_path(self, path: str | Path):
         if self.write_lock_registry is None:
@@ -671,6 +713,11 @@ class ToolBroker:
                 target=normalized.target,
                 risk_level=definition.risk_level,
                 grant_scope="once or session",
+                planned_parent_directories=normalized_arguments.get(
+                    "planned_parent_directories", []
+                )
+                if tool_name == "write_file"
+                else [],
             )
             is_interactive_prompt = bool(
                 getattr(approval_provider, "is_interactive", False)
@@ -682,6 +729,10 @@ class ToolBroker:
                 "target": normalized.target,
                 "grant_scope": "once or session",
             }
+            if tool_name == "write_file":
+                approval_facts["planned_parent_directories"] = list(
+                    normalized_arguments.get("planned_parent_directories", [])
+                )
             if is_interactive_prompt:
                 self._write_event(
                     session_id=session_id,
@@ -793,7 +844,9 @@ class ToolBroker:
                 frozen_config=context.get("frozen_config", {})
             ),
             file_metadata_cache_stage=cache_stage,
+            file_metadata_cache=self._file_metadata_cache,
             write_lock_registry=self._write_locks,
+            tool_deadline=deadline,
         )
 
         executor: ThreadPoolExecutor | None = None
@@ -817,6 +870,8 @@ class ToolBroker:
             metadata = {}
             if definition.name == "shell_exec":
                 metadata["effective_timeout_seconds"] = route_timeout_seconds
+            if definition.name == "write_file":
+                metadata.update(tool_context.write_side_effect_metadata())
             result = _timeout_result(route_timeout_seconds, metadata=metadata)
             self._write_event(
                 session_id=session_id,
@@ -845,7 +900,10 @@ class ToolBroker:
         except Exception as exc:
             if executor is not None:
                 executor.shutdown(wait=False, cancel_futures=True)
-            result = tool_error_result(str(exc), source=tool_name)
+            metadata = {}
+            if definition.name == "write_file":
+                metadata.update(tool_context.write_side_effect_metadata())
+            result = tool_error_result(str(exc), source=tool_name, metadata=metadata)
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
@@ -873,7 +931,10 @@ class ToolBroker:
                 prepared=prepared,
             )
         except Exception as exc:
-            result = tool_error_result(str(exc), source=tool_name)
+            metadata = {}
+            if definition.name == "write_file":
+                metadata.update(tool_context.write_side_effect_metadata())
+            result = tool_error_result(str(exc), source=tool_name, metadata=metadata)
             self._write_event(
                 session_id=session_id,
                 run_id=run_id,
@@ -894,6 +955,11 @@ class ToolBroker:
             self._file_metadata_cache.commit(cache_stage.take_updates())
         else:
             cache_stage.abandon()
+            if definition.name == "write_file":
+                result = _with_metadata(
+                    result,
+                    tool_context.write_side_effect_metadata(),
+                )
         event_kind = "tool_call_completed" if result.status == "ok" else "tool_call_failed"
         self._write_event(
             session_id=session_id,
@@ -1585,6 +1651,14 @@ def _file_metadata_update(
     )
 
 
+def _file_sha256(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _join_schema_path(prefix: str, key: str) -> str:
     return f"{prefix}.{key}" if prefix else key
 
@@ -1846,6 +1920,10 @@ def _validate_phase_3_5_native_semantics(
         ignore = arguments.get("ignore")
         if isinstance(ignore, list):
             return validate_list_dir_ignore_patterns(ignore)
+    if definition.name == "edit_file":
+        old_text = arguments.get("old_text")
+        if isinstance(old_text, str) and old_text == "":
+            return "old_text must be non-empty."
     return None
 
 
@@ -1915,6 +1993,12 @@ def _normalize_tool_arguments(
         normalized_arguments["path"] = normalized_arguments["path"].strip()
     canonical_path = canonicalize_path(normalized_arguments["path"], workspace_root)
     normalized_arguments["path"] = str(canonical_path)
+    planned_parent_directories: list[Path] = []
+    if definition.name == "write_file":
+        planned_parent_directories = _planned_parent_directories(canonical_path)
+        normalized_arguments["planned_parent_directories"] = [
+            str(path) for path in planned_parent_directories
+        ]
     if definition.name == "search_text":
         scope_signature = _phase_3_5_scope_signature(
             definition.name,
@@ -1958,7 +2042,7 @@ def _normalize_tool_arguments(
         )
     return NormalizedBrokerArguments(
         arguments=normalized_arguments,
-        paths=(canonical_path,),
+        paths=(canonical_path, *planned_parent_directories),
         shell_argv=(),
         scope_signature=scope_signature,
         target=_target_for_path_tool(definition.name, normalized_arguments, canonical_path),
@@ -2206,17 +2290,21 @@ def _phase_3_5_scope_signature(
             f"replace_all:{bool(arguments.get('replace_all'))}"
         )
     if tool_name == "write_file":
-        parent = canonical_path.parent
-        planned: list[str] = []
-        cursor = parent
-        while not cursor.exists():
-            planned.append(str(cursor.resolve()))
-            if cursor.parent == cursor:
-                break
-            cursor = cursor.parent
-        planned_part = ",".join(reversed(planned))
+        planned = arguments.get("planned_parent_directories") or []
+        planned_part = ",".join(str(path) for path in planned)
         return f"write_file|write|write:{path}|planned_parents:{planned_part}"
     return f"{tool_name}|{risk_level}|{access}:{path}"
+
+
+def _planned_parent_directories(canonical_path: Path) -> list[Path]:
+    planned: list[Path] = []
+    cursor = canonical_path.parent
+    while not cursor.exists():
+        planned.append(cursor.resolve())
+        if cursor.parent == cursor:
+            break
+        cursor = cursor.parent
+    return list(reversed(planned))
 
 
 def _target_for_shell(argv: list[str], policy_cwd: Path, workspace_root: Path) -> str:
@@ -2374,16 +2462,17 @@ def _approval_request(
     target: str,
     risk_level: str,
     grant_scope: str,
+    planned_parent_directories: list[str] | tuple[str, ...] = (),
 ) -> str:
-    return "\n".join(
-        [
-            "=== Approval Request ===",
-            f"Tool: {tool_name}",
-            f"Target: {target}",
-            "",
-            "Allow? [y]once, [a] session, [n] deny",
-        ]
-    )
+    lines = [
+        "=== Approval Request ===",
+        f"Tool: {tool_name}",
+        f"Target: {target}",
+    ]
+    if planned_parent_directories:
+        lines.append("Planned parent directories:")
+        lines.extend(f"- {path}" for path in planned_parent_directories)
+    return "\n".join([*lines, "", "Allow? [y]once, [a] session, [n] deny"])
 
 
 def _observation_size(output: dict[str, Any]) -> int:
@@ -2475,6 +2564,26 @@ def _timeout_result(timeout_seconds: float, *, metadata: dict[str, Any] | None =
     )
 
 
+def _with_metadata(result: ToolResult, metadata: dict[str, Any]) -> ToolResult:
+    if not metadata:
+        return result
+    merged_metadata = {**(result.metadata or {}), **metadata}
+    error = result.error
+    if isinstance(error, dict):
+        error = dict(error)
+        error_metadata = error.get("metadata")
+        if isinstance(error_metadata, dict):
+            error["metadata"] = {**error_metadata, **metadata}
+    return ToolResult(
+        status=result.status,
+        output=result.output,
+        error=error,
+        artifacts=result.artifacts,
+        metadata=merged_metadata,
+        redacted_output=result.redacted_output,
+    )
+
+
 def _cancelled_tool_result(
     message: str,
     *,
@@ -2523,6 +2632,10 @@ def _audit_payload(
         payload["error"] = result.error
         payload["error_class"] = result.error["error_class"]
         payload["message"] = result.error["message"]
+    metadata = result.metadata if isinstance(result.metadata, dict) else {}
+    for key in ("side_effects", "file_write_completed", "cache_updated"):
+        if key in metadata:
+            payload[key] = metadata[key]
     if result.status == "ok":
         payload["result"] = result.to_dict()
     if tool_name == "view_image":

@@ -441,28 +441,28 @@ After Milestone 9 completes, trace/events integration verification passes, and t
 
 **Freeze/review checkpoint:** do not cut over default user-facing prompt execution to Phase 3.5 until guarded write behavior and durable tool-result serialization are reviewed.
 
-- [ ] Add `replace_all` boolean default `false` to `edit_file`.
-- [ ] Make default `edit_file` replacement require exactly one LF-normalized match.
-- [ ] Make `replace_all=true` replace all matches while failing on zero matches.
-- [ ] Preserve dominant existing line endings for `edit_file` write-back after LF-normalized matching; write LF when no dominant existing style can be determined.
-- [ ] Reject empty `old_text` with `tool_error/tool_schema_invalid`.
-- [ ] Require cache guard for every existing-file `edit_file`.
-- [ ] Require cache guard for every overwrite `write_file`.
-- [ ] Recompute current raw-byte SHA-256 before guarded writes and fail on cache mismatch.
-- [ ] Use same-directory temporary files and atomic replace for existing-file writes.
-- [ ] For create-new `write_file`, compute the minimal missing parent-directory chain and require each candidate parent directory plus the final target path to pass path policy before approval or creation.
-- [ ] Include the exact canonical planned parent-directory creation set in `write_file` reusable approval scope, approval/UI presentation, and normalized audit arguments.
-- [ ] Keep parent-directory approval scoped to the final canonical target file path; do not widen it to a reusable directory grant.
-- [ ] Keep create-new `write_file` exclusive-create semantics and create cache entry after success.
-- [ ] Fail a create-new `write_file` race with `tool_error/tool_execution_failed` if the target appears between missing-target classification and exclusive create; do not convert it to overwrite.
-- [ ] Add cooperative deadline checks before parent-directory creation, exclusive create, overwrite temp-file write, atomic replace, cache update, and artifact/result handling.
-- [ ] Advance cache after successful guarded `edit_file` and overwrite `write_file`.
-- [ ] Emit structured outputs with canonical `path`, byte count, before/after hashes, created/overwritten flags where applicable, and guard metadata.
-- [ ] Record documented minimal side-effect audit facts when `write_file` creates parent directories before failure or timeout.
-- [ ] Verify failed or timed-out `write_file` calls that created parent directories do not report file write success and do not update the file metadata cache.
-- [ ] Add tests for `edit_file` line-ending preservation, `write_file` parent-directory approval scope/audit, target-race failure, and timeout side-effect audit.
-- [ ] Add tests proving direct existing-file write after resume fails until `read_file` observes the file.
-- [ ] Run `uv run pytest tests/unit -v`.
+- [x] Add `replace_all` boolean default `false` to `edit_file`.
+- [x] Make default `edit_file` replacement require exactly one LF-normalized match.
+- [x] Make `replace_all=true` replace all matches while failing on zero matches.
+- [x] Preserve dominant existing line endings for `edit_file` write-back after LF-normalized matching; write LF when no dominant existing style can be determined.
+- [x] Reject empty `old_text` with `tool_error/tool_schema_invalid`.
+- [x] Require cache guard for every existing-file `edit_file`.
+- [x] Require cache guard for every overwrite `write_file`.
+- [x] Recompute current raw-byte SHA-256 before guarded writes and fail on cache mismatch.
+- [x] Use same-directory temporary files and atomic replace for existing-file writes.
+- [x] For create-new `write_file`, compute the minimal missing parent-directory chain and require each candidate parent directory plus the final target path to pass path policy before approval or creation.
+- [x] Include the exact canonical planned parent-directory creation set in `write_file` reusable approval scope, approval/UI presentation, and normalized audit arguments.
+- [x] Keep parent-directory approval scoped to the final canonical target file path; do not widen it to a reusable directory grant.
+- [x] Keep create-new `write_file` exclusive-create semantics and create cache entry after success.
+- [x] Fail a create-new `write_file` race with `tool_error/tool_execution_failed` if the target appears between missing-target classification and exclusive create; do not convert it to overwrite.
+- [x] Add cooperative deadline checks before parent-directory creation, exclusive create, overwrite temp-file write, atomic replace, cache update, and artifact/result handling.
+- [x] Advance cache after successful guarded `edit_file` and overwrite `write_file`.
+- [x] Emit structured outputs with canonical `path`, byte count, before/after hashes, created/overwritten flags where applicable, and guard metadata.
+- [x] Record documented minimal side-effect audit facts when `write_file` creates parent directories before failure or timeout.
+- [x] Verify failed or timed-out `write_file` calls that created parent directories do not report file write success and do not update the file metadata cache.
+- [x] Add tests for `edit_file` line-ending preservation, `write_file` parent-directory approval scope/audit, target-race failure, and timeout side-effect audit.
+- [x] Add tests proving direct existing-file write after resume fails until `read_file` observes the file.
+- [x] Run `uv run pytest tests/unit -v`.
 
 ## Milestone 8: Shell, View Image, Runtime-Control Compatibility, And Tool Availability Completion
 

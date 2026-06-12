@@ -59,8 +59,13 @@ def is_search_text_type_allowed(type_name: str) -> bool:
 class NativeToolContext(Protocol):
     workspace_root: Path
     permission_evaluator: PermissionEvaluator
+    effective_timeout_seconds: float
 
     def write_lock_for_path(self, path: str | Path): ...
+    def record_file_metadata(self, path: str | Path, *, source_tool: str) -> None: ...
+    def guard_existing_file(self, path: str | Path): ...
+    def check_deadline(self) -> None: ...
+    def record_created_directory(self, path: str | Path) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -263,13 +268,14 @@ def tool_definitions() -> list[ToolDefinition]:
         ),
         ToolDefinition(
             name="edit_file",
-            description="Replace exact text in file.",
+            description="Replace exact UTF-8 text in an existing file.",
             input_schema={
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
                     "old_text": {"type": "string"},
                     "new_text": {"type": "string"},
+                    "replace_all": {"type": "boolean", "default": False},
                 },
                 "required": ["path", "old_text", "new_text"],
                 "additionalProperties": False,
@@ -659,12 +665,84 @@ def search_text(context: NativeToolContext, arguments: dict[str, Any]) -> Native
     return NativeHandlerResult(status="error", error_message="Unsupported output_mode.")
 
 
-def write_file(context: NativeToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+def write_file(context: NativeToolContext, arguments: dict[str, Any]) -> NativeHandlerResult:
     target = Path(arguments["path"])
+    content = arguments["content"]
+    encoded = content.encode("utf-8")
     with context.write_lock_for_path(target):
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(arguments["content"], encoding="utf-8")
-    return {"path": target.as_posix(), "bytes": len(arguments["content"].encode("utf-8"))}
+        context.check_deadline()
+        existed = target.exists()
+        if existed:
+            try:
+                guard_entry = context.guard_existing_file(target)
+                sha_before = guard_entry.sha256
+                context.check_deadline()
+                _atomic_write_text(target, content, context=context)
+                context.check_deadline()
+                sha_after = _sha256_bytes(encoded)
+                context.record_file_metadata(target, source_tool="write_file")
+                context.check_deadline()
+            except UnicodeEncodeError:
+                return NativeHandlerResult(
+                    status="error",
+                    error_message="content must be valid UTF-8 text.",
+                )
+            except Exception as exc:
+                if _is_deadline_exception(exc):
+                    raise
+                return NativeHandlerResult(status="error", error_message=str(exc))
+            return NativeHandlerResult(
+                status="ok",
+                output={
+                    "path": str(target.resolve()),
+                    "bytes": len(encoded),
+                    "created": False,
+                    "overwritten": True,
+                    "sha256_before": sha_before,
+                    "sha256_after": sha_after,
+                    "guard": {
+                        "used": True,
+                        "cache_source": guard_entry.source_tool,
+                    },
+                },
+            )
+
+        try:
+            for directory in arguments.get("planned_parent_directories", []):
+                context.check_deadline()
+                candidate = Path(directory)
+                candidate.mkdir()
+                context.record_created_directory(candidate)
+            context.check_deadline()
+            with target.open("x", encoding="utf-8", newline="") as handle:
+                handle.write(content)
+            context.check_deadline()
+            context.record_file_metadata(target, source_tool="write_file")
+            context.check_deadline()
+        except FileExistsError:
+            return NativeHandlerResult(
+                status="error",
+                error_message="Target appeared before exclusive create; refusing overwrite.",
+            )
+        except Exception as exc:
+            if _is_deadline_exception(exc):
+                raise
+            return NativeHandlerResult(status="error", error_message=str(exc))
+    return NativeHandlerResult(
+        status="ok",
+        output={
+            "path": str(target.resolve()),
+            "bytes": len(encoded),
+            "created": True,
+            "overwritten": False,
+            "sha256_before": None,
+            "sha256_after": _sha256_bytes(encoded),
+            "guard": {
+                "used": False,
+                "cache_source": None,
+            },
+        },
+    )
 
 
 def edit_file(context: NativeToolContext, arguments: dict[str, Any]) -> NativeHandlerResult:
@@ -676,25 +754,65 @@ def edit_file(context: NativeToolContext, arguments: dict[str, Any]) -> NativeHa
         )
     target = Path(arguments["path"])
     with context.write_lock_for_path(target):
-        raw = target.read_bytes()
-        text = raw.decode("utf-8")
-        line_ending = _dominant_line_ending(raw)
-        normalized = _normalize_lf(text)
-        old_normalized = _normalize_lf(old_text)
-        new_normalized = _normalize_lf(arguments["new_text"])
-        if old_normalized not in normalized:
+        try:
+            context.check_deadline()
+            if not target.exists():
+                return NativeHandlerResult(
+                    status="error",
+                    error_message="edit_file target does not exist.",
+                )
+            guard_entry = context.guard_existing_file(target)
+            sha_before = guard_entry.sha256
+            raw = target.read_bytes()
+            text = raw.decode("utf-8")
+            line_ending = _dominant_line_ending(raw)
+            normalized = _normalize_lf(text)
+            old_normalized = _normalize_lf(old_text)
+            new_normalized = _normalize_lf(arguments["new_text"])
+            replacements = normalized.count(old_normalized)
+            if replacements == 0:
+                return NativeHandlerResult(
+                    status="error",
+                    error_message="old_text was not found.",
+                )
+            if not bool(arguments.get("replace_all", False)) and replacements != 1:
+                return NativeHandlerResult(
+                    status="error",
+                    error_message="old_text must have exactly one match unless replace_all is true.",
+                )
+            replaced = normalized.replace(
+                old_normalized,
+                new_normalized,
+                -1 if bool(arguments.get("replace_all", False)) else 1,
+            )
+            output_text = replaced.replace("\n", line_ending)
+            context.check_deadline()
+            _atomic_write_text(target, output_text, context=context)
+            context.check_deadline()
+            output_bytes = output_text.encode("utf-8")
+            context.record_file_metadata(target, source_tool="edit_file")
+            context.check_deadline()
+        except UnicodeDecodeError:
             return NativeHandlerResult(
                 status="error",
-                error_message="old_text was not found.",
+                error_message="File is not valid UTF-8 text.",
             )
-        replaced = normalized.replace(old_normalized, new_normalized, 1)
-        output_text = replaced.replace("\n", line_ending)
-        target.write_text(output_text, encoding="utf-8", newline="")
+        except Exception as exc:
+            if _is_deadline_exception(exc):
+                raise
+            return NativeHandlerResult(status="error", error_message=str(exc))
     return NativeHandlerResult(
         status="ok",
         output={
-            "path": target.as_posix(),
-            "replacements": 1,
+            "path": str(target.resolve()),
+            "replacements": replacements if bool(arguments.get("replace_all", False)) else 1,
+            "bytes": len(output_bytes),
+            "sha256_before": sha_before,
+            "sha256_after": _sha256_bytes(output_bytes),
+            "guard": {
+                "used": True,
+                "cache_source": guard_entry.source_tool,
+            },
         },
     )
 
@@ -1347,6 +1465,39 @@ def _normalize_lf(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _atomic_write_text(target: Path, content: str, *, context: NativeToolContext) -> None:
+    temp_path: Path | None = None
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        newline="",
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temp_path = Path(handle.name)
+        handle.write(content)
+    try:
+        context.check_deadline()
+        os.replace(temp_path, target)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        raise
+
+
+def _is_deadline_exception(exc: Exception) -> bool:
+    return exc.__class__.__name__ == "_ToolDeadlineExceeded"
+
+
 def _display_path(path: Path, workspace_root: Path) -> str:
     try:
         return path.relative_to(workspace_root).as_posix()
@@ -1361,7 +1512,11 @@ def _dominant_line_ending(raw: bytes) -> str:
     cr = without_crlf.count(b"\r")
     counts = [("\r\n", crlf), ("\n", lf), ("\r", cr)]
     winner, count = max(counts, key=lambda item: item[1])
-    return winner if count > 0 else "\n"
+    if count == 0:
+        return "\n"
+    if sum(1 for _, candidate_count in counts if candidate_count == count) > 1:
+        return "\n"
+    return winner
 
 
 def tool_error_result(
