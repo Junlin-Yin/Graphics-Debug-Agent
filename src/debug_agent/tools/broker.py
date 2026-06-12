@@ -33,11 +33,25 @@ from debug_agent.runtime.policy import (
 from debug_agent.tools import runtime_control as runtime_control_tools
 from debug_agent.tools import shell as shell_tools
 from debug_agent.tools import view_image as view_image_tools
-from debug_agent.tools.native import NativeHandlerResult, tool_definitions, tool_error_result, tool_handlers
+from debug_agent.tools.native import (
+    NativeHandlerResult,
+    tool_definitions,
+    tool_error_result,
+    tool_handlers,
+    validate_list_dir_ignore_patterns,
+    validate_portable_glob_pattern,
+)
 from debug_agent.tools.runtime_control import RuntimeControlHandlerResult
 from debug_agent.tools.settings import (
     DEFAULT_TOOL_TIMEOUT_SECONDS,
+    FIND_FILE_DEFAULT_MAX_RESULTS,
+    FIND_FILE_MAX_RESULTS,
     LARGE_OUTPUT_THRESHOLD_BYTES,
+    LIST_DIR_DEFAULT_LIMIT,
+    LIST_DIR_MAX_IGNORE_PATTERNS,
+    LIST_DIR_MAX_LIMIT,
+    READ_FILE_DEFAULT_LIMIT,
+    READ_FILE_MAX_LIMIT,
 )
 from debug_agent.tools.shell import ShellHandlerResult
 from debug_agent.tools.view_image import ViewImageResult
@@ -425,6 +439,32 @@ class ToolBroker:
         if search_semantic_error is not None:
             result = _error_result(
                 search_semantic_error,
+                error_class="tool_error",
+                reason="tool_schema_invalid",
+                metadata={"tool_name": tool_name},
+            )
+            self._write_event(
+                session_id=session_id,
+                run_id=run_id,
+                kind="tool_call_failed",
+                audit_recorder=tool_audit_recorder,
+                payload=_audit_payload(
+                    tool_name=tool_name,
+                    arguments=normalized_arguments,
+                    result=result,
+                    duration_seconds=monotonic() - start,
+                    target="",
+                    approval_wait_duration_ms=0,
+                ),
+            )
+            return result
+        native_semantic_error = _validate_phase_3_5_native_semantics(
+            definition=definition,
+            arguments=normalized_arguments,
+        )
+        if native_semantic_error is not None:
+            result = _error_result(
+                native_semantic_error,
                 error_class="tool_error",
                 reason="tool_schema_invalid",
                 metadata={"tool_name": tool_name},
@@ -1557,8 +1597,8 @@ def _schema_for_validation(definition: ToolDefinition) -> dict[str, Any]:
                 "limit": {
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 2000,
-                    "default": 2000,
+                    "maximum": READ_FILE_MAX_LIMIT,
+                    "default": READ_FILE_DEFAULT_LIMIT,
                 },
             },
             "required": ["path"],
@@ -1572,19 +1612,38 @@ def _schema_for_validation(definition: ToolDefinition) -> dict[str, Any]:
                 "ignore": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "maxItems": 100,
+                    "maxItems": LIST_DIR_MAX_IGNORE_PATTERNS,
                     "default": [],
                 },
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
                 "limit": {
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 1000,
-                    "default": 200,
+                    "maximum": LIST_DIR_MAX_LIMIT,
+                    "default": LIST_DIR_DEFAULT_LIMIT,
                 },
                 "include_hidden": {"type": "boolean", "default": False},
             },
             "required": ["path"],
+            "additionalProperties": False,
+        }
+    if definition.name == "find_file":
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "default": "."},
+                "pattern": {"type": "string"},
+                "case_sensitive": {"type": "boolean", "default": False},
+                "include_hidden": {"type": "boolean", "default": False},
+                "maxResults": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": FIND_FILE_MAX_RESULTS,
+                    "default": FIND_FILE_DEFAULT_MAX_RESULTS,
+                },
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+            },
+            "required": ["pattern"],
             "additionalProperties": False,
         }
     if definition.name == "search_text":
@@ -1780,6 +1839,24 @@ def _validate_search_text_semantics(
     return None
 
 
+def _validate_phase_3_5_native_semantics(
+    *,
+    definition: ToolDefinition,
+    arguments: dict[str, Any],
+) -> str | None:
+    if definition.name == "find_file":
+        pattern = arguments.get("pattern")
+        if isinstance(pattern, str):
+            if not pattern.strip():
+                return "pattern must be non-empty."
+            return validate_portable_glob_pattern(pattern)
+    if definition.name == "list_dir":
+        ignore = arguments.get("ignore")
+        if isinstance(ignore, list):
+            return validate_list_dir_ignore_patterns(ignore)
+    return None
+
+
 def _policy_facts_from_context(context: dict[str, Any], workspace_root: Path) -> PolicyFacts:
     policy_facts = context.get("policy_facts")
     if isinstance(policy_facts, PolicyFacts):
@@ -1849,6 +1926,13 @@ def _normalize_tool_arguments(
     canonical_path = canonicalize_path(normalized_arguments["path"], workspace_root)
     normalized_arguments["path"] = str(canonical_path)
     if definition.name == "search_text":
+        scope_signature = _phase_3_5_scope_signature(
+            definition.name,
+            risk_level=definition.risk_level,
+            canonical_path=canonical_path,
+            arguments=normalized_arguments,
+        )
+    elif definition.name == "find_file":
         scope_signature = _phase_3_5_scope_signature(
             definition.name,
             risk_level=definition.risk_level,
@@ -2088,6 +2172,8 @@ def _target_for_path_tool(
 ) -> str:
     if tool_name == "search_text":
         return f"{arguments['pattern']} in {canonical_path}"
+    if tool_name == "find_file":
+        return f"{arguments['pattern']} under {canonical_path}"
     return str(canonical_path)
 
 
@@ -2116,6 +2202,12 @@ def _phase_3_5_scope_signature(
             f"output_mode:{arguments.get('output_mode', '')}|"
             f"before_context_effective:{arguments.get('before_context_effective', 0)}|"
             f"after_context_effective:{arguments.get('after_context_effective', 0)}|"
+            f"include_hidden:{bool(arguments.get('include_hidden'))}"
+        )
+    if tool_name == "find_file":
+        return (
+            f"find_file|read|read:{path}|pattern:{arguments.get('pattern', '')}|"
+            f"case_sensitive:{bool(arguments.get('case_sensitive'))}|"
             f"include_hidden:{bool(arguments.get('include_hidden'))}"
         )
     if tool_name == "edit_file":

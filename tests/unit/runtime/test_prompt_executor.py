@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 
 from debug_agent.adapters.langchain_adapter import LangChainAgentLoopAdapter
 from debug_agent.adapters.model_factory import FakeChatModel
@@ -659,7 +660,17 @@ def test_prompt_executor_appends_accepted_tool_call_and_tool_result_messages(
         "tool_name": "",
         "tool_call_id": "model_call_1_tool_1",
         "status": "ok",
-        "content": "hello",
+        "content": {
+            "path": str((workspace / "notes.txt").resolve()),
+            "content": "hello",
+            "offset": 0,
+            "limit": 2000,
+            "total_returned": 1,
+            "truncated": False,
+            "next_offset": None,
+            "sha256": sha256(b"hello").hexdigest(),
+            "bytes": 5,
+        },
         "error": None,
         "artifact_ids": [],
         "metadata": {},
@@ -1376,9 +1387,9 @@ def test_tool_loop_followup_runs_compression_before_second_model_call(tmp_path) 
             "config_snapshot": {
                 **session.config_snapshot,
                 "context": {
-                    "window_tokens": 1000,
+                    "window_tokens": 2000,
                     "omit_old_tool_results_at_ratio": 1.0,
-                    "compress_history_at_ratio": 0.7,
+                    "compress_history_at_ratio": 0.25,
                     "retain_recent_model_calls": 1,
                     "compression_reserved_output_tokens": 40,
                 },
@@ -1760,8 +1771,8 @@ def test_tool_loop_current_buffer_seq_does_not_protect_retained_tool_result(
             "config_snapshot": {
                 **session.config_snapshot,
                 "context": {
-                    "window_tokens": 1000,
-                    "omit_old_tool_results_at_ratio": 0.9,
+                    "window_tokens": 2000,
+                    "omit_old_tool_results_at_ratio": 0.4,
                     "retain_recent_model_calls": 1,
                 },
             },
@@ -3729,7 +3740,9 @@ def test_repl_runtime_persists_tool_loop_messages_for_next_turn_context(tmp_path
         "I will read the notes before answering."
     )
     assert runtime.conversation[2]["model_call_id"] == "model_call_1"
-    assert runtime.conversation[2]["content"]["content"] == "persisted tool output"
+    assert runtime.conversation[2]["content"]["content"]["content"] == (
+        "persisted tool output"
+    )
     second_turn_messages = [
         _provider_message_content(message) for message in model.messages_by_call[2]
     ]

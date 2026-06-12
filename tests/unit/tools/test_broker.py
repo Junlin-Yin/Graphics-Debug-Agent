@@ -311,21 +311,29 @@ def test_schema_validation_rejects_unknown_fields_and_invalid_limits(tmp_path) -
 
     extra = _invoke(runtime, "read_file", {"path": "notes.txt", "extra": True})
     zero = _invoke(runtime, "read_file", {"path": "notes.txt", "limit": 0})
+    too_many_lines = _invoke(runtime, "read_file", {"path": "notes.txt", "limit": 2001})
+    too_many_entries = _invoke(runtime, "list_dir", {"path": ".", "limit": 1001})
     missing = _invoke(runtime, "search_text", {"path": "."})
     old_query = _invoke(runtime, "search_text", {"query": "hello"})
     boolean_limit = _invoke(runtime, "read_file", {"path": "notes.txt", "limit": True})
 
     assert extra.status == "error"
     assert zero.status == "error"
+    assert too_many_lines.status == "error"
+    assert too_many_entries.status == "error"
     assert missing.status == "error"
     assert old_query.status == "error"
     assert boolean_limit.status == "error"
     assert extra.error["error_class"] == "tool_error"
     assert extra.error["reason"] == "tool_schema_invalid"
     assert zero.error["message"] == "limit must be a positive integer."
+    assert too_many_lines.error["reason"] == "tool_schema_invalid"
+    assert too_many_entries.error["reason"] == "tool_schema_invalid"
     assert old_query.error["message"] == "Unknown field: query"
     assert boolean_limit.error["message"] == "limit must be an integer."
     assert _event_kinds(runtime) == [
+        "tool_call_failed",
+        "tool_call_failed",
         "tool_call_failed",
         "tool_call_failed",
         "tool_call_failed",
@@ -385,7 +393,15 @@ def test_read_file_auto_allows_trusted_workspace_under_normal(tmp_path) -> None:
     result = _invoke(runtime, "read_file", {"path": "notes.txt", "limit": 2})
 
     assert result.status == "ok"
-    assert result.output == "a\nb\n"
+    assert result.output["path"] == str((runtime["workspace"] / "notes.txt").resolve())
+    assert result.output["content"] == "a\nb\n"
+    assert result.output["offset"] == 0
+    assert result.output["limit"] == 2
+    assert result.output["total_returned"] == 2
+    assert result.output["truncated"] is True
+    assert result.output["next_offset"] == 2
+    assert result.output["sha256"] == sha256(b"a\nb\nc\n").hexdigest()
+    assert result.output["bytes"] == 6
     assert _event_kinds(runtime) == ["tool_call_started", "tool_call_completed"]
     runtime["db"].close()
 
@@ -406,7 +422,8 @@ def test_read_outside_trusted_workspace_requires_approval_under_normal(tmp_path)
     assert denied.status == "denied"
     assert denied.error["message"] == "Approval denied."
     assert approved.status == "ok"
-    assert approved.output == "secret"
+    assert approved.output["content"] == "secret"
+    assert approved.output["path"] == str(outside.resolve())
     runtime["db"].close()
 
 
@@ -747,16 +764,213 @@ def test_list_dir_lists_immediate_entries_sorted_with_limit(tmp_path) -> None:
     runtime = _runtime(tmp_path, approval_mode="normal")
     (runtime["workspace"] / "b.txt").write_text("b", encoding="utf-8")
     (runtime["workspace"] / "a").mkdir()
+    (runtime["workspace"] / "c.txt").write_text("c", encoding="utf-8")
 
-    result = _invoke(runtime, "list_dir", {"path": ".", "limit": 2})
+    result = _invoke(runtime, "list_dir", {"path": ".", "limit": 2, "offset": 1})
 
     assert result.status == "ok"
     assert result.output == {
+        "path": str(runtime["workspace"].resolve()),
         "entries": [
-            {"name": "a", "type": "directory"},
             {"name": "b.txt", "type": "file"},
-        ]
+            {"name": "c.txt", "type": "file"},
+        ],
+        "offset": 1,
+        "limit": 2,
+        "total_returned": 2,
+        "truncated": False,
+        "next_offset": None,
     }
+    assert runtime["broker"].file_metadata_cache_snapshot() == {}
+    runtime["db"].close()
+
+
+def test_list_dir_filters_hidden_denied_and_ignore_patterns(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    workspace = runtime["workspace"]
+    (workspace / ".hidden").write_text("hidden", encoding="utf-8")
+    (workspace / "keep.txt").write_text("keep", encoding="utf-8")
+    (workspace / "skip.log").write_text("skip", encoding="utf-8")
+    (workspace / "build").mkdir()
+    (workspace / "build" / "secret.txt").write_text("secret", encoding="utf-8")
+    (workspace / "sub").mkdir()
+
+    hidden_excluded = _invoke(
+        runtime,
+        "list_dir",
+        {"path": ".", "ignore": ["*.log", "sub/"], "include_hidden": False},
+    )
+    hidden_included = _invoke(
+        runtime,
+        "list_dir",
+        {"path": ".", "ignore": ["*.log", "sub/**"], "include_hidden": True},
+    )
+    bad_ignore = _invoke(runtime, "list_dir", {"path": ".", "ignore": ["a/b"]})
+
+    assert hidden_excluded.status == "ok"
+    assert hidden_excluded.output["entries"] == [{"name": "keep.txt", "type": "file"}]
+    assert hidden_included.status == "ok"
+    assert hidden_included.output["entries"] == [
+        {"name": ".hidden", "type": "file"},
+        {"name": "keep.txt", "type": "file"},
+    ]
+    assert "build" not in str(hidden_included.output)
+    assert bad_ignore.status == "error"
+    assert bad_ignore.error["reason"] == "tool_schema_invalid"
+    runtime["db"].close()
+
+
+def test_read_file_pagination_utf8_and_cache_update(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    target = runtime["workspace"] / "notes.txt"
+    target.write_text("one\ntwo\nthree", encoding="utf-8")
+    bad = runtime["workspace"] / "bad.bin"
+    bad.write_bytes(b"\xff")
+
+    page = _invoke(runtime, "read_file", {"path": "notes.txt", "offset": 1, "limit": 1})
+    beyond = _invoke(runtime, "read_file", {"path": "notes.txt", "offset": 99})
+    decode_error = _invoke(runtime, "read_file", {"path": "bad.bin"})
+
+    assert page.status == "ok"
+    assert page.output == {
+        "path": str(target.resolve()),
+        "content": "two\n",
+        "offset": 1,
+        "limit": 1,
+        "total_returned": 1,
+        "truncated": True,
+        "next_offset": 2,
+        "sha256": sha256(target.read_bytes()).hexdigest(),
+        "bytes": len(target.read_bytes()),
+    }
+    assert beyond.status == "ok"
+    assert beyond.output["content"] == ""
+    assert beyond.output["total_returned"] == 0
+    assert beyond.output["truncated"] is False
+    assert beyond.output["next_offset"] is None
+    assert decode_error.status == "error"
+    assert decode_error.error["reason"] == "tool_execution_failed"
+    cache = runtime["broker"].file_metadata_cache_snapshot()
+    assert cache[str(target.resolve())]["sha256"] == sha256(target.read_bytes()).hexdigest()
+    assert str(bad.resolve()) not in cache
+    runtime["db"].close()
+
+
+def test_find_file_defaults_to_workspace_and_returns_sorted_files_only(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    workspace = runtime["workspace"]
+    (workspace / "src").mkdir()
+    (workspace / "src" / "b.py").write_text("b", encoding="utf-8")
+    (workspace / "src" / "A.PY").write_text("a", encoding="utf-8")
+    (workspace / "src" / "nested").mkdir()
+    (workspace / "src" / "nested" / "c.py").write_text("c", encoding="utf-8")
+    (workspace / ".hidden.py").write_text("hidden", encoding="utf-8")
+
+    result = _invoke(runtime, "find_file", {"pattern": "**/*.py", "maxResults": 2})
+
+    expected = sorted(
+        [
+            str((workspace / "src" / "A.PY").resolve()),
+            str((workspace / "src" / "b.py").resolve()),
+            str((workspace / "src" / "nested" / "c.py").resolve()),
+        ]
+    )
+    assert result.status == "ok"
+    assert result.output == {
+        "root": str(workspace.resolve()),
+        "pattern": "**/*.py",
+        "matches": expected[:2],
+        "offset": 0,
+        "maxResults": 2,
+        "total_returned": 2,
+        "truncated": True,
+        "next_offset": 2,
+    }
+    assert runtime["broker"].file_metadata_cache_snapshot() == {}
+    runtime["db"].close()
+
+
+def test_find_file_glob_subset_character_classes_casefold_and_hidden(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    workspace = runtime["workspace"]
+    (workspace / "docs").mkdir()
+    (workspace / "docs" / "Alpha.TXT").write_text("a", encoding="utf-8")
+    (workspace / "docs" / "beta.txt").write_text("b", encoding="utf-8")
+    (workspace / ".secret.txt").write_text("hidden", encoding="utf-8")
+
+    class_match = _invoke(runtime, "find_file", {"pattern": "docs/[A]*.txt"})
+    single_char = _invoke(
+        runtime,
+        "find_file",
+        {"pattern": "docs/beta.tx?", "case_sensitive": True},
+    )
+    hidden = _invoke(
+        runtime,
+        "find_file",
+        {"pattern": "*.txt", "include_hidden": True},
+    )
+
+    assert class_match.status == "ok"
+    assert class_match.output["matches"] == [
+        str((workspace / "docs" / "Alpha.TXT").resolve())
+    ]
+    assert single_char.status == "ok"
+    assert single_char.output["matches"] == [
+        str((workspace / "docs" / "beta.txt").resolve())
+    ]
+    assert hidden.status == "ok"
+    assert hidden.output["matches"] == [str((workspace / ".secret.txt").resolve())]
+    runtime["db"].close()
+
+
+def test_find_file_rejects_unsupported_glob_before_policy(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+
+    bad_backslash = _invoke(runtime, "find_file", {"path": ".sessions", "pattern": r"\*.py"})
+    bad_glob = _invoke(runtime, "find_file", {"path": ".sessions", "pattern": "a**.py"})
+    bad_class = _invoke(runtime, "find_file", {"path": ".sessions", "pattern": "[!a].py"})
+    malformed_class = _invoke(runtime, "find_file", {"path": ".sessions", "pattern": "[abc"})
+    brace = _invoke(runtime, "find_file", {"path": ".sessions", "pattern": "{a,b}.py"})
+    empty = _invoke(runtime, "find_file", {"path": ".sessions", "pattern": "   "})
+
+    assert bad_backslash.status == "error"
+    assert bad_backslash.error["reason"] == "tool_schema_invalid"
+    assert bad_glob.status == "error"
+    assert bad_glob.error["reason"] == "tool_schema_invalid"
+    assert bad_class.status == "error"
+    assert bad_class.error["reason"] == "tool_schema_invalid"
+    assert malformed_class.status == "error"
+    assert malformed_class.error["reason"] == "tool_schema_invalid"
+    assert brace.status == "error"
+    assert brace.error["reason"] == "tool_schema_invalid"
+    assert empty.status == "error"
+    assert empty.error["reason"] == "tool_schema_invalid"
+    runtime["db"].close()
+
+
+def test_find_file_symlink_directory_and_file_target_policy(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    workspace = runtime["workspace"]
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret", encoding="utf-8")
+    (workspace / "real").mkdir()
+    (workspace / "real" / "ok.txt").write_text("ok", encoding="utf-8")
+    (workspace / "file_link.txt").symlink_to(workspace / "real" / "ok.txt")
+    (workspace / "dir_link").symlink_to(workspace / "real", target_is_directory=True)
+    (workspace / "escape.txt").symlink_to(outside / "secret.txt")
+
+    result = _invoke(runtime, "find_file", {"pattern": "**/*.txt"})
+
+    assert result.status == "ok"
+    assert result.output["matches"] == sorted(
+        [
+            str((workspace.resolve() / "file_link.txt")),
+            str((workspace / "real" / "ok.txt").resolve()),
+        ]
+    )
+    assert all("dir_link" not in path for path in result.output["matches"])
+    assert all("escape" not in path for path in result.output["matches"])
     runtime["db"].close()
 
 

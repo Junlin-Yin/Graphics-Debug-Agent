@@ -331,6 +331,7 @@ def test_one_shot_default_path_exposes_todo_but_keeps_view_image_gated(
     assert [tool["name"] for tool in captured["tool_schema_bindings"]] == [
         "read_file",
         "list_dir",
+        "find_file",
         "search_text",
         "write_file",
         "edit_file",

@@ -30,6 +30,7 @@ def test_native_tool_definitions_are_phase1_metadata() -> None:
     assert set(definitions) == {
         "read_file",
         "list_dir",
+        "find_file",
         "search_text",
         "write_file",
         "edit_file",
@@ -47,6 +48,7 @@ def test_native_tool_schemas_require_fields_and_positive_limits() -> None:
 
     assert definitions["read_file"].input_schema["required"] == ["path"]
     assert definitions["list_dir"].input_schema["required"] == ["path"]
+    assert definitions["find_file"].input_schema["required"] == ["pattern"]
     assert definitions["search_text"].input_schema["required"] == ["pattern"]
     assert definitions["write_file"].input_schema["required"] == ["path", "content"]
     assert definitions["edit_file"].input_schema["required"] == [
@@ -54,11 +56,39 @@ def test_native_tool_schemas_require_fields_and_positive_limits() -> None:
         "old_text",
         "new_text",
     ]
-    for name in ("read_file", "list_dir"):
-        assert definitions[name].input_schema["properties"]["limit"] == {
-            "type": "integer",
-            "minimum": 1,
-        }
+    assert definitions["read_file"].input_schema["properties"]["offset"] == {
+        "type": "integer",
+        "minimum": 0,
+        "default": 0,
+    }
+    assert definitions["read_file"].input_schema["properties"]["limit"] == {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 2000,
+        "default": 2000,
+    }
+    assert definitions["list_dir"].input_schema["properties"]["ignore"] == {
+        "type": "array",
+        "items": {"type": "string"},
+        "maxItems": 100,
+        "default": [],
+    }
+    assert definitions["list_dir"].input_schema["properties"]["include_hidden"] == {
+        "type": "boolean",
+        "default": False,
+    }
+    find_schema = definitions["find_file"].input_schema["properties"]
+    assert find_schema["path"] == {"type": "string"}
+    assert find_schema["pattern"] == {"type": "string"}
+    assert find_schema["case_sensitive"] == {"type": "boolean", "default": False}
+    assert find_schema["include_hidden"] == {"type": "boolean", "default": False}
+    assert find_schema["maxResults"] == {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000,
+        "default": 100,
+    }
+    assert find_schema["offset"] == {"type": "integer", "minimum": 0, "default": 0}
     search_schema = definitions["search_text"].input_schema["properties"]
     assert "query" not in search_schema
     assert search_schema["pattern"] == {"type": "string"}

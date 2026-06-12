@@ -365,21 +365,21 @@ After Milestone 9 completes, trace/events integration verification passes, and t
 
 **Freeze/review checkpoint:** do not implement `search_text` until controlled traversal, portable glob matching, deterministic sorting, and read cache updates are reviewed.
 
-- [ ] Implement portable glob subset for `*`, `?`, `[...]`, and full-segment `**`.
-- [ ] Reject unsupported glob syntax and backslash with `tool_error/tool_schema_invalid`.
-- [ ] Implement approved-root candidate traversal with builtin/user deny, hidden filtering, symlink directory non-recursion, and symlink file target policy checks.
-- [ ] Add `find_file` schema, approval scope behavior, deterministic canonical-path sorting, file-only results, pagination, and structured output.
-- [ ] Enhance `read_file` with `offset`, default and maximum `limit = 2000`, structured output, UTF-8 failure mapping, streaming or bounded-memory whole-file hashing, and cache update on success.
-- [ ] Enhance `list_dir` with `ignore`, `offset`, `include_hidden`, default `limit = 200`, hard maximum `1000`, immediate-child filtering, and structured output.
-- [ ] Ensure `find_file`, `read_file`, and `list_dir` use canonical absolute paths in ordinary model-visible output.
-- [ ] Add tests for empty/whitespace paths, omitted-path defaults where allowed, `"."` workspace-root behavior, pagination metadata, and next offset rules.
-- [ ] Add portable glob tests for `*`, `?`, `[...]`, full-segment `**`, non-segment `**` rejection, negated/malformed character class rejection, brace/extglob/backslash rejection, `/` separator behavior, and `case_sensitive=false` `str.casefold()` matching with canonical-path sorting.
-- [ ] Add `list_dir.ignore` tests for literal names, `*`, `?`, `foo/`, `foo/**`, and rejection of `a/b`, bare `**`, `*.py/`, nested patterns, character classes, brace expansion, extglob, and backslash.
-- [ ] Add discovery traversal tests for inherited builtin denies including `.sessions/`, `.git/`, dependency/build/cache directories, global skill source roots, and project skill source roots without denying unrelated directories named `skills`.
-- [ ] Add symlink tests proving symlink directories are not recursively followed, symlink file target policy is checked on the resolved target, and successful results return/sort/paginate by the normalized symlink candidate path.
-- [ ] Add `read_file` tests for UTF-8 decode failure, `offset` beyond EOF, final line without newline, whole-file byte count, whole-file raw-byte SHA-256, and bounded or streaming hash/page collection behavior.
-- [ ] Add tests proving `list_dir`, `find_file`, and `view_image` do not create write-guard cache entries; `search_text` cache behavior is verified in Milestone 6 after the tool exists.
-- [ ] Run `uv run pytest tests/unit -v`.
+- [x] Implement portable glob subset for `*`, `?`, `[...]`, and full-segment `**`.
+- [x] Reject unsupported glob syntax and backslash with `tool_error/tool_schema_invalid`.
+- [x] Implement approved-root candidate traversal with builtin/user deny, hidden filtering, symlink directory non-recursion, and symlink file target policy checks.
+- [x] Add `find_file` schema, approval scope behavior, deterministic canonical-path sorting, file-only results, pagination, and structured output.
+- [x] Enhance `read_file` with `offset`, default and maximum `limit = 2000`, structured output, UTF-8 failure mapping, streaming or bounded-memory whole-file hashing, and cache update on success.
+- [x] Enhance `list_dir` with `ignore`, `offset`, `include_hidden`, default `limit = 200`, hard maximum `1000`, immediate-child filtering, and structured output.
+- [x] Ensure `find_file`, `read_file`, and `list_dir` use canonical absolute paths in ordinary model-visible output.
+- [x] Add tests for empty/whitespace paths, omitted-path defaults where allowed, `"."` workspace-root behavior, pagination metadata, and next offset rules.
+- [x] Add portable glob tests for `*`, `?`, `[...]`, full-segment `**`, non-segment `**` rejection, negated/malformed character class rejection, brace/extglob/backslash rejection, `/` separator behavior, and `case_sensitive=false` `str.casefold()` matching with canonical-path sorting.
+- [x] Add `list_dir.ignore` tests for literal names, `*`, `?`, `foo/`, `foo/**`, and rejection of `a/b`, bare `**`, `*.py/`, nested patterns, character classes, brace expansion, extglob, and backslash.
+- [x] Add discovery traversal tests for inherited builtin denies including `.sessions/`, `.git/`, dependency/build/cache directories, global skill source roots, and project skill source roots without denying unrelated directories named `skills`.
+- [x] Add symlink tests proving symlink directories are not recursively followed, symlink file target policy is checked on the resolved target, and successful results return/sort/paginate by the normalized symlink candidate path.
+- [x] Add `read_file` tests for UTF-8 decode failure, `offset` beyond EOF, final line without newline, whole-file byte count, whole-file raw-byte SHA-256, and bounded or streaming hash/page collection behavior.
+- [x] Add tests proving `list_dir`, `find_file`, and `view_image` do not create write-guard cache entries; `search_text` cache behavior is verified in Milestone 6 after the tool exists.
+- [x] Run `uv run pytest tests/unit -v`.
 
 ## Milestone 6: Controlled Ripgrep `search_text`
 

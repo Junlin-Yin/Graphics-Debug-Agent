@@ -1,8 +1,21 @@
 from __future__ import annotations
 
 
-# Phase 3 native tools use this default page size when callers omit limit.
+# Default page size for legacy lower-level native-tool seams.
 DEFAULT_NATIVE_TOOL_LIMIT = 1000
+
+# Phase 3.5 read_file line pagination contract.
+READ_FILE_DEFAULT_LIMIT = 2000
+READ_FILE_MAX_LIMIT = 2000
+
+# Phase 3.5 list_dir entry pagination and ignore-list contract.
+LIST_DIR_DEFAULT_LIMIT = 200
+LIST_DIR_MAX_LIMIT = 1000
+LIST_DIR_MAX_IGNORE_PATTERNS = 100
+
+# Phase 3.5 find_file result pagination contract.
+FIND_FILE_DEFAULT_MAX_RESULTS = 100
+FIND_FILE_MAX_RESULTS = 1000
 
 # Shared inline threshold for brokered tool observations before artifact fallback.
 LARGE_OUTPUT_THRESHOLD_BYTES = 16 * 1024
