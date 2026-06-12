@@ -268,6 +268,7 @@ class ToolUseContext:
     file_metadata_cache: FileMetadataCache | None = None
     write_lock_registry: WriteLockRegistry | None = None
     tool_deadline: _ToolDeadline | None = None
+    phase3_compatible_tool_results: bool = False
     created_directories: list[str] = field(default_factory=list)
     side_effect_lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -689,7 +690,10 @@ class ToolBroker:
                 decision.message or "Tool call denied by policy.",
                 error_class="policy_error",
                 reason=_policy_denial_reason(decision),
-                metadata={"tool_name": tool_name},
+                metadata=_phase3_compat_metadata(
+                    {"tool_name": tool_name},
+                    enabled=bool(context.get("phase3_compatible_tool_results")),
+                ),
             )
             self._write_event(
                 session_id=session_id,
@@ -780,7 +784,10 @@ class ToolBroker:
                     approval.message or "Approval denied.",
                     error_class="policy_error",
                     reason=_approval_denial_reason(is_interactive_prompt),
-                    metadata={"turn_aborted": True},
+                    metadata=_phase3_compat_metadata(
+                        {"turn_aborted": True},
+                        enabled=bool(context.get("phase3_compatible_tool_results")),
+                    ),
                 )
                 self._write_event(
                     session_id=session_id,
@@ -847,6 +854,9 @@ class ToolBroker:
             file_metadata_cache=self._file_metadata_cache,
             write_lock_registry=self._write_locks,
             tool_deadline=deadline,
+            phase3_compatible_tool_results=bool(
+                context.get("phase3_compatible_tool_results")
+            ),
         )
 
         executor: ThreadPoolExecutor | None = None
@@ -1002,6 +1012,7 @@ class ToolBroker:
             tool_name=tool_name,
             output=handler_output,
             deadline_check=deadline.check,
+            phase3_compatible_tool_results=tool_context.phase3_compatible_tool_results,
         )
 
     def _prepare_handler_result(
@@ -1012,6 +1023,7 @@ class ToolBroker:
         tool_name: str,
         output: str | dict[str, Any] | NativeHandlerResult,
         deadline_check: Any = None,
+        phase3_compatible_tool_results: bool = False,
     ) -> PreparedToolResult:
         if isinstance(output, NativeHandlerResult):
             if output.status == "error":
@@ -1019,14 +1031,36 @@ class ToolBroker:
                     status="error",
                     error_message=output.error_message or "Tool failed.",
                     reason=output.reason or "tool_execution_failed",
-                    metadata=output.metadata or {},
+                    metadata=_phase3_compat_metadata(
+                        output.metadata or {},
+                        enabled=phase3_compatible_tool_results,
+                    ),
+                )
+            if phase3_compatible_tool_results and tool_name == "read_file":
+                read_output = output.output if isinstance(output.output, dict) else {}
+                content = read_output.get("content", "")
+                if not isinstance(content, str):
+                    content = _artifact_text(content)
+                return self._prepare_ok_result(
+                    session_id=session_id,
+                    run_id=run_id,
+                    tool_name=tool_name,
+                    output=content,
+                    metadata=_phase3_compat_metadata(
+                        output.metadata or {},
+                        enabled=True,
+                    ),
+                    deadline_check=deadline_check,
                 )
             return self._prepare_native_ok_result(
                 session_id=session_id,
                 run_id=run_id,
                 tool_name=tool_name,
                 output=output.output or {},
-                metadata=output.metadata or {},
+                metadata=_phase3_compat_metadata(
+                    output.metadata or {},
+                    enabled=phase3_compatible_tool_results,
+                ),
                 deadline_check=deadline_check,
             )
         if isinstance(output, ViewImageResult):
@@ -2582,6 +2616,14 @@ def _with_metadata(result: ToolResult, metadata: dict[str, Any]) -> ToolResult:
         metadata=merged_metadata,
         redacted_output=result.redacted_output,
     )
+
+
+def _phase3_compat_metadata(
+    metadata: dict[str, Any], *, enabled: bool
+) -> dict[str, Any]:
+    if not enabled:
+        return metadata
+    return {**metadata, "phase3_compatible_tool_result": True}
 
 
 def _cancelled_tool_result(

@@ -16,7 +16,7 @@ from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.orchestrator import ReplRuntime
 from debug_agent.runtime.prompt_executor import PromptAgentExecutor
 from debug_agent.tools.broker import ToolBroker
-from debug_agent.tools.native import tool_definitions
+from debug_agent.tools.native import phase3_user_facing_tool_definitions
 
 
 def _runtime(tmp_path):
@@ -153,7 +153,7 @@ def test_automatic_compression_runs_before_tool_loop_followup(tmp_path) -> None:
             return type("Response", (), {"content": "done", "tool_calls": [], "usage": {}})()
 
     model = ToolLoopModel()
-    session = _with_context(runtime["session"], window_tokens=1000, ratio=0.7)
+    session = _with_context(runtime["session"], window_tokens=2500, ratio=0.5)
     executor = PromptAgentExecutor(
         event_writer=runtime["events"],
         checkpoint_store=runtime["checkpoints"],
@@ -165,7 +165,7 @@ def test_automatic_compression_runs_before_tool_loop_followup(tmp_path) -> None:
                 artifact_store=runtime["artifacts"],
             ),
         ),
-        tool_definitions=tool_definitions(),
+        tool_definitions=phase3_user_facing_tool_definitions(),
         system_prompt="system",
         skill_snapshot_store=runtime["skill_store"],
         todo_plan_store=TodoPlanStore(runtime["db"].connection),

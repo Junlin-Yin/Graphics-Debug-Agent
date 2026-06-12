@@ -1268,6 +1268,9 @@ def _tool_message_content(result: dict[str, Any]) -> str:
     observation = _tool_observation(result, tool_call_id=None)
     if result.get("status") != "ok":
         return json.dumps(observation["error"], ensure_ascii=False, sort_keys=True)
+    redacted_output = result.get("redacted_output")
+    if observation["content"] is None and isinstance(redacted_output, str):
+        return redacted_output
     content = observation["content"]
     if isinstance(content, str):
         return content
@@ -1284,14 +1287,16 @@ def _tool_observation(
     artifact_ids = list(artifacts) if isinstance(artifacts, list) else []
     metadata = result.get("metadata")
     tool_name = ""
+    phase3_compatible = False
     if isinstance(metadata, dict):
         tool_name = str(metadata.get("tool_name") or "")
+        phase3_compatible = metadata.get("phase3_compatible_tool_result") is True
     if status == "ok":
         content = result.get("output")
         error = None
     else:
-        content = None
         error = _model_visible_tool_error(result.get("error"), artifact_ids=artifact_ids)
+        content = json.dumps(result, ensure_ascii=False, sort_keys=True) if phase3_compatible else None
     return {
         "message_type": "tool_result",
         "tool_name": tool_name,

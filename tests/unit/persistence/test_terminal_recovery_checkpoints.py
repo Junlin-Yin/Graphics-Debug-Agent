@@ -133,6 +133,9 @@ def test_phase_3_5_terminal_recovery_checkpoint_requires_v2_manifest(tmp_path):
         "phase": "3.5",
         "contract_marker": "phase-3.5-native-tools-v1",
     }
+    tool_facts_without_checksum = dict(checkpoint.state["tool_availability"])
+    tool_checksum = tool_facts_without_checksum.pop("checksum")
+    assert tool_checksum == sha256_hex(canonical_json_bytes(tool_facts_without_checksum))
     mutated_state = dict(checkpoint.state)
     mutated_state["manifest_schema_version"] = 1
 
@@ -165,6 +168,98 @@ def test_phase_3_5_terminal_recovery_rejects_missing_native_tool_marker(tmp_path
     mutated_state = dict(checkpoint.state)
     mutated_tools = dict(mutated_state["tool_availability"])
     mutated_tools.pop("native_tools_contract")
+    mutated_state["tool_availability"] = mutated_tools
+    comparable = dict(mutated_state)
+    comparable.pop("payload_sha256", None)
+    mutated_state["payload_sha256"] = sha256_hex(canonical_json_bytes(comparable))
+
+    with pytest.raises(StoreError, match="tool availability"):
+        checkpoints.validate_terminal_recovery(
+            Checkpoint(
+                checkpoint_id=checkpoint.checkpoint_id,
+                session_id=checkpoint.session_id,
+                run_id=checkpoint.run_id,
+                kind=checkpoint.kind,
+                state=mutated_state,
+                summary=checkpoint.summary,
+                created_at=checkpoint.created_at,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("shell_exec", {"max_timeout_seconds": 901}),
+        (
+            "view_image",
+            {
+                "enabled": False,
+                "disabled_reason": "different_reason",
+                "timeout_seconds": 60,
+                "max_tokens": 4096,
+                "max_query_chars": 8192,
+                "max_analysis_chars": 8192,
+            },
+        ),
+    ],
+)
+def test_phase_3_5_terminal_recovery_rejects_dynamic_tool_fact_mismatch(
+    tmp_path, field, value
+):
+    db, _sessions, _runs, artifacts, session, run = _stores(tmp_path)
+    checkpoints = _checkpoint_store(db, artifacts).for_phase_3_5_internal()
+    checkpoint = checkpoints.create_terminal_recovery(
+        checkpoint_id="chk_terminal",
+        session_id=session.session_id,
+        run_id=run.run_id,
+        terminal_status="completed",
+        terminal_reason="user_exit",
+        terminal_error=None,
+        created_at="2026-06-06T00:00:00Z",
+    )
+    mutated_state = dict(checkpoint.state)
+    mutated_tools = dict(mutated_state["tool_availability"])
+    mutated_tools[field] = value
+    comparable_tools = dict(mutated_tools)
+    comparable_tools.pop("checksum", None)
+    mutated_tools["checksum"] = sha256_hex(canonical_json_bytes(comparable_tools))
+    mutated_state["tool_availability"] = mutated_tools
+    comparable = dict(mutated_state)
+    comparable.pop("payload_sha256", None)
+    mutated_state["payload_sha256"] = sha256_hex(canonical_json_bytes(comparable))
+
+    with pytest.raises(StoreError, match="tool availability"):
+        checkpoints.validate_terminal_recovery(
+            Checkpoint(
+                checkpoint_id=checkpoint.checkpoint_id,
+                session_id=checkpoint.session_id,
+                run_id=checkpoint.run_id,
+                kind=checkpoint.kind,
+                state=mutated_state,
+                summary=checkpoint.summary,
+                created_at=checkpoint.created_at,
+            )
+        )
+
+
+def test_phase_3_5_terminal_recovery_rejects_tool_availability_checksum_mismatch(
+    tmp_path,
+):
+    db, _sessions, _runs, artifacts, session, run = _stores(tmp_path)
+    checkpoints = _checkpoint_store(db, artifacts).for_phase_3_5_internal()
+    checkpoint = checkpoints.create_terminal_recovery(
+        checkpoint_id="chk_terminal",
+        session_id=session.session_id,
+        run_id=run.run_id,
+        terminal_status="completed",
+        terminal_reason="user_exit",
+        terminal_error=None,
+        created_at="2026-06-06T00:00:00Z",
+    )
+    mutated_state = dict(checkpoint.state)
+    mutated_tools = dict(mutated_state["tool_availability"])
+    mutated_tools["checksum"] = "sha256:" + ("0" * 64)
     mutated_state["tool_availability"] = mutated_tools
     comparable = dict(mutated_state)
     comparable.pop("payload_sha256", None)

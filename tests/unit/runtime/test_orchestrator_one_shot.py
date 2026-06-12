@@ -328,10 +328,11 @@ def test_one_shot_default_path_exposes_todo_but_keeps_view_image_gated(
 
     assert result.exit_code == 0
     assert captured["tools"] == []
-    assert [tool["name"] for tool in captured["tool_schema_bindings"]] == [
+    tool_schema_bindings = captured["tool_schema_bindings"]
+    tool_names = [tool["name"] for tool in tool_schema_bindings]
+    assert tool_names == [
         "read_file",
         "list_dir",
-        "find_file",
         "search_text",
         "write_file",
         "edit_file",
@@ -340,9 +341,13 @@ def test_one_shot_default_path_exposes_todo_but_keeps_view_image_gated(
         "load_skill_resource",
         "todo",
     ]
-    assert "view_image" not in [
-        tool["name"] for tool in captured["tool_schema_bindings"]
-    ]
+    assert "view_image" not in tool_names
+    schemas = {tool["name"]: tool["input_schema"] for tool in tool_schema_bindings}
+    assert "offset" not in schemas["read_file"]["properties"]
+    assert "ignore" not in schemas["list_dir"]["properties"]
+    assert schemas["search_text"]["required"] == ["query"]
+    assert "pattern" not in schemas["search_text"]["properties"]
+    assert "replace_all" not in schemas["edit_file"]["properties"]
 
 
 def test_one_shot_enabled_multimodal_exposes_view_image_tool_binding(

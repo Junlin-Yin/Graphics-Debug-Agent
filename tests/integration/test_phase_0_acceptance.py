@@ -202,7 +202,7 @@ def test_phase_0_toolbroker_artifact_and_trace_acceptance(tmp_path) -> None:
             run.run_id,
             "read_file",
             {"path": "large.txt"},
-            {"workspace_root": str(workspace)},
+            {"workspace_root": str(workspace), "phase3_compatible_tool_results": True},
         )
         from debug_agent.observability.trace_writer import TraceWriter
 

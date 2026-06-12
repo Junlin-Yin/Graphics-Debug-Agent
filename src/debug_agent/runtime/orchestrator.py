@@ -63,7 +63,7 @@ from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.runtime.workspace import resolve_workspace_root
 from debug_agent.skills.registry import SkillRegistry, SkillRegistryError
 from debug_agent.tools.broker import NonInteractiveApprovalProvider, ToolBroker
-from debug_agent.tools.native import gated_user_facing_tool_definitions
+from debug_agent.tools.native import phase3_user_facing_tool_definitions
 from debug_agent.tools.view_image import tool_definition as view_image_tool_definition
 
 
@@ -866,6 +866,7 @@ class RuntimeOrchestrator:
                 ),
                 run_store=runs,
                 compression_model=make_compression_model_callable(model_result.model),
+                phase3_compatible_tool_results=True,
             )
             runtime = ReplRuntime(
                 db=db,
@@ -1848,6 +1849,7 @@ class RuntimeOrchestrator:
             ),
             run_store=runs,
             compression_model=make_compression_model_callable(model_result.model),
+            phase3_compatible_tool_results=True,
         )
         return ReplStartResult(
             runtime=ReplRuntime(
@@ -1988,7 +1990,7 @@ def format_tool_listing(
 
 
 def visible_tool_definitions(config_snapshot: dict[str, Any]) -> list[Any]:
-    definitions = list(gated_user_facing_tool_definitions(config_snapshot))
+    definitions = list(phase3_user_facing_tool_definitions(config_snapshot))
     if _view_image_enabled(config_snapshot):
         definitions.append(view_image_tool_definition())
     return definitions
@@ -2935,6 +2937,7 @@ def _runtime_from_resumed_session(
         conversation_store=conversation_store,
         run_store=runs,
         compression_model=make_compression_model_callable(model_result.model),
+        phase3_compatible_tool_results=True,
     )
     runtime = ReplRuntime(
         db=db,

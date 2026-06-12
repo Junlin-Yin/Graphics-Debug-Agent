@@ -274,7 +274,7 @@ def tool_definition() -> ToolDefinition:
                         "description": "A local path to one PNG or JPEG image.",
                     },
                     "minItems": 1,
-                    "maxItems": 4,
+                    "maxItems": tool_settings.MAX_VIEW_IMAGE_COUNT,
                 },
                 "query": {
                     "type": "string",

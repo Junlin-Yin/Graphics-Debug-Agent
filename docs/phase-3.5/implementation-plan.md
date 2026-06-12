@@ -478,22 +478,22 @@ After Milestone 9 completes, trace/events integration verification passes, and t
 
 **Freeze/review checkpoint:** do not start observability path replacement until fresh Phase 3.5 sessions can bind tools, terminalize, and resume with valid manifest schema version 2 and tool-availability facts.
 
-- [ ] Enhance successful `shell_exec` output with `argv`, canonical `cwd`, `stdout`, `stderr`, `returncode`, `signal`, and integer `duration_ms`.
-- [ ] Preserve structured argv execution and existing nonzero failure behavior.
-- [ ] Prove the generated `shell_exec.timeout_seconds.maximum` schema uses frozen `execution.max_shell_timeout_seconds`, including a non-default configured maximum, and does not hard-code `3600`.
-- [ ] Source `view_image` max image count, image edge, pixel, request body, and default query constants from `tools/settings.py`.
-- [ ] Prove fixed `view_image` limits cannot be configured through `config.toml`.
-- [ ] Preserve `view_image` enabled/disabled behavior and display-path ordinary output.
-- [ ] Preserve `view_image.query` validation: trim provided query, reject non-string, whitespace-only, and over-limit values with `tool_error/tool_schema_invalid`, and use the frozen default query only when omitted.
-- [ ] Preserve disabled-`view_image` validation ordering: malformed disabled calls validate first with `tool_error/tool_schema_invalid`, while valid disabled calls return `config_error/tool_unavailable`.
-- [ ] Preserve `view_image` query redaction outside accepted assistant-authored trace tool-call arguments.
-- [ ] Wrap `activate_skill`, `load_skill_resource`, and `todo` through Phase 3/3.5 ToolBroker status/error projection without changing their logical contracts.
-- [ ] Add Phase 3.5 native tools contract marker to terminal recovery tool-availability facts.
-- [ ] Include `shell_exec.max_timeout_seconds` and `view_image` dynamic facts in tool availability.
-- [ ] Compute and validate tool-availability checksum over facts excluding checksum.
-- [ ] Reject resume when manifest schema version, native marker, shell facts, view_image facts, or checksum mismatch.
-- [ ] Run `uv run pytest tests/unit -v`.
-- [ ] Run `uv run pytest tests/integration -v` with coverage focused on startup, terminal checkpoint creation, and resume validation.
+- [x] Enhance successful `shell_exec` output with `argv`, canonical `cwd`, `stdout`, `stderr`, `returncode`, `signal`, and integer `duration_ms`.
+- [x] Preserve structured argv execution and existing nonzero failure behavior.
+- [x] Prove the generated `shell_exec.timeout_seconds.maximum` schema uses frozen `execution.max_shell_timeout_seconds`, including a non-default configured maximum, and does not hard-code `3600`.
+- [x] Source `view_image` max image count, image edge, pixel, request body, and default query constants from `tools/settings.py`.
+- [x] Prove fixed `view_image` limits cannot be configured through `config.toml`.
+- [x] Preserve `view_image` enabled/disabled behavior and display-path ordinary output.
+- [x] Preserve `view_image.query` validation: trim provided query, reject non-string, whitespace-only, and over-limit values with `tool_error/tool_schema_invalid`, and use the frozen default query only when omitted.
+- [x] Preserve disabled-`view_image` validation ordering: malformed disabled calls validate first with `tool_error/tool_schema_invalid`, while valid disabled calls return `config_error/tool_unavailable`.
+- [x] Preserve `view_image` query redaction outside accepted assistant-authored trace tool-call arguments.
+- [x] Wrap `activate_skill`, `load_skill_resource`, and `todo` through Phase 3/3.5 ToolBroker status/error projection without changing their logical contracts.
+- [x] Add Phase 3.5 native tools contract marker to terminal recovery tool-availability facts.
+- [x] Include `shell_exec.max_timeout_seconds` and `view_image` dynamic facts in tool availability.
+- [x] Compute and validate tool-availability checksum over facts excluding checksum.
+- [x] Reject resume when manifest schema version, native marker, shell facts, view_image facts, or checksum mismatch.
+- [x] Run `uv run pytest tests/unit -v`.
+- [x] Run `uv run pytest tests/integration -v` with coverage focused on startup, terminal checkpoint creation, and resume validation.
 
 ## Milestone 9: Conversation Trace And Events JSONL Observability
 

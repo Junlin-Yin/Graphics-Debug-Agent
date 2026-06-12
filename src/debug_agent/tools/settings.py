@@ -30,6 +30,9 @@ DEFAULT_VIEW_IMAGE_QUERY = (
     "useful, and note uncertainty."
 )
 
+# Fixed maximum number of local images accepted by one view_image call.
+MAX_VIEW_IMAGE_COUNT = 4
+
 # Fixed maximum image edge accepted by the brokered view_image runtime.
 MAX_VIEW_IMAGE_DIMENSION = 4096
 

@@ -305,6 +305,102 @@ def gated_user_facing_tool_definitions(
     ]
 
 
+def phase3_user_facing_tool_definitions(
+    config_snapshot: dict[str, Any] | None = None,
+) -> list[ToolDefinition]:
+    from debug_agent.tools import runtime_control, shell
+
+    max_timeout_seconds = 3600
+    execution = (config_snapshot or {}).get("execution")
+    if isinstance(execution, dict) and isinstance(
+        execution.get("max_shell_timeout_seconds"), int
+    ):
+        max_timeout_seconds = execution["max_shell_timeout_seconds"]
+    return [
+        ToolDefinition(
+            name="read_file",
+            description="Read file contents.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "default": 1000},
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            category="native",
+            risk_level="read",
+            access=["read"],
+        ),
+        ToolDefinition(
+            name="list_dir",
+            description="List directory contents.",
+            input_schema={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            category="native",
+            risk_level="read",
+            access=["read"],
+        ),
+        ToolDefinition(
+            name="search_text",
+            description="Search files for text.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "default": 1000},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+            category="native",
+            risk_level="read",
+            access=["read"],
+        ),
+        ToolDefinition(
+            name="write_file",
+            description="Write file contents.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["path", "content"],
+                "additionalProperties": False,
+            },
+            category="native",
+            risk_level="write",
+            access=["write"],
+        ),
+        ToolDefinition(
+            name="edit_file",
+            description="Edit file contents.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "old_text": {"type": "string"},
+                    "new_text": {"type": "string"},
+                },
+                "required": ["path", "old_text", "new_text"],
+                "additionalProperties": False,
+            },
+            category="native",
+            risk_level="write",
+            access=["write"],
+        ),
+        *shell.tool_definitions(max_timeout_seconds=max_timeout_seconds),
+        *runtime_control.tool_definitions(),
+    ]
+
+
 def tool_handlers() -> dict[str, Any]:
     return {
         "read_file": read_file,

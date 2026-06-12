@@ -92,6 +92,7 @@ class PromptAgentExecutor:
     run_store: RunStore | None = None
     query_control: QueryControlPlane | None = None
     compression_model: Callable[[Any], str] | None = None
+    phase3_compatible_tool_results: bool = False
 
     def run_turn(
         self,
@@ -392,6 +393,7 @@ class PromptAgentExecutor:
             "refresh_model_context_frame": refresh_model_context_frame,
             "provider_cancellation_registry": provider_cancellation_registry,
             "shell_process_registry": shell_process_registry,
+            "phase3_compatible_tool_results": self.phase3_compatible_tool_results,
         }
         policy_snapshot = session.config_snapshot.get("policy")
         if isinstance(policy_snapshot, dict):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 from typing import Any, Protocol
 
 from debug_agent.runtime.contracts import ToolDefinition
@@ -163,10 +164,13 @@ def tool_definitions(*, max_timeout_seconds: int = 3600) -> list[ToolDefinition]
 def shell_exec(context: Any, arguments: dict[str, Any]) -> ShellHandlerResult:
     runner = getattr(context, "shell_runner", None) or SubprocessShellRunner()
     timeout_seconds = int(arguments["effective_timeout_seconds"])
+    argv = list(arguments["argv"])
+    cwd = Path(arguments["execution_cwd"])
+    start = monotonic()
     try:
         result = runner.run(
-            list(arguments["argv"]),
-            cwd=Path(arguments["execution_cwd"]),
+            argv,
+            cwd=cwd,
             timeout_seconds=timeout_seconds,
             register_process_handle=getattr(context, "shell_process_registry", None),
         )
@@ -192,9 +196,13 @@ def shell_exec(context: Any, arguments: dict[str, Any]) -> ShellHandlerResult:
     return ShellHandlerResult(
         status="ok",
         output={
+            "argv": argv,
+            "cwd": str(cwd.resolve()),
             "stdout": result.stdout,
             "stderr": result.stderr,
             "returncode": result.returncode,
+            "signal": _signal_from_returncode(result.returncode),
+            "duration_ms": max(0, round((monotonic() - start) * 1000)),
         },
         metadata={"effective_timeout_seconds": timeout_seconds},
     )
@@ -209,3 +217,9 @@ def _nonzero_exit_message(result: ShellRunResult) -> str:
     if detail:
         return f"{detail} (exit code {result.returncode})"
     return f"Command exited with exit code {result.returncode}."
+
+
+def _signal_from_returncode(returncode: int) -> int | None:
+    if returncode < 0:
+        return -returncode
+    return None

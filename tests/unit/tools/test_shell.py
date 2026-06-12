@@ -171,6 +171,27 @@ def test_shell_nonzero_exit_code_is_tool_failure_with_concrete_message(tmp_path)
     runtime["db"].close()
 
 
+def test_shell_success_output_contains_phase_3_5_execution_metadata(tmp_path) -> None:
+    runner = FakeShellRunner(stdout="out", stderr="warn", returncode=0)
+    runtime = _runtime(tmp_path, default_timeout=10, max_timeout=100, runner=runner)
+
+    result = _invoke(
+        runtime,
+        {"argv": ["python", "-c", "print('ok')"], "cwd": ".", "timeout_seconds": 9},
+    )
+
+    assert result.status == "ok"
+    assert result.output["argv"] == ["python", "-c", "print('ok')"]
+    assert result.output["cwd"] == str(runtime["workspace"].resolve())
+    assert result.output["stdout"] == "out"
+    assert result.output["stderr"] == "warn"
+    assert result.output["returncode"] == 0
+    assert result.output["signal"] is None
+    assert isinstance(result.output["duration_ms"], int)
+    assert result.output["duration_ms"] >= 0
+    runtime["db"].close()
+
+
 @pytest.mark.parametrize(
     ("provided_cwd", "policy_marker"),
     [

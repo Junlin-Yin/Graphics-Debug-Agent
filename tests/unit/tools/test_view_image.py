@@ -19,7 +19,7 @@ from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
 from debug_agent.tools import settings as tool_settings
 from debug_agent.tools.broker import FakeApprovalProvider, ToolBroker, ToolRouter
 from debug_agent.tools.settings import LARGE_OUTPUT_THRESHOLD_BYTES
-from debug_agent.tools.view_image import ViewImageTool
+from debug_agent.tools.view_image import ViewImageTool, tool_definition
 
 
 try:
@@ -226,6 +226,17 @@ def _write_image(path, *, fmt: str = "PNG", size: tuple[int, int] = (4, 3)) -> b
     data = buffer.getvalue()
     path.write_bytes(data)
     return data
+
+
+def test_view_image_tool_definition_uses_fixed_settings_limits() -> None:
+    definition = tool_definition()
+
+    paths_schema = definition.input_schema["properties"]["paths"]
+    assert paths_schema["maxItems"] == tool_settings.MAX_VIEW_IMAGE_COUNT
+    assert tool_settings.MAX_VIEW_IMAGE_DIMENSION == 4096
+    assert tool_settings.MAX_VIEW_IMAGE_PIXELS == 4096 * 2160
+    assert tool_settings.MAX_VIEW_IMAGE_REQUEST_BODY_BYTES == 100_000_000
+    assert tool_settings.DEFAULT_VIEW_IMAGE_QUERY
 
 
 def test_disabled_view_image_is_known_tool_denied_by_config_without_routing(
