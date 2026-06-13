@@ -1036,22 +1036,6 @@ class ToolBroker:
                         enabled=phase3_compatible_tool_results,
                     ),
                 )
-            if phase3_compatible_tool_results and tool_name == "read_file":
-                read_output = output.output if isinstance(output.output, dict) else {}
-                content = read_output.get("content", "")
-                if not isinstance(content, str):
-                    content = _artifact_text(content)
-                return self._prepare_ok_result(
-                    session_id=session_id,
-                    run_id=run_id,
-                    tool_name=tool_name,
-                    output=content,
-                    metadata=_phase3_compat_metadata(
-                        output.metadata or {},
-                        enabled=True,
-                    ),
-                    deadline_check=deadline_check,
-                )
             return self._prepare_native_ok_result(
                 session_id=session_id,
                 run_id=run_id,

@@ -1668,6 +1668,34 @@ def test_read_file_pagination_utf8_and_cache_update(tmp_path) -> None:
     runtime["db"].close()
 
 
+def test_read_file_phase35_tool_result_keeps_structured_output(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="normal")
+    target = runtime["workspace"] / "notes.txt"
+    target.write_text("one\ntwo\nthree", encoding="utf-8", newline="\n")
+
+    result = _invoke(
+        runtime,
+        "read_file",
+        {"path": "notes.txt", "offset": 1, "limit": 1},
+        phase3_compatible_tool_results=True,
+    )
+
+    assert result.status == "ok"
+    assert result.output == {
+        "path": str(target.resolve()),
+        "content": "two\n",
+        "offset": 1,
+        "limit": 1,
+        "total_returned": 1,
+        "truncated": True,
+        "next_offset": 2,
+        "sha256": sha256(target.read_bytes()).hexdigest(),
+        "bytes": len(target.read_bytes()),
+    }
+    assert result.metadata["phase3_compatible_tool_result"] is True
+    runtime["db"].close()
+
+
 def test_find_file_defaults_to_workspace_and_returns_sorted_files_only(tmp_path) -> None:
     runtime = _runtime(tmp_path, approval_mode="normal")
     workspace = runtime["workspace"]

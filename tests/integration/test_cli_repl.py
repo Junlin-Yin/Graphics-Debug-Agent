@@ -384,7 +384,12 @@ def test_streaming_repl_controller_tool_block_payloads_use_broker_metadata(
         tool_blocks[0].payload["metadata"]["execution_duration_ms"], int
     )
     assert "duration_ms" not in tool_blocks[0].payload["metadata"]
-    assert tool_blocks[1].payload["preview"].text == "> hello"
+    assert tool_blocks[1].payload["preview"].text == "\n".join(
+        [
+            f"> path: {(workspace / 'notes.txt').resolve()}",
+            "> page: offset=0 limit=2000 returned=1 complete",
+        ]
+    )
 
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         payload = json.loads(

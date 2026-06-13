@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -213,7 +214,18 @@ def test_phase_0_toolbroker_artifact_and_trace_acceptance(tmp_path) -> None:
         trace = TraceWriter(db.connection, db.path.parent).refresh_if_stale(session.session_id)
 
         assert result.status == "ok"
-        assert result.output is None
+        assert isinstance(result.output, dict)
+        assert result.output["path"] == str((workspace / "large.txt").resolve())
+        assert result.output["offset"] == 0
+        assert result.output["limit"] == 2000
+        assert result.output["total_returned"] == 1
+        assert result.output["truncated"] is False
+        assert result.output["next_offset"] is None
+        assert result.output["sha256"] == hashlib.sha256(
+            (workspace / "large.txt").read_bytes()
+        ).hexdigest()
+        assert result.output["bytes"] == len((workspace / "large.txt").read_bytes())
+        assert result.output["content"]["artifact_id"] == result.artifacts[0]
         assert len(result.artifacts) == 1
         assert artifacts.get(result.artifacts[0]).artifact_type == "text"
         event_kinds = [event.kind for event in events.list_for_run(run.run_id)]
