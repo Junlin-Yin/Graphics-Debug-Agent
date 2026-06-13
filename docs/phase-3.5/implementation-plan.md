@@ -576,12 +576,12 @@ After Milestone 9 completes, trace/events integration verification passes, and t
 
 **Freeze/review checkpoint:** Phase 3.5 implementation is ready for review only after automated commands and required manual checks are recorded with observed results.
 
-- [ ] Run an interactive REPL/TUI review of structured native tool output rendering, field-level artifact references, pagination metadata, timeout/error statuses, stale-write guard failures, automatic trace refresh failure presentation, and user-facing legacy reset/fail-closed messages.
-- [ ] Limit any resulting polish to CLI presentation and interaction flow; do not alter runtime truth, ToolBroker behavior, tool contracts, persistence semantics, or checkpoint/resume behavior.
-- [ ] Add or update focused UI tests for any changed rendering or interaction behavior.
-- [ ] Add manual verification notes for conversation transcript readability, JSONL readability, REPL/TUI pagination/guard rendering, user-facing reset messages, and shell output presentation when those surfaces changed.
-- [ ] Record each manual verification note with command sequence, expected result, observed result, session id and run id when applicable, trace/status excerpts for observability changes, and known limitations.
-- [ ] Run focused affected UI tests when UI polish changes rendering behavior.
-- [ ] Run `uv run pytest tests/unit -v`.
-- [ ] Run `uv run pytest tests/integration -v`.
-- [ ] Run `uv run pytest -v`.
+- [x] Run an interactive REPL/TUI review of structured native tool output rendering, field-level artifact references, pagination metadata, timeout/error statuses, stale-write guard failures, automatic trace refresh failure presentation, and user-facing legacy reset/fail-closed messages.
+- [x] Limit any resulting polish to CLI presentation and interaction flow; do not alter runtime truth, ToolBroker behavior, tool contracts, persistence semantics, or checkpoint/resume behavior.
+- [x] Add or update focused UI tests for any changed rendering or interaction behavior.
+- [x] Add manual verification notes for conversation transcript readability, JSONL readability, REPL/TUI pagination/guard rendering, user-facing reset messages, and shell output presentation when those surfaces changed.
+- [x] Record each manual verification note with command sequence, expected result, observed result, session id and run id when applicable, trace/status excerpts for observability changes, and known limitations.
+- [x] Run focused affected UI tests when UI polish changes rendering behavior.
+- [x] Run `uv run pytest tests/unit -v`.
+- [x] Run `uv run pytest tests/integration -v`.
+- [x] Run `uv run pytest -v`.

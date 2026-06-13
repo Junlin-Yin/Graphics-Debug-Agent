@@ -26,8 +26,11 @@ from prompt_toolkit.layout.scrollable_pane import ScrollablePane
 from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.output.base import Output
 from prompt_toolkit.utils import get_cwidth
+from rich import box
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.text import Text
 
 from debug_agent.cli.repl_view import (
     PromptHistory,
@@ -60,11 +63,13 @@ class _MessageScrollablePane(ScrollablePane):
         *,
         follow_latest: Callable[[], bool],
         set_follow_latest: Callable[[bool], None],
+        content_height: Callable[[int], int],
         **kwargs: Any,
     ) -> None:
         super().__init__(content, **kwargs)
         self._follow_latest = follow_latest
         self._set_follow_latest = set_follow_latest
+        self._content_height = content_height
 
     def write_to_screen(
         self,
@@ -89,10 +94,7 @@ class _MessageScrollablePane(ScrollablePane):
         virtual_width = (
             write_position.width - 1 if self.show_scrollbar() else write_position.width
         )
-        virtual_height = self.content.preferred_height(
-            virtual_width,
-            self.max_available_height,
-        ).preferred
+        virtual_height = self._content_height(virtual_width)
         virtual_height = max(virtual_height, write_position.height)
         virtual_height = min(virtual_height, self.max_available_height)
         max_scroll = max(0, virtual_height - write_position.height)
@@ -352,7 +354,7 @@ class PromptToolkitReplView:
         if event.event_type == MouseEventType.SCROLL_UP:
             self.scroll_message_region_line_up()
             return None
-        return None
+        return NotImplemented
 
     def _build_application(self) -> Application:
         self._message_control = FormattedTextControl(self._message_region_fragments)
@@ -366,6 +368,7 @@ class PromptToolkitReplView:
             ),
             follow_latest=lambda: self._message_region_follow_latest,
             set_follow_latest=self._set_message_region_follow_latest,
+            content_height=self._message_region_virtual_height,
             show_scrollbar=True,
             display_arrows=False,
         )
@@ -400,9 +403,15 @@ class PromptToolkitReplView:
         )
         self._input_region = HSplit(
             [
-                Window(height=1, char="-", always_hide_cursor=True),
+                ConditionalContainer(
+                    Window(height=1, char=box.SQUARE.top, always_hide_cursor=True),
+                    filter=Condition(lambda: self._approval_prompt is None),
+                ),
                 input_buffer_region,
-                Window(height=1, char="-", always_hide_cursor=True),
+                ConditionalContainer(
+                    Window(height=1, char=box.SQUARE.top, always_hide_cursor=True),
+                    filter=Condition(lambda: self._approval_prompt is None),
+                ),
             ],
             height=self._input_shell_dimension,
         )
@@ -535,6 +544,14 @@ class PromptToolkitReplView:
             text = " "
         return [("", text, self.handle_message_region_mouse_event)]
 
+    def _message_region_virtual_height(self, width: int) -> int:
+        width = max(1, width)
+        total = 0
+        for line in (self._message_region_text() or " ").splitlines():
+            cells = get_cwidth(line)
+            total += max(1, (cells + width - 1) // width)
+        return total
+
     def _current_turn_status_text(self) -> str:
         return self._turn_status or ""
 
@@ -564,7 +581,7 @@ class PromptToolkitReplView:
     def _approval_prompt_height(self) -> int:
         if self._approval_prompt is None:
             return 0
-        return max(1, len(self._approval_prompt.splitlines()))
+        return max(1, len(self._approval_prompt_text().splitlines()))
 
     def _approval_prompt_dimension(self) -> Dimension:
         return Dimension.exact(self._approval_prompt_height())
@@ -584,7 +601,8 @@ class PromptToolkitReplView:
         return Dimension.exact(self._input_prompt_width())
 
     def _input_shell_height(self) -> int:
-        return self._input_region_height() + 2
+        border_height = 0 if self._approval_prompt is not None else 2
+        return self._input_region_height() + border_height
 
     def _input_shell_dimension(self) -> Dimension:
         return Dimension.exact(self._input_shell_height())
@@ -593,7 +611,7 @@ class PromptToolkitReplView:
         return 1
 
     def _sync_input_region_height(self) -> None:
-        line_count = self._input_buffer.text.count("\n") + 1
+        line_count = self._input_display_line_count()
         self._input_visible_lines = min(5, max(1, line_count))
         self._follow_latest_message_if_needed()
         self._invalidate()
@@ -606,7 +624,8 @@ class PromptToolkitReplView:
     def _follow_latest_message_if_needed(self) -> None:
         # The concrete scroll offset depends on the rendered viewport height.
         # Clamp it in _MessageScrollablePane.write_to_screen().
-        return
+        self._message_region_follow_latest = True
+        self._message_region_container.vertical_scroll = sys.maxsize
 
     def _input_cursor_is_at_end(self) -> bool:
         return self._input_buffer.cursor_position == len(self._input_buffer.text)
@@ -618,6 +637,28 @@ class PromptToolkitReplView:
 
     def _handle_input_text_changed(self, _event: object) -> None:
         self._sync_input_region_height()
+
+    def _input_display_line_count(self) -> int:
+        available_width = max(1, self._input_available_width())
+        total = 0
+        for line in self._input_buffer.text.split("\n"):
+            width = get_cwidth(line)
+            total += max(1, (width + available_width - 1) // available_width)
+        return total
+
+    def _input_available_width(self) -> int:
+        return self._terminal_width() - self._input_prompt_width()
+
+    def _terminal_width(self) -> int:
+        output = self._prompt_toolkit_output
+        if output is None and hasattr(self, "_application"):
+            output = self._application.output
+        if output is None:
+            return 80
+        try:
+            return int(output.get_size().columns)
+        except Exception:
+            return 80
 
     def _handle_prompt_enter_event(self, event: Any) -> None:
         if self._active_controller is None:
@@ -672,6 +713,16 @@ class PromptToolkitReplView:
 
     def _mark_dirty(self) -> bool:
         self._render_dirty = True
+        if hasattr(self, "_message_control"):
+            self._message_control.reset()
+        if hasattr(self, "_message_region_container"):
+            self._message_region_container.reset()
+            self._message_region_container.content.reset()
+            cache = getattr(
+                self._message_region_container.content, "_ui_content_cache", None
+            )
+            if cache is not None and hasattr(cache, "clear"):
+                cache.clear()
         return self._invalidate()
 
     def _exit_application(self, app: object | None = None) -> None:
@@ -694,7 +745,12 @@ class PromptToolkitReplView:
         return self._terminal_summary
 
     def _approval_prompt_text(self) -> str:
-        return self._approval_prompt or ""
+        if self._approval_prompt is None:
+            return ""
+        return _format_approval_panel(
+            _approval_prompt_body(self._approval_prompt),
+            width=max(1, self._terminal_width()),
+        )
 
     def _input_prompt_fragment_text(self) -> str:
         if self._approval_prompt is not None:
@@ -735,20 +791,27 @@ def _format_welcome_panel(snapshot: WelcomeSnapshot) -> str:
         f"workspace: {snapshot.workspace_root}",
         f"session: {snapshot.session_id_short}",
     ]
-    width = max(len(line) for line in lines)
-    border = f"+-{'-' * width}-+"
-    body = [f"| {line.ljust(width)} |" for line in lines]
-    return "\n".join([border, *body, border])
+    width = max(get_cwidth(line) for line in lines) + 4
+    output = StringIO()
+    console = Console(
+        file=output,
+        force_terminal=False,
+        color_system=None,
+        width=width,
+        safe_box=False,
+    )
+    console.print(Panel.fit("\n".join(lines), box=box.ROUNDED, safe_box=False))
+    return output.getvalue().rstrip()
 
 
-message_block_border = "--------------"
+message_block_border = box.SQUARE.top * 14
 
 
 def _format_user_message(message: str) -> str:
     lines = str(message).splitlines() or [""]
     body = [f"> {lines[0]}"]
     body.extend(f"  {line}" for line in lines[1:])
-    border = "-" * max(get_cwidth(line) for line in body)
+    border = box.SQUARE.top * max(get_cwidth(line) for line in body)
     return "\n".join(["", border, *body, border])
 
 
@@ -758,6 +821,30 @@ def _format_assistant_message(text: str) -> str:
 
 def _format_labeled_message(label: str, text: object) -> str:
     return "\n".join(["", message_block_border, label, "", str(text)])
+
+
+def _approval_prompt_body(request: str) -> str:
+    lines = str(request).splitlines()
+    if lines and lines[0].strip() == "=== Approval Request ===":
+        lines = lines[1:]
+    while lines and not lines[0].strip():
+        lines = lines[1:]
+    return "\n".join(lines)
+
+
+def _format_approval_panel(body: str, *, width: int) -> str:
+    output = StringIO()
+    console = Console(
+        file=output,
+        force_terminal=False,
+        color_system=None,
+        width=width,
+        safe_box=False,
+    )
+    console.print(
+        Panel(Text(body), title="Approval Request", box=box.ROUNDED, safe_box=False)
+    )
+    return output.getvalue().rstrip()
 
 
 def _format_terminal_summary(summary: SessionCloseSummary) -> str:

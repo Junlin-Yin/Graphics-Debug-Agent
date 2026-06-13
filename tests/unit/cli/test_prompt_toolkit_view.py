@@ -6,6 +6,7 @@ import io
 
 import pytest
 from prompt_toolkit.application.current import set_app
+from prompt_toolkit.data_structures import Size
 from prompt_toolkit.layout.mouse_handlers import MouseHandlers
 from prompt_toolkit.layout.screen import Screen, WritePosition
 from prompt_toolkit.mouse_events import MouseButton, MouseEventType
@@ -183,7 +184,7 @@ def test_prompt_toolkit_view_renders_welcome_messages_status_and_close_summary()
     assert "debug-agent 1.2.3" in rendered
     assert "model: fake-model" in rendered
     assert "workspace: /repo" in rendered
-    assert "\n-------\n> hello\n-------" in rendered
+    assert "\n───────\n> hello\n───────" in rendered
     assert "answer" in rendered
     assert "🤖 System\n\nstatus ok" in rendered
     assert "❌ Error\n\nfailed" in rendered
@@ -215,8 +216,8 @@ def test_prompt_toolkit_welcome_omits_status_bar_fields_and_spaces_after_tool_na
 
     assert "model: fake-model" not in rendered
     assert "approval: normal" not in rendered
-    assert "| debug-agent 1.2.3 |" in rendered
-    assert "|                   |" in rendered
+    assert "│ debug-agent 1.2.3 │" in rendered
+    assert "│                   │" in rendered
 
 
 def test_prompt_toolkit_view_running_cancellation_renders_system_not_error() -> None:
@@ -578,7 +579,7 @@ def test_prompt_toolkit_view_formats_multiline_user_message_like_shell_block() -
     view.append_user_message("line 1\nline 2\nline 3")
 
     rendered = view._message_region_text()
-    assert "\n--------\n> line 1\n  line 2\n  line 3\n--------" in rendered
+    assert "\n────────\n> line 1\n  line 2\n  line 3\n────────" in rendered
 
 
 def test_prompt_toolkit_view_user_message_borders_cover_prompt_text_only() -> None:
@@ -590,10 +591,10 @@ def test_prompt_toolkit_view_user_message_borders_cover_prompt_text_only() -> No
 
     rendered = view._message_region_text().splitlines()
 
-    assert rendered[1] == "-" * len("  much longer line")
+    assert rendered[1] == "─" * len("  much longer line")
     assert rendered[2] == "> short"
     assert rendered[3] == "  much longer line"
-    assert rendered[4] == "-" * len("  much longer line")
+    assert rendered[4] == "─" * len("  much longer line")
 
 
 def test_prompt_toolkit_view_user_message_border_uses_terminal_cell_width() -> None:
@@ -608,9 +609,9 @@ def test_prompt_toolkit_view_user_message_border_uses_terminal_cell_width() -> N
     rendered = view._message_region_text().splitlines()
     expected_width = get_cwidth("> 你好，你能为我做什么？")
 
-    assert rendered[1] == "-" * expected_width
+    assert rendered[1] == "─" * expected_width
     assert rendered[2] == "> 你好，你能为我做什么？"
-    assert rendered[3] == "-" * expected_width
+    assert rendered[3] == "─" * expected_width
 
 
 def test_prompt_toolkit_view_formats_failed_tool_completion_with_red_indicator() -> None:
@@ -658,6 +659,18 @@ def test_prompt_toolkit_view_formats_system_and_error_blocks_with_headers() -> N
     assert "❌ Error\n\nfailed" in rendered
     assert "system: status ok" not in rendered
     assert "error: failed" not in rendered
+
+
+def test_prompt_toolkit_view_labeled_message_separator_uses_rich_box_line() -> None:
+    view = _prompt_toolkit_view()
+
+    view.append_view_event(
+        ReplViewEvent(kind="system_message", payload={"message": "status ok"})
+    )
+
+    rendered = view._message_region_text().splitlines()
+    assert rendered[1] == "─" * len(rendered[1])
+    assert "-" not in rendered[1]
 
 
 def test_prompt_toolkit_view_does_not_clear_or_replace_tool_blocks(
@@ -1133,6 +1146,33 @@ def test_prompt_toolkit_view_input_borders_do_not_count_toward_buffer_height() -
     assert view._input_shell_height() == 5
 
 
+def test_prompt_toolkit_view_input_borders_use_rich_box_line() -> None:
+    view = _prompt_toolkit_view()
+
+    rendered = _render_input_region(view, width=20).splitlines()
+
+    assert rendered[0] == "─" * len(rendered[0])
+    assert rendered[-1] == rendered[0]
+    assert "-" not in rendered[0]
+
+
+def test_prompt_toolkit_view_long_input_soft_wraps_and_updates_height() -> None:
+    view = _prompt_toolkit_view()
+    view._prompt_toolkit_output.get_size = lambda: Size(rows=40, columns=14)
+
+    view._input_buffer.text = "1234567890abcdef"
+    view._input_buffer.cursor_position = len(view._input_buffer.text)
+
+    assert view._input_region_height() == 2
+    assert view._input_entry_dimension().preferred == 2
+
+    view._input_buffer.text = "1234"
+    view._input_buffer.cursor_position = len(view._input_buffer.text)
+
+    assert view._input_region_height() == 1
+    assert view._input_entry_dimension().preferred == 1
+
+
 def test_prompt_toolkit_view_backspace_line_removal_shrinks_input_region() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
@@ -1164,7 +1204,7 @@ def test_prompt_toolkit_view_input_height_changes_keep_latest_message_visible() 
     assert "message 7" in rendered
 
 
-def test_prompt_toolkit_view_appended_messages_follow_latest_until_user_scrolls_up() -> None:
+def test_prompt_toolkit_view_appended_messages_reset_scroll_to_latest() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
     view = _prompt_toolkit_view()
@@ -1181,9 +1221,9 @@ def test_prompt_toolkit_view_appended_messages_follow_latest_until_user_scrolls_
 
     view.append_user_message("message 8")
 
-    assert view._message_region_following_latest() is False
-    assert view._message_region_scroll_offset() == scrolled_away_offset
-    assert _render_message_viewport(view, height=4) == scrolled_rendered
+    assert view._message_region_following_latest() is True
+    assert view._message_region_scroll_offset() >= scrolled_away_offset
+    assert "message 8" in view._message_region_text()
 
 
 def test_prompt_toolkit_view_scroll_down_from_history_does_not_jump_to_latest() -> None:
@@ -1261,6 +1301,16 @@ def test_prompt_toolkit_view_mouse_scroll_events_scroll_message_region() -> None
     assert view._message_region_scroll_offset() == 0
 
 
+def test_prompt_toolkit_view_non_scroll_mouse_events_are_not_consumed() -> None:
+    view = _prompt_toolkit_view()
+
+    handled = view.handle_message_region_mouse_event(
+        _FakeMouseEvent(MouseEventType.MOUSE_DOWN)
+    )
+
+    assert handled is NotImplemented
+
+
 def test_prompt_toolkit_view_page_scroll_uses_larger_step_than_mouse_scroll() -> None:
     from debug_agent.cli.prompt_toolkit_view import (
         PromptToolkitReplView,
@@ -1280,7 +1330,7 @@ def test_prompt_toolkit_view_page_scroll_uses_larger_step_than_mouse_scroll() ->
     assert view._message_region_scroll_offset() == 12
 
 
-def test_prompt_toolkit_view_welcome_panel_uses_ascii_border() -> None:
+def test_prompt_toolkit_view_welcome_panel_uses_rich_rounded_border() -> None:
     from debug_agent.cli.prompt_toolkit_view import PromptToolkitReplView
 
     view = _prompt_toolkit_view()
@@ -1297,10 +1347,12 @@ def test_prompt_toolkit_view_welcome_panel_uses_ascii_border() -> None:
     )
 
     lines = view._message_region_text().splitlines()
-    assert lines[0].startswith("+")
-    assert set(lines[0]) <= {"+", "-"}
-    assert lines[-1] == lines[0]
-    assert "| debug-agent 1.2.3" in lines[1]
+    assert lines[0].startswith("╭")
+    assert lines[0].endswith("╮")
+    assert set(lines[0]) <= {"╭", "─", "╮"}
+    assert lines[-1].startswith("╰")
+    assert lines[-1].endswith("╯")
+    assert "│ debug-agent 1.2.3" in lines[1]
 
 
 def test_prompt_toolkit_view_turn_status_has_spacer_above_region() -> None:
@@ -1516,7 +1568,8 @@ def test_prompt_toolkit_view_inline_approval_uses_input_lane_not_message_list() 
     )
 
     rendered_input = _render_input_region(view)
-    assert "=== Approval Request ===" in view._approval_prompt_text()
+    assert "=== Approval Request ===" not in view._approval_prompt_text()
+    assert "Approval Request" in view._approval_prompt_text()
     assert "Tool: shell_exec" in view._approval_prompt_text()
     assert "Tool: shell_exec" in rendered_input
     assert "Target: git status" in rendered_input
@@ -1527,6 +1580,9 @@ def test_prompt_toolkit_view_inline_approval_uses_input_lane_not_message_list() 
     assert view._input_prompt_width() == 0
     assert view._input_entry_height() == 0
     assert view._input_region_height() == view._approval_prompt_height()
+    assert rendered_input.splitlines()[0].startswith("╭")
+    assert "Approval Request" in rendered_input.splitlines()[0]
+    assert rendered_input.splitlines()[-1].startswith("╰")
     assert view._input_buffer.read_only() is True
     assert "Tool: shell_exec" not in view._message_region_text()
 
@@ -1536,6 +1592,7 @@ def test_prompt_toolkit_view_inline_approval_uses_input_lane_not_message_list() 
     assert view._input_prompt_fragment_text() == "> "
     assert view._input_prompt_width() == len("> ")
     assert view._input_region_height() == 1
+    assert _render_input_region(view).splitlines()[0].startswith("─")
     assert view._input_buffer.read_only() is False
 
 
