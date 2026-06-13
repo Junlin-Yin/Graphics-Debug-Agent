@@ -417,6 +417,30 @@ other context optimization to choose a different historical message projection.
 Those operations may run only later, before an ordinary model call, after the
 session has been revived and normal runtime execution resumes.
 
+Resume restore must preserve provider-visible equivalence for every accepted
+durable model-visible message included in the checkpoint-frozen projection. The
+ordinary non-resume path:
+
+1. process-local `ConversationMessage` projection,
+2. durable `conversation_messages` append,
+3. checkpoint-frozen projection snapshot,
+4. explicit resume restore back to process-local conversation, and
+5. provider prompt projection
+
+must preserve what the provider sees for each accepted message group. This
+includes provider-visible role, content, assistant tool-call ids, tool names,
+tool arguments, tool-result `tool_call_id` pairing, artifact references, and
+documented runtime-authored wrappers such as `context_summary` prompt wrappers.
+Inline durable serialization may use structured JSON shapes, but restore and
+provider projection must not change the provider-visible message semantics
+relative to the ordinary non-resume projection path.
+
+Resume equivalence applies only to accepted durable conversation truth selected
+by the checkpoint-frozen projection. It does not apply to stream deltas, partial
+assistant output, incomplete provider tool-call fragments, pending tool
+results, shell output before command-runner boundary closure, approval drafts,
+TUI presentation state, or provider/tool/shell mid-flight state.
+
 Ordinary runtime execution maintains process-local conversation and the
 persisted current projection state together as messages append, omission runs,
 or compression runs. Ordinary pre-call execution builds `ModelContextFrame`

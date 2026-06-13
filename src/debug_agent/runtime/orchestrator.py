@@ -2447,8 +2447,12 @@ def _restore_projected_conversation_content(
     content: Any,
 ) -> Any:
     if (
-        role in {"user", "assistant"}
-        and kind in {"user_input", "assistant_output"}
+        (role, kind)
+        in {
+            ("user", "user_input"),
+            ("assistant", "assistant_output"),
+            ("runtime", "context_summary"),
+        }
         and isinstance(content, dict)
         and set(content) == {"content"}
         and isinstance(content["content"], str)

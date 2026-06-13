@@ -44,6 +44,8 @@ Phase 3 acceptance requires:
   REPL prompt session using the same session/run lineage.
 - explicit `debug-agent resume <session_id>` restores eligible one-shot terminal
   prompt session into REPL using the same eligibility rules.
+- resume preserves provider-visible equivalence for every accepted durable
+  model-visible message in the checkpoint-frozen projection.
 - no path other than explicit resume revives terminalized session/run lifecycle
   to `running`.
 - provider cancellation preserves public adapter contract and reports uncertain
@@ -226,6 +228,17 @@ Phase 3 acceptance requires:
   resume.
 - process-local conversation is rebuilt from durable rows only during explicit
   resume.
+- durable serialization and explicit resume restore preserve provider-visible
+  equivalence for accepted `user_input`, `assistant_output`,
+  `assistant_tool_call`, `tool_result`, `failure_fact`, and `context_summary`
+  rows included in the checkpoint-frozen projection.
+- restored assistant tool-call messages preserve provider-visible tool ids,
+  names, arguments, ordering, and pairing with restored tool results.
+- restored `context_summary` rows project through the same runtime-authored
+  provider prompt wrapper as the ordinary non-resume projection path.
+- resume equivalence tests compare provider messages produced after resume with
+  provider messages from the ordinary non-resume projection path, not with
+  transient live adapter messages that existed before durable acceptance.
 - ordinary runtime drift between process-local conversation, projection state,
   and durable rows fails closed instead of silently rebuilding from durable
   rows.
@@ -367,6 +380,9 @@ Phase 3 acceptance requires:
 - resume reacquires active ownership before lifecycle revival.
 - resume records current owner `pid`, `host_id`, and fresh `owner_token`.
 - resume restores conversation from checkpoint-frozen projection snapshot.
+- resume-restored conversation produces provider-visible messages equivalent to
+  the ordinary non-resume projection for all accepted durable messages in the
+  checkpoint-frozen projection.
 - resume restores Todo Plan for same run from checkpoint-embedded snapshot.
 - resume Todo Plan restore does not increment plan version and does not emit
   `todo_updated` or a separate Todo restore event.

@@ -39,6 +39,17 @@ conversation from durable conversation rows. Ordinary runtime drift between the
 process-local projection and durable conversation facts is a fail-closed
 invariant violation, not a silent repair path.
 
+Resume must preserve provider-visible equivalence for accepted durable
+conversation messages included in the checkpoint-frozen projection. For every
+accepted model-visible message group in that projection, the round trip from
+ordinary process-local projection to durable `conversation_messages`, then from
+durable rows through explicit resume back to provider messages, must preserve
+the provider-visible role, content, tool-call ids, tool names, arguments,
+tool-result pairing, artifact references, and documented runtime wrappers. This
+equivalence applies only to accepted durable conversation truth. It does not
+apply to stream deltas, partial provider output, incomplete tool calls, pending
+tool results, approval drafts, or provider/tool/shell mid-flight state.
+
 Resume is allowed only through explicit `debug-agent resume <session_id>` and
 only for eligible terminalized prompt sessions/runs. The explicit resume path may
 revive the same session/run lineage by changing terminalized `session` and `run`
@@ -136,6 +147,11 @@ approval grants, trace, and artifact relationships.
 - Resume validation must fail closed when the terminal checkpoint is missing,
   not terminal, schema-incompatible, checksum-invalid, or references an invalid
   durable conversation cut.
+- Resume restore and subsequent provider prompt projection must be equivalent
+  to the ordinary non-resume projection for every accepted durable message in
+  the checkpoint-frozen projection. Durable serialization must not drop or
+  reshape provider-visible content in a way that changes what the model sees
+  after resume.
 - Startup/config/schema failures remain auditable but are non-resumable by
   construction.
 - Running cancellation and tool/provider/shell interruption do not imply

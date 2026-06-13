@@ -1942,6 +1942,62 @@ def test_controller_renders_restored_conversation_history_for_resumed_tui() -> N
     ]
 
 
+def test_controller_renders_restored_tool_history_for_resumed_tui() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    runtime.conversation = [
+        {
+            "seq": 1,
+            "role": "assistant",
+            "kind": "tool_call",
+            "model_call_id": "turn-1:model_call_1",
+            "tool_call_id": "turn-1:model_call_1_tool_1",
+            "content": {
+                "content": "checking",
+                "tool_calls": [
+                    {
+                        "id": "turn-1:model_call_1_tool_1",
+                        "name": "read_file",
+                        "args": {"path": "README.md"},
+                    }
+                ],
+            },
+        },
+        {
+            "seq": 2,
+            "role": "tool",
+            "kind": "tool_result",
+            "model_call_id": "turn-1:model_call_1",
+            "tool_call_id": "turn-1:model_call_1_tool_1",
+            "content": {
+                "message_type": "tool_result",
+                "tool_name": "read_file",
+                "tool_call_id": "turn-1:model_call_1_tool_1",
+                "status": "ok",
+                "content": {"path": "README.md", "content": "hello"},
+                "error": None,
+                "artifact_ids": [],
+                "metadata": {"tool_name": "read_file"},
+            },
+        },
+    ]
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.render_restored_history()
+
+    assert view.events[0] == ReplViewEvent(
+        kind="model_markdown_final",
+        payload={"model_call_id": "turn-1:model_call_1", "text": "checking"},
+    )
+    assert view.events[1].kind == "tool_block"
+    assert view.events[1].payload["name"] == "read_file"
+    assert view.events[1].payload["status"] == "ok"
+    assert view.events[1].payload["metadata"]["tool_name"] == "read_file"
+    assert "README.md" in view.events[1].payload["preview"].text
+
+
 def test_exit_slash_command_completes_runtime_and_shows_summary() -> None:
     from debug_agent.cli.repl_controller import ReplController
 

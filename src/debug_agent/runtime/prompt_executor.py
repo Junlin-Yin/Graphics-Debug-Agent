@@ -1873,6 +1873,8 @@ def _provider_messages_to_conversation(
 ) -> list[ConversationMessage]:
     converted: list[ConversationMessage] = []
     next_seq = 1
+    tool_call_id_map: dict[str, tuple[str, str]] = {}
+    next_tool_ordinal = 1
     for message in messages:
         role = getattr(message, "type", None) or getattr(message, "role", None)
         if role == "ai":
@@ -1890,23 +1892,45 @@ def _provider_messages_to_conversation(
             tool_calls = _message_tool_calls(message)
             if tool_calls:
                 for call in tool_calls:
-                    call_tool_id = call["id"]
+                    raw_tool_id = str(call["id"])
+                    model_call_id, call_tool_id = tool_call_id_map.get(
+                        raw_tool_id,
+                        _turn_scoped_tool_call_ids(
+                            turn_id=turn_id,
+                            raw_tool_call_id=raw_tool_id,
+                            ordinal=next_tool_ordinal,
+                        ),
+                    )
+                    tool_call_id_map[raw_tool_id] = (model_call_id, call_tool_id)
+                    next_tool_ordinal += 1
+                    scoped_call = dict(call)
+                    scoped_call["id"] = call_tool_id
                     converted.append(
                         ConversationMessage(
                             seq=next_seq,
                             role="assistant",
                             kind=kind,
                             turn_id=turn_id,
-                            model_call_id=_model_call_id_from_tool_call_id(call_tool_id),
+                            model_call_id=model_call_id,
                             tool_call_id=call_tool_id,
-                            content={"content": content, "tool_calls": [call]},
+                            content={"content": content, "tool_calls": [scoped_call]},
                         )
                     )
                     next_seq += 1
                 continue
         if role == "tool" and kind == "tool_result" and isinstance(tool_call_id, str):
+            raw_tool_id = tool_call_id
+            model_call_id, tool_call_id = tool_call_id_map.get(
+                raw_tool_id,
+                _turn_scoped_tool_call_ids(
+                    turn_id=turn_id,
+                    raw_tool_call_id=raw_tool_id,
+                    ordinal=next_tool_ordinal,
+                ),
+            )
+            tool_call_id_map[raw_tool_id] = (model_call_id, tool_call_id)
+            next_tool_ordinal += 1
             content = _tool_result_observation_content(content, tool_call_id=tool_call_id)
-            model_call_id = _model_call_id_from_tool_call_id(tool_call_id)
         if not isinstance(content, (str, dict)):
             content = str(content)
         converted.append(
@@ -1922,6 +1946,21 @@ def _provider_messages_to_conversation(
         )
         next_seq += 1
     return converted
+
+
+def _turn_scoped_tool_call_ids(
+    *,
+    turn_id: str,
+    raw_tool_call_id: str,
+    ordinal: int,
+) -> tuple[str, str]:
+    model_call_id = _model_call_id_from_tool_call_id(raw_tool_call_id)
+    if model_call_id is None:
+        model_call_id = f"model_call_{ordinal}"
+        tool_call_id = f"{model_call_id}_tool_1"
+    else:
+        tool_call_id = raw_tool_call_id
+    return f"{turn_id}:{model_call_id}", f"{turn_id}:{tool_call_id}"
 
 
 def _tool_result_observation_content(

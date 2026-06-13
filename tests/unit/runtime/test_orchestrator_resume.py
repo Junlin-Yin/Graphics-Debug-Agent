@@ -184,6 +184,102 @@ def test_start_resumed_repl_restores_plain_user_and_assistant_text(
         resumed.runtime.close()
 
 
+def test_start_resumed_repl_restores_context_summary_as_plain_text(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    captured_messages: list[object] = []
+
+    class CapturingModel:
+        def bind_tools(self, _tools):
+            return self
+
+        def invoke(self, messages):
+            captured_messages[:] = list(messages)
+            return type(
+                "Response",
+                (),
+                {"content": "post resume answer", "tool_calls": [], "usage": {}},
+            )()
+
+    class CapturingModelFactory:
+        def create(self, _config):
+            return ModelFactoryResult(model=CapturingModel(), error=None)
+
+    monkeypatch.setattr(orchestrator_module, "ModelFactory", CapturingModelFactory)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    started = RuntimeOrchestrator(workspace_root=workspace).start_repl(
+        _config("post resume answer")
+    )
+    assert started.runtime is not None
+    runtime = started.runtime
+    summary = "Compressed continuity summary."
+    try:
+        store = ConversationStore(runtime.db.connection)
+        rows = store.append_closed_group(
+            session_id=runtime.session_id,
+            run_id=runtime.run_id,
+            messages=[
+                ConversationAppend(
+                    turn_id=None,
+                    message_group_id="fixture:context_summary",
+                    model_call_id=None,
+                    group_position=0,
+                    group_row_count=1,
+                    role="runtime",
+                    kind="context_summary",
+                    content={"content": summary},
+                    metadata={},
+                ),
+            ],
+            update_reason="compression",
+        )
+        runtime.conversation = [
+            {
+                "seq": 1,
+                "role": "runtime",
+                "kind": "context_summary",
+                "turn_id": None,
+                "model_call_id": None,
+                "tool_call_id": None,
+                "content": summary,
+                "artifact_refs": [],
+                "metadata": {},
+                "durable_message_index": rows[0].message_index,
+            }
+        ]
+        runtime.cancel_idle()
+    finally:
+        runtime.close()
+
+    resumed = RuntimeOrchestrator(workspace_root=workspace).start_resumed_repl(
+        runtime.session_id
+    )
+
+    assert resumed.runtime is not None
+    try:
+        restored_summaries = [
+            (message["role"], message["kind"], message["content"])
+            for message in resumed.runtime.conversation
+            if message["kind"] == "context_summary"
+        ]
+        assert restored_summaries == [("runtime", "context_summary", summary)]
+
+        result = resumed.runtime.run_turn("continue")
+
+        assert result.status == "completed"
+        provider_text = "\n".join(
+            str(message.get("content", ""))
+            for message in captured_messages
+            if isinstance(message, dict)
+        )
+        assert summary in provider_text
+        assert '{"content": "Compressed continuity summary."}' not in provider_text
+    finally:
+        resumed.runtime.close()
+
+
 def test_resumed_repl_with_runtime_cancellation_fact_runs_next_prompt(
     tmp_path,
     monkeypatch,

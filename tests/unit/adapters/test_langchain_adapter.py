@@ -1993,6 +1993,45 @@ def test_provider_messages_from_segments_merges_split_assistant_tool_calls() -> 
     assert provider_messages[2].tool_call_id == "model_call_1_tool_3"
 
 
+def test_provider_messages_from_segments_projects_non_success_tool_result_error() -> None:
+    segments = [
+        ConversationMessage(
+            seq=1,
+            role="tool",
+            kind="tool_result",
+            turn_id="turn-1",
+            model_call_id="model_call_1",
+            tool_call_id="model_call_1_tool_1",
+            content={
+                "message_type": "tool_result",
+                "tool_name": "shell_exec",
+                "tool_call_id": "model_call_1_tool_1",
+                "status": "error",
+                "content": None,
+                "error": {
+                    "error_class": "tool_error",
+                    "reason": "shell_nonzero_exit",
+                    "message": "command failed",
+                    "artifact_ids": [],
+                },
+                "artifact_ids": [],
+                "metadata": {},
+            },
+        )
+    ]
+
+    provider_messages = _provider_messages_from_segments(segments)
+
+    assert len(provider_messages) == 1
+    assert isinstance(provider_messages[0], ToolMessage)
+    assert json.loads(provider_messages[0].content) == {
+        "artifact_ids": [],
+        "error_class": "tool_error",
+        "message": "command failed",
+        "reason": "shell_nonzero_exit",
+    }
+
+
 def test_langchain_adapter_namespaces_repeated_provider_tool_call_ids() -> None:
     from langchain_core.messages import convert_to_messages
 

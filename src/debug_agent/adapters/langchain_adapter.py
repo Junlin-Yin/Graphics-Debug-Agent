@@ -451,7 +451,7 @@ def _provider_message_from_segment(segment: ConversationMessage) -> object:
     content = segment.content
     if segment.role == "tool" and _is_structured_tool_result(content, segment):
         return ToolMessage(
-            content=_tool_result_content(content["content"]),
+            content=_structured_tool_result_provider_content(content),
             tool_call_id=str(content["tool_call_id"]),
         )
     if segment.role == "tool" and segment.kind == "tool_result":
@@ -632,6 +632,15 @@ def _tool_result_content(content: object) -> str:
     if isinstance(content, str):
         return content
     return json.dumps(content, ensure_ascii=False, sort_keys=True)
+
+
+def _structured_tool_result_provider_content(content: dict[str, Any]) -> str:
+    if content.get("status") == "ok":
+        return _tool_result_content(content.get("content"))
+    error = content.get("error")
+    if isinstance(error, dict):
+        return _tool_result_content(error)
+    return _tool_result_content(content.get("content"))
 
 
 def _is_assistant_tool_call_kind(kind: str) -> bool:

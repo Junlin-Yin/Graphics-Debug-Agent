@@ -342,6 +342,8 @@ class ReplController:
         if self.view is None or self._restored_history_rendered:
             return
         self._restored_history_rendered = True
+        restored_tool_calls: dict[str, dict[str, Any]] = {}
+        formatter = ToolResultPreviewFormatter()
         for message in getattr(self.runtime, "conversation", []) or []:
             if not isinstance(message, dict):
                 continue
@@ -361,6 +363,60 @@ class ReplController:
                             payload={"text": text},
                         )
                     )
+            elif role == "assistant" and kind in {"tool_call", "assistant_tool_call"}:
+                text = _conversation_content_text(content)
+                model_call_id = _message_str(message, "model_call_id")
+                if text:
+                    payload: dict[str, Any] = {"text": text}
+                    if model_call_id:
+                        payload["model_call_id"] = model_call_id
+                    self.view.append_view_event(
+                        ReplViewEvent(kind="model_markdown_final", payload=payload)
+                    )
+                for call in _conversation_tool_calls(content):
+                    tool_call_id = str(call.get("id") or "")
+                    if not tool_call_id:
+                        continue
+                    restored_tool_calls[tool_call_id] = {
+                        "name": str(call.get("name") or "unknown"),
+                        "model_call_id": model_call_id,
+                    }
+            elif role == "tool" and kind == "tool_result":
+                tool_call_id = _message_str(message, "tool_call_id")
+                if not tool_call_id:
+                    continue
+                content_dict = content if isinstance(content, dict) else {}
+                restored_call = restored_tool_calls.get(tool_call_id, {})
+                tool_name = str(
+                    content_dict.get("tool_name")
+                    or restored_call.get("name")
+                    or "unknown"
+                )
+                metadata = dict(content_dict.get("metadata") or {})
+                metadata.setdefault("tool_name", tool_name)
+                metadata["tool_call_id"] = tool_call_id
+                model_call_id = _message_str(message, "model_call_id") or str(
+                    restored_call.get("model_call_id") or ""
+                )
+                if model_call_id:
+                    metadata["model_call_id"] = model_call_id
+                preview = formatter.format(
+                    output=content_dict.get("content"),
+                    redacted_output=content_dict.get("redacted_output"),
+                    artifact_ids=list(content_dict.get("artifact_ids") or []),
+                )
+                self.view.append_view_event(
+                    ReplViewEvent(
+                        kind="tool_block",
+                        payload={
+                            "name": tool_name,
+                            "status": content_dict.get("status") or "unknown",
+                            "error": content_dict.get("error"),
+                            "metadata": metadata,
+                            "preview": preview,
+                        },
+                    )
+                )
             elif role == "runtime":
                 text = _runtime_fact_message(content)
                 if text:
@@ -964,6 +1020,20 @@ def _conversation_content_text(content: object) -> str:
         if isinstance(message, str):
             return message
     return ""
+
+
+def _conversation_tool_calls(content: object) -> list[dict[str, Any]]:
+    if not isinstance(content, dict):
+        return []
+    tool_calls = content.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return []
+    return [call for call in tool_calls if isinstance(call, dict)]
+
+
+def _message_str(message: dict[str, Any], key: str) -> str:
+    value = message.get(key)
+    return value if isinstance(value, str) else ""
 
 
 def _runtime_fact_message(content: object) -> str:

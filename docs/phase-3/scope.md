@@ -224,6 +224,11 @@ checkpoint-frozen projection snapshot. Process-local conversation, stream
 observations, TUI state, and trace rendering are not recovery truth. Phase 3
 prompt sessions/runs do not write context snapshots; if legacy or corrupt
 databases contain them, they must not be used as recovery truth.
+For accepted durable model-visible messages included in the checkpoint-frozen
+projection, resume must preserve provider-visible equivalence with ordinary
+non-resume projection. This equivalence applies to accepted durable truth only,
+not to partial provider output, stream deltas, pending tool results, approval
+drafts, or provider/tool/shell mid-flight state.
 
 Phase 3 changes checkpoint semantics. A prompt session/run can be resumed only
 from a terminal recovery checkpoint, and Phase 3 prompt sessions/runs do not

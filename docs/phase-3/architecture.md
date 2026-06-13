@@ -80,6 +80,8 @@ Responsibilities:
   during ordinary execution.
 - rebuild process-local conversation from durable messages only during explicit
   resume.
+- preserve provider-visible equivalence between ordinary non-resume projection
+  and resume-restored projection for accepted durable model-visible messages.
 - reject pending provider/tool/shell state as durable conversation truth.
 - construct `ModelContextFrame` from the current conversation projection, active
   skills, compression state, Todo Plan, approval state, and current input.
@@ -346,7 +348,11 @@ They must not:
 7. Store transition revives the same session/run lineage to `running` and
    records current owner `pid`, `host_id`, and fresh `owner_token`.
 8. Resume events are written.
-9. REPL starts with runtime context restored from durable truth.
+9. REPL starts with runtime context restored from durable truth. The first later
+   ordinary model call must project accepted durable conversation messages with
+   the same provider-visible role, content, tool-call ids, tool arguments,
+   tool-result pairing, artifact references, and documented runtime wrappers as
+   the ordinary non-resume projection path.
 
 ### Stale Fail-Close
 

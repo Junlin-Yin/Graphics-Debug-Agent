@@ -653,12 +653,12 @@ def test_prompt_executor_appends_accepted_tool_call_and_tool_result_messages(
         "tool_result",
         "assistant_output",
     ]
-    assert rows[1].tool_call_id == "model_call_1_tool_1"
-    assert rows[2].tool_call_id == "model_call_1_tool_1"
+    assert rows[1].tool_call_id == "turn-1:model_call_1_tool_1"
+    assert rows[2].tool_call_id == "turn-1:model_call_1_tool_1"
     assert rows[2].content == {
         "message_type": "tool_result",
         "tool_name": "",
-        "tool_call_id": "model_call_1_tool_1",
+        "tool_call_id": "turn-1:model_call_1_tool_1",
         "status": "ok",
         "content": {
             "path": str((workspace / "notes.txt").resolve()),
@@ -3735,11 +3735,11 @@ def test_repl_runtime_persists_tool_loop_messages_for_next_turn_context(tmp_path
         "current_user_input",
         "assistant_output",
     ]
-    assert runtime.conversation[1]["model_call_id"] == "model_call_1"
+    assert runtime.conversation[1]["model_call_id"] == "turn-1:model_call_1"
     assert runtime.conversation[1]["content"]["content"] == (
         "I will read the notes before answering."
     )
-    assert runtime.conversation[2]["model_call_id"] == "model_call_1"
+    assert runtime.conversation[2]["model_call_id"] == "turn-1:model_call_1"
     assert runtime.conversation[2]["content"]["content"]["content"] == (
         "persisted tool output"
     )
@@ -4081,7 +4081,7 @@ def test_repl_runtime_tool_history_group_is_closed_and_evictable(tmp_path) -> No
     query_control = QueryControlPlane()
     groups = query_control.derive_model_call_groups(messages)
     tool_group = next(
-        group for group in groups if group.model_call_id == "model_call_1"
+        group for group in groups if group.model_call_id == "turn-1:model_call_1"
     )
     plan = ContextManager(query_control=query_control).prepare_compression(
         retained_messages=messages,
@@ -4098,7 +4098,7 @@ def test_repl_runtime_tool_history_group_is_closed_and_evictable(tmp_path) -> No
         "tool_call",
         "tool_result",
     ]
-    assert plan.selected_model_call_group_ids == ["model_call_1"]
+    assert plan.selected_model_call_group_ids == ["turn-1:model_call_1"]
     db.close()
 
 
@@ -4174,7 +4174,7 @@ def test_repl_runtime_updates_latest_context_estimate_from_stream_event(tmp_path
     db.close()
 
 
-def test_provider_messages_to_conversation_preserves_tool_call_ids() -> None:
+def test_provider_messages_to_conversation_namespaces_tool_call_ids_by_turn() -> None:
     from langchain_core.messages import AIMessage, ToolMessage
 
     from debug_agent.runtime.prompt_executor import _provider_messages_to_conversation
@@ -4197,11 +4197,13 @@ def test_provider_messages_to_conversation_preserves_tool_call_ids() -> None:
 
     assert converted[0].role == "assistant"
     assert converted[0].kind == "tool_call"
+    assert converted[0].model_call_id == "turn-1:model_call_1"
+    assert converted[0].tool_call_id == "turn-1:model_call_1_tool_1"
     assert converted[0].content == {
         "content": "",
         "tool_calls": [
             {
-                "id": "read_file_0",
+                "id": "turn-1:model_call_1_tool_1",
                 "name": "read_file",
                 "args": {"path": "a.txt"},
             }
@@ -4209,11 +4211,12 @@ def test_provider_messages_to_conversation_preserves_tool_call_ids() -> None:
     }
     assert converted[1].role == "tool"
     assert converted[1].kind == "tool_result"
-    assert converted[1].tool_call_id == "read_file_0"
+    assert converted[1].model_call_id == "turn-1:model_call_1"
+    assert converted[1].tool_call_id == "turn-1:model_call_1_tool_1"
     assert converted[1].content == {
         "message_type": "tool_result",
         "tool_name": "",
-        "tool_call_id": "read_file_0",
+        "tool_call_id": "turn-1:model_call_1_tool_1",
         "status": "ok",
         "content": "file text",
         "error": None,
@@ -4248,7 +4251,7 @@ def test_provider_messages_to_conversation_preserves_shell_nonzero_error_project
     assert converted[0].content == {
         "message_type": "tool_result",
         "tool_name": "",
-        "tool_call_id": "model_call_1_tool_1",
+        "tool_call_id": "turn-1:model_call_1_tool_1",
         "status": "error",
         "content": None,
         "error": {
@@ -4294,16 +4297,16 @@ def test_provider_messages_to_conversation_splits_multiple_tool_calls() -> None:
         (message.kind, message.model_call_id, message.tool_call_id)
         for message in converted
     ] == [
-        ("tool_call", "model_call_1", "model_call_1_tool_1"),
-        ("tool_call", "model_call_1", "model_call_1_tool_3"),
-        ("tool_result", "model_call_1", "model_call_1_tool_1"),
-        ("tool_result", "model_call_1", "model_call_1_tool_3"),
+        ("tool_call", "turn-1:model_call_1", "turn-1:model_call_1_tool_1"),
+        ("tool_call", "turn-1:model_call_1", "turn-1:model_call_1_tool_3"),
+        ("tool_result", "turn-1:model_call_1", "turn-1:model_call_1_tool_1"),
+        ("tool_result", "turn-1:model_call_1", "turn-1:model_call_1_tool_3"),
     ]
     assert converted[0].content == {
         "content": "checking files",
         "tool_calls": [
             {
-                "id": "model_call_1_tool_1",
+                "id": "turn-1:model_call_1_tool_1",
                 "name": "shell_exec",
                 "args": {"argv": ["git", "status"]},
             }
@@ -4313,7 +4316,7 @@ def test_provider_messages_to_conversation_splits_multiple_tool_calls() -> None:
         "content": "checking files",
         "tool_calls": [
             {
-                "id": "model_call_1_tool_3",
+                "id": "turn-1:model_call_1_tool_3",
                 "name": "shell_exec",
                 "args": {"argv": ["git", "diff"]},
             }
