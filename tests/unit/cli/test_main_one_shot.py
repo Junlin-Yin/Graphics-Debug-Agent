@@ -87,9 +87,26 @@ def test_main_rejects_invalid_one_shot_approval_mode(
 def test_main_returns_usage_error_for_missing_or_unsupported_args(capsys) -> None:
     assert main(["status"]) == 2
     assert main(["unknown", "sess_1"]) == 2
+    assert main(["--unknown"]) == 2
+    assert main(["-p"]) == 2
     usage = capsys.readouterr().err
     assert "Usage:" in usage
     assert "debug-agent [--approval-mode normal|semi-auto|yolo]  # REPL" in usage
+
+
+def test_main_help_prints_multiline_usage_to_stdout(capsys) -> None:
+    assert main(["--help"]) == 0
+    assert main(["--approval-mode", "semi-auto", "-h"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out.count("Usage:\n") == 2
+    for usage in captured.out.split("Usage:\n")[1:]:
+        assert "  debug-agent [--approval-mode normal|semi-auto|yolo]  # REPL\n" in usage
+        assert '  debug-agent [--approval-mode normal|semi-auto|yolo] -p "prompt"\n' in usage
+        assert "  debug-agent status <session_id>\n" in usage
+        assert "  debug-agent trace <session_id>\n" in usage
+        assert "  debug-agent resume <session_id>\n" in usage
 
 
 def test_main_returns_config_error_without_creating_session(

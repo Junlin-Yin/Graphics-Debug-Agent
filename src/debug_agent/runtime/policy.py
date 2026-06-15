@@ -455,8 +455,9 @@ def scope_signature_for_tool(
         )
     if tool_name == "shell_exec":
         path_part = "|".join(str(Path(path).resolve()) for path in sorted(classified_paths or []))
+        argv_part = "\\x00".join(shell_argv or ())
         return (
-            f"shell_exec|{risk_level}|argv:{'\\x00'.join(shell_argv or ())}|"
+            f"shell_exec|{risk_level}|argv:{argv_part}|"
             f"cwd:{Path(cwd).resolve() if cwd is not None else ''}|"
             f"timeout:{effective_timeout_seconds}|paths:{path_part}"
         )

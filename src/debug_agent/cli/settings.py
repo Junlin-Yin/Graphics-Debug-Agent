@@ -3,10 +3,12 @@ from __future__ import annotations
 
 # CLI usage string is a presentation constant, not runtime truth.
 USAGE = (
-    'Usage: debug-agent [--approval-mode normal|semi-auto|yolo]  # REPL | '
-    'debug-agent [--approval-mode normal|semi-auto|yolo] -p "prompt" | '
-    "debug-agent status <session_id> | debug-agent trace <session_id> | "
-    "debug-agent resume <session_id>"
+    "Usage:\n"
+    "  debug-agent [--approval-mode normal|semi-auto|yolo]  # REPL\n"
+    '  debug-agent [--approval-mode normal|semi-auto|yolo] -p "prompt"\n'
+    "  debug-agent status <session_id>\n"
+    "  debug-agent trace <session_id>\n"
+    "  debug-agent resume <session_id>"
 )
 
 # CLI parser accepts only the runtime approval modes exposed to users.

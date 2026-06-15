@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import sqlite3
+import sys
 
 import pytest
 import debug_agent.cli.main as cli_main
@@ -16,6 +17,58 @@ from debug_agent.persistence.sqlite import RuntimeDatabase
 class TtyStringIO(io.StringIO):
     def isatty(self) -> bool:
         return True
+
+
+def test_tty_repl_reexecs_with_pythonutf8_when_interpreter_is_not_utf8() -> None:
+    env: dict[str, str] = {}
+    calls: list[tuple[str, list[str], dict[str, str]]] = []
+
+    def fake_execve(executable: str, args: list[str], env_vars: dict[str, str]) -> None:
+        calls.append((executable, args, env_vars))
+
+    cli_main._ensure_tty_repl_utf8_mode(
+        ["--approval-mode", "normal"],
+        input_stream=TtyStringIO(),
+        output_stream=TtyStringIO(),
+        environ=env,
+        utf8_mode=0,
+        executable="python.exe",
+        execve=fake_execve,
+    )
+
+    assert env["PYTHONUTF8"] == "1"
+    assert env["DEBUG_AGENT_UTF8_REEXECED"] == "1"
+    assert calls == [
+        (
+            "python.exe",
+            [
+                "python.exe",
+                "-X",
+                "utf8",
+                "-m",
+                "debug_agent.cli.main",
+                "--approval-mode",
+                "normal",
+            ],
+            env,
+        )
+    ]
+
+
+def test_tty_repl_utf8_reexec_is_skipped_after_retry_marker() -> None:
+    calls: list[object] = []
+
+    cli_main._ensure_tty_repl_utf8_mode(
+        [],
+        input_stream=TtyStringIO(),
+        output_stream=TtyStringIO(),
+        environ={"DEBUG_AGENT_UTF8_REEXECED": "1"},
+        utf8_mode=0,
+        executable=sys.executable,
+        execve=lambda *_args: calls.append(_args),
+    )
+
+    assert calls == []
 
 
 def test_plain_approval_provider_maps_y_a_n_and_renders_prompt() -> None:
