@@ -327,22 +327,22 @@ The milestones below are ordered by dependency. Each milestone is an incremental
 
 **Freeze/review checkpoint:** do not claim RenderDoc readiness until fake `rdc` uses brokered `shell_exec` and `view_image`, terminalizes, and produces both trace and metrics evidence.
 
-- [ ] Add a deterministic test-only fake `rdc` helper that can be materialized as `<tmp>/bin/rdc`.
-- [ ] Implement fake `rdc doctor` with exit `0`.
-- [ ] Implement fake `rdc open sample.rdc` with per-test state under `tmp_path`.
-- [ ] Implement fake `rdc info --json` with deterministic capture metadata JSON.
-- [ ] Implement fake `rdc draws --limit 20` with deterministic draw output.
-- [ ] Implement fake `rdc rt <eid> -o <output.png>` that writes a valid PNG.
-- [ ] Implement fake `rdc close` that clears per-test state.
-- [ ] Create a temporary workspace with sample `.rdc` input and fake `rdc` first on `PATH`.
-- [ ] Drive a prompt session through `rdc doctor`, `open`, `info --json`, `draws --limit 20`, `rt ... -o <png>`, `view_image <png>`, `close`, and final answer.
-- [ ] Assert every `rdc` command is observed through brokered `shell_exec` tool results.
-- [ ] Assert fake command `cwd` behavior matches workspace expectations.
-- [ ] Assert exported PNG exists, is valid, and is inspected through brokered `view_image`.
-- [ ] Assert the session terminalizes.
-- [ ] Assert `.sessions/<session_id>/logs/trace.md` exists and renders the tool transcript.
-- [ ] Assert `.sessions/<session_id>/logs/run_metrics_*.json` exists and includes tool counts.
-- [ ] Run canonical verification for the changed surface.
+- [x] Add a deterministic test-only fake `rdc` helper that can be materialized as `<tmp>/bin/rdc`.
+- [x] Implement fake `rdc doctor` with exit `0`.
+- [x] Implement fake `rdc open sample.rdc` with per-test state under `tmp_path`.
+- [x] Implement fake `rdc info --json` with deterministic capture metadata JSON.
+- [x] Implement fake `rdc draws --limit 20` with deterministic draw output.
+- [x] Implement fake `rdc rt <eid> -o <output.png>` that writes a valid PNG.
+- [x] Implement fake `rdc close` that clears per-test state.
+- [x] Create a temporary workspace with sample `.rdc` input and fake `rdc` first on `PATH`.
+- [x] Drive a prompt session through `rdc doctor`, `open`, `info --json`, `draws --limit 20`, `rt ... -o <png>`, `view_image <png>`, `close`, and final answer.
+- [x] Assert every `rdc` command is observed through brokered `shell_exec` tool results.
+- [x] Assert fake command `cwd` behavior matches workspace expectations.
+- [x] Assert exported PNG exists, is valid, and is inspected through brokered `view_image`.
+- [x] Assert the session terminalizes.
+- [x] Assert `.sessions/<session_id>/logs/trace.md` exists and renders the tool transcript.
+- [x] Assert `.sessions/<session_id>/logs/run_metrics_*.json` exists and includes tool counts.
+- [x] Run canonical verification for the changed surface.
 
 ### Milestone 6: Deployment, Manual Smokes, And Final Acceptance
 
