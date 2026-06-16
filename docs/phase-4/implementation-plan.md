@@ -298,20 +298,20 @@ The milestones below are ordered by dependency. Each milestone is an incremental
 
 **Freeze/review checkpoint:** do not implement fake `rdc` readiness until metrics files are produced reliably for terminal prompt sessions.
 
-- [ ] Initialize an in-memory metrics collector at fresh start invocation.
-- [ ] Initialize a separate metrics collector at explicit resume invocation.
-- [ ] Record model-call timing observations for main-agent and context-compression calls.
-- [ ] Record brokered tool completion observations, including `view_image` as a tool.
-- [ ] Build metrics schema version `1` with session id, run id, invocation kind, start/end times, timing, token, and tool sections.
-- [ ] Generate UTC millisecond filenames in `YYYYMMDDTHHMMSS.SSSZ` format.
-- [ ] Use deterministic `_1`, `_2` suffixes for filename collisions and never overwrite an existing metrics file.
-- [ ] Write valid UTF-8 JSON through same-directory temporary file plus atomic finalization.
-- [ ] Exclude `estimated_context_tokens`, `reasoning_tokens`, `thinking_tokens`, and thinking text from metrics.
-- [ ] Compute tool success/failure counts and breakdown from `ToolResult.status`.
-- [ ] Represent missing tool timing data through `tool_time_coverage`.
-- [ ] Inject metrics write failure in tests and prove original terminal outcome and exit code are preserved.
-- [ ] Prove `status`, `trace`, `resume`, checkpoint validation, and recovery do not read metrics files.
-- [ ] Run canonical verification for the changed surface.
+- [x] Initialize an in-memory metrics collector at fresh start invocation.
+- [x] Initialize a separate metrics collector at explicit resume invocation.
+- [x] Record model-call timing observations for main-agent and context-compression calls.
+- [x] Record brokered tool completion observations, including `view_image` as a tool.
+- [x] Build metrics schema version `1` with session id, run id, invocation kind, start/end times, timing, token, and tool sections.
+- [x] Generate UTC millisecond filenames in `YYYYMMDDTHHMMSS.SSSZ` format.
+- [x] Use deterministic `_1`, `_2` suffixes for filename collisions and never overwrite an existing metrics file.
+- [x] Write valid UTF-8 JSON through same-directory temporary file plus atomic finalization.
+- [x] Exclude `estimated_context_tokens`, `reasoning_tokens`, `thinking_tokens`, and thinking text from metrics.
+- [x] Compute tool success/failure counts and breakdown from `ToolResult.status`.
+- [x] Represent missing tool timing data through `tool_time_coverage`.
+- [x] Inject metrics write failure in tests and prove original terminal outcome and exit code are preserved.
+- [x] Prove `status`, `trace`, `resume`, checkpoint validation, and recovery do not read metrics files.
+- [x] Run canonical verification for the changed surface.
 
 ### Milestone 5: Automated Fake `rdc` Readiness Scenario
 

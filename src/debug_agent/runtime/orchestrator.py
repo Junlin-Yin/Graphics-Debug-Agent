@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 import hashlib
 import os
 import json
@@ -25,6 +26,11 @@ from debug_agent.cli.exit_codes import (
     map_error_to_exit_code,
 )
 from debug_agent.observability.logging import write_runtime_log
+from debug_agent.observability.run_metrics import (
+    RunMetricsCollector,
+    RunMetricsWriteError,
+    write_run_metrics,
+)
 from debug_agent.observability.trace_writer import (
     TraceWriter,
     build_phase3_observability_summary,
@@ -119,6 +125,34 @@ class _RuntimeCancellationToken:
         return self._event.is_set()
 
 
+class _MetricsEventWriter:
+    def __init__(
+        self,
+        event_writer: EventWriter,
+        metrics_collector: RunMetricsCollector,
+    ) -> None:
+        self._event_writer = event_writer
+        self._metrics_collector = metrics_collector
+        self.connection = event_writer.connection
+        self.sessions_root = event_writer.sessions_root
+
+    def append(self, event: RunEvent) -> RunEvent:
+        appended = self._event_writer.append(event)
+        self._metrics_collector.observe_event(kind=event.kind, payload=event.payload)
+        return appended
+
+    def append_in_transaction(self, event: RunEvent) -> RunEvent:
+        appended = self._event_writer.append_in_transaction(event)
+        self._metrics_collector.observe_event(kind=event.kind, payload=event.payload)
+        return appended
+
+    def list_for_session(self, session_id: str) -> list[RunEvent]:
+        return self._event_writer.list_for_session(session_id)
+
+    def list_for_run(self, run_id: str) -> list[RunEvent]:
+        return self._event_writer.list_for_run(run_id)
+
+
 class ReplRuntime:
     def __init__(
         self,
@@ -134,6 +168,7 @@ class ReplRuntime:
         workspace_root: Path,
         conversation: list[dict[str, Any]] | None = None,
         owner_token: str | None = None,
+        metrics_collector: RunMetricsCollector | None = None,
     ) -> None:
         self.db = db
         self.sessions = sessions
@@ -145,6 +180,7 @@ class ReplRuntime:
         self.run_id = run_id
         self.workspace_root = workspace_root
         self.owner_token = owner_token
+        self.metrics_collector = metrics_collector
         self.conversation: list[dict[str, Any]] = (
             [] if conversation is None else [dict(message) for message in conversation]
         )
@@ -212,6 +248,8 @@ class ReplRuntime:
                 self._active_provider_handles = []
                 self._active_shell_handles = []
         with self._lock:
+            if self.metrics_collector is not None:
+                self.metrics_collector.observe_agent_result(result)
             self._append_turn_conversation(user_input, result)
             return result
 
@@ -429,6 +467,8 @@ class ReplRuntime:
             if isinstance(estimate, dict):
                 self.latest_context_estimate = estimate
             if result.status == "completed":
+                if self.metrics_collector is not None:
+                    self.metrics_collector.observe_agent_result(result)
                 writeback = result.metadata.get("conversation_writeback")
                 if isinstance(writeback, list):
                     self.conversation = [dict(message) for message in writeback]
@@ -533,6 +573,14 @@ class ReplRuntime:
                 TraceWriter(self.db.connection, self.db.path.parent),
                 session.session_id,
             )
+            metrics_warning = _write_terminal_run_metrics(
+                self.db.path.parent,
+                self.metrics_collector,
+            )
+            self._trace_refresh_warning = _join_warnings(
+                self._trace_refresh_warning,
+                metrics_warning,
+            )
             self._release_active_ownership()
             self.close()
 
@@ -549,6 +597,7 @@ class ReplRuntime:
                 session_id=self.session_id,
                 run_id=self.run_id,
                 agent_result=result,
+                metrics_collector=self.metrics_collector,
             )
             self._release_active_ownership()
             self.close()
@@ -780,6 +829,13 @@ class RuntimeOrchestrator:
             )
             _append_event(events, session.session_id, run.run_id, "session_started", {})
             _append_event(events, session.session_id, run.run_id, "run_started", {})
+            metrics_collector = RunMetricsCollector(
+                session_id=session.session_id,
+                run_id=run.run_id,
+                invocation_kind="start",
+                started_at=_utc_now(),
+            )
+            events = _MetricsEventWriter(events, metrics_collector)
             startup_error = _snapshot_skills_for_startup(
                 workspace_root=self.workspace_root,
                 artifacts=artifacts,
@@ -895,6 +951,7 @@ class RuntimeOrchestrator:
                 run_id=run.run_id,
                 workspace_root=self.workspace_root,
                 owner_token=str(owner_facts["owner_token"]),
+                metrics_collector=metrics_collector,
             )
             runtime.set_approval_provider(NonInteractiveApprovalProvider())
             try:
@@ -950,6 +1007,10 @@ class RuntimeOrchestrator:
                     TraceWriter(db.connection, sessions_root),
                     session.session_id,
                 )
+                metrics_warning = _write_terminal_run_metrics(
+                    sessions_root,
+                    runtime.metrics_collector,
+                )
                 _release_ownership_after_terminalization(
                     sessions=sessions,
                     events=events,
@@ -967,7 +1028,7 @@ class RuntimeOrchestrator:
                         db,
                         agent_result.assistant_output or "",
                         ),
-                        trace_warning,
+                        _join_warnings(trace_warning, metrics_warning),
                     ),
                     session_id=session.session_id,
                     run_id=run.run_id,
@@ -981,6 +1042,7 @@ class RuntimeOrchestrator:
                 session_id=session.session_id,
                 run_id=run.run_id,
                 agent_result=agent_result,
+                metrics_collector=runtime.metrics_collector if runtime else None,
             )
             _release_ownership_after_terminalization(
                 sessions=sessions,
@@ -1726,6 +1788,13 @@ class RuntimeOrchestrator:
         )
         _append_event(events, session.session_id, run.run_id, "session_started", {})
         _append_event(events, session.session_id, run.run_id, "run_started", {})
+        metrics_collector = RunMetricsCollector(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            invocation_kind="start",
+            started_at=_utc_now(),
+        )
+        events = _MetricsEventWriter(events, metrics_collector)
         startup_error = _snapshot_skills_for_startup(
             workspace_root=self.workspace_root,
             artifacts=artifacts,
@@ -1752,6 +1821,7 @@ class RuntimeOrchestrator:
                     metadata={"prompt_turn_counter": 0},
                 ),
                 startup_failure=True,
+                metrics_collector=metrics_collector,
             )
             _release_ownership_after_terminalization(
                 sessions=sessions,
@@ -1790,6 +1860,7 @@ class RuntimeOrchestrator:
                     metadata={"prompt_turn_counter": 0},
                 ),
                 startup_failure=True,
+                metrics_collector=metrics_collector,
             )
             _release_ownership_after_terminalization(
                 sessions=sessions,
@@ -1843,6 +1914,7 @@ class RuntimeOrchestrator:
                 run_id=run.run_id,
                 workspace_root=self.workspace_root,
                 owner_token=str(owner_facts["owner_token"]),
+                metrics_collector=metrics_collector,
             ),
             error=None,
         )
@@ -2080,10 +2152,35 @@ def _refresh_trace_observability(
     return None
 
 
+def _write_terminal_run_metrics(
+    sessions_root: Path,
+    metrics_collector: RunMetricsCollector | None,
+) -> str | None:
+    if metrics_collector is None:
+        return None
+    logs_dir = sessions_root / metrics_collector.session_id / "logs"
+    try:
+        write_run_metrics(logs_dir, metrics_collector, ended_at=_utc_now())
+    except RunMetricsWriteError as exc:
+        return f"run metrics write failed: {exc}"
+    return None
+
+
+def _join_warnings(*warnings: str | None) -> str | None:
+    parts = [warning for warning in warnings if warning]
+    if not parts:
+        return None
+    return "\n".join(parts)
+
+
 def _with_trace_warning(message: str, warning: str | None) -> str:
     if not warning:
         return message
     return f"{message}\n\n{warning}"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 def _store_error_code(exc: StoreError) -> tuple[str, str]:
@@ -2109,6 +2206,7 @@ def _mark_failed_terminal(
     run_id: str,
     agent_result: AgentRunResult,
     startup_failure: bool = False,
+    metrics_collector: RunMetricsCollector | None = None,
 ) -> OneShotResult:
     error = agent_result.error or {
         "error_class": "internal_error",
@@ -2218,13 +2316,17 @@ def _mark_failed_terminal(
         )
     else:
         trace_warning = None
+    metrics_warning = _write_terminal_run_metrics(
+        events.sessions_root,
+        metrics_collector,
+    )
     return OneShotResult(
         exit_code=1,
         assistant_output=None,
         error=terminal_error,
         message=_with_trace_warning(
             str(terminal_error.get("message") or error["message"]),
-            trace_warning,
+            _join_warnings(trace_warning, metrics_warning),
         ),
         session_id=session.session_id,
         run_id=run.run_id,
@@ -2930,6 +3032,13 @@ def _runtime_from_resumed_session(
             message="Resumed run is not running.",
             recoverable=False,
         )
+    metrics_collector = RunMetricsCollector(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        invocation_kind="resume",
+        started_at=_utc_now(),
+    )
+    events = _MetricsEventWriter(events, metrics_collector)
     checkpoint = checkpoints.get(run.latest_checkpoint_id)
     checkpoints.validate_terminal_recovery(checkpoint, validate_current_todo=True)
     conversation = _conversation_from_checkpoint_projection(
@@ -2975,6 +3084,7 @@ def _runtime_from_resumed_session(
         workspace_root=workspace_root,
         conversation=conversation,
         owner_token=owner_token,
+        metrics_collector=metrics_collector,
     )
     runtime._sync_durable_message_indexes()
     return runtime

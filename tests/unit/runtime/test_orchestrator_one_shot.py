@@ -200,6 +200,96 @@ def test_one_shot_success_persists_lifecycle_and_completes_session(
     assert skill_rows == [("alpha",)]
 
 
+def test_one_shot_terminalization_writes_run_metrics_file(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
+        "hello", _config("one shot answer")
+    )
+
+    assert result.exit_code == 0
+    metrics_paths = list(
+        (workspace / ".sessions" / result.session_id / "logs").glob(
+            "run_metrics_*.json"
+        )
+    )
+    assert len(metrics_paths) == 1
+    payload = json.loads(metrics_paths[0].read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 1
+    assert payload["session_id"] == result.session_id
+    assert payload["run_id"] == result.run_id
+    assert payload["invocation_kind"] == "start"
+    assert set(payload) == {
+        "schema_version",
+        "session_id",
+        "run_id",
+        "metrics_started_at",
+        "metrics_ended_at",
+        "invocation_kind",
+        "timing",
+        "tokens",
+        "tools",
+    }
+    assert payload["tokens"]["token_source"] in {"provider", "estimated"}
+    assert "estimated_context_tokens" not in payload
+    assert "reasoning_tokens" not in payload["tokens"]
+    assert "thinking_tokens" not in payload["tokens"]
+
+
+def test_one_shot_metrics_write_failure_preserves_terminal_outcome(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def fail_write(*_args, **_kwargs):
+        raise orchestrator_module.RunMetricsWriteError("permission denied")
+
+    monkeypatch.setattr(orchestrator_module, "write_run_metrics", fail_write)
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
+        "hello", _config("one shot answer")
+    )
+
+    assert result.exit_code == 0
+    assert result.assistant_output == "one shot answer"
+    assert "run metrics write failed: permission denied" in result.message
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "completed"
+        assert conn.execute("SELECT status FROM runs").fetchone()[0] == "completed"
+        assert conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 1
+        assert conn.execute("SELECT owner_token FROM sessions").fetchone()[0] is None
+
+
+def test_one_shot_metrics_path_selection_failure_preserves_terminal_outcome(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def fail_next_metrics_path(*_args, **_kwargs):
+        raise OSError("path selection denied")
+
+    monkeypatch.setattr(
+        "debug_agent.observability.run_metrics._next_metrics_path",
+        fail_next_metrics_path,
+    )
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
+        "hello", _config("one shot answer")
+    )
+
+    assert result.exit_code == 0
+    assert result.assistant_output == "one shot answer"
+    assert "run metrics write failed: path selection denied" in result.message
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "completed"
+        assert conn.execute("SELECT status FROM runs").fetchone()[0] == "completed"
+        assert conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 1
+        assert conn.execute("SELECT owner_token FROM sessions").fetchone()[0] is None
+
+
 def test_one_shot_release_failure_persists_normalized_runtime_error_event(
     tmp_path, monkeypatch
 ) -> None:

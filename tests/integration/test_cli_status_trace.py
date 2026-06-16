@@ -73,6 +73,11 @@ def _run_one_shot(tmp_path):
 
 def test_status_and_trace_commands_inspect_completed_one_shot(tmp_path) -> None:
     executable, home, workspace, session_id = _run_one_shot(tmp_path)
+    metrics_paths = sorted(
+        (workspace / ".sessions" / session_id / "logs").glob("run_metrics_*.json")
+    )
+    assert len(metrics_paths) == 1
+    metrics_paths[0].write_text("{not valid metrics json", encoding="utf-8")
 
     status = subprocess.run(
         [executable, "status", session_id],

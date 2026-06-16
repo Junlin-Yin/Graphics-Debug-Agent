@@ -215,6 +215,10 @@ def test_debug_agent_resume_one_shot_enters_repl_without_resume_observation(
         ).fetchone()
         if run_id is None:
             run_id = conn.execute("SELECT run_id FROM runs").fetchone()[0]
+    metrics_dir = workspace / ".sessions" / session_id / "logs"
+    initial_metrics = sorted(metrics_dir.glob("run_metrics_*.json"))
+    assert len(initial_metrics) == 1
+    initial_metrics[0].write_text("{not valid metrics json", encoding="utf-8")
 
     resumed = subprocess.run(
         [executable, "resume", session_id],
@@ -227,6 +231,16 @@ def test_debug_agent_resume_one_shot_enters_repl_without_resume_observation(
     )
 
     assert resumed.returncode == 0
+    metrics_paths = sorted(metrics_dir.glob("run_metrics_*.json"))
+    assert len(metrics_paths) == 2
+    resume_payloads = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in metrics_paths
+        if path != initial_metrics[0]
+    ]
+    assert [payload["invocation_kind"] for payload in resume_payloads] == ["resume"]
+    assert resume_payloads[0]["session_id"] == session_id
+    assert resume_payloads[0]["run_id"] == run_id
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         session_rows = conn.execute(
             "SELECT session_id, status, active_run_id FROM sessions"
