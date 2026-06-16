@@ -30,6 +30,7 @@ def test_settings_modules_import_and_expose_documented_groups() -> None:
 
     assert persistence_settings.PHASE_3_SCHEMA_USER_VERSION == 3
     assert persistence_settings.PHASE_3_5_SCHEMA_USER_VERSION == 4
+    assert persistence_settings.PHASE_4_SCHEMA_USER_VERSION == 5
     assert 0 in persistence_settings.LEGACY_SCHEMA_USER_VERSIONS
     assert 3 in persistence_settings.PHASE_3_5_LEGACY_SCHEMA_USER_VERSIONS
     assert "CREATE TABLE IF NOT EXISTS sessions" in persistence_settings.SQLITE_SCHEMA

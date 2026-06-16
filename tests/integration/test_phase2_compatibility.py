@@ -4,8 +4,6 @@ import sqlite3
 
 from debug_agent.persistence.sqlite import (
     PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
-    PHASE_3_5_SCHEMA_USER_VERSION,
-    PHASE_3_5_STARTUP_LEGACY_RESET_GUIDANCE,
 )
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
 
@@ -28,7 +26,7 @@ def _config(response: str = "fake answer") -> dict:
     }
 
 
-def test_status_and_trace_fail_closed_while_startup_resets_legacy_database(
+def test_status_trace_and_startup_fail_closed_on_legacy_database(
     tmp_path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -54,17 +52,8 @@ def test_status_and_trace_fail_closed_while_startup_resets_legacy_database(
     for result in (status, trace):
         assert result.exit_code == 6
         assert PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE in result.message
-    assert one_shot.exit_code == 0
-    assert PHASE_3_5_STARTUP_LEGACY_RESET_GUIDANCE in one_shot.message
+    assert one_shot.exit_code == 6
+    assert PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE in one_shot.message
     with sqlite3.connect(db_path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
-            PHASE_3_5_SCHEMA_USER_VERSION
-        )
-        tables = {
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
-        }
-    assert "run_events" in tables
-    assert "todo_plans" in tables
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "running"

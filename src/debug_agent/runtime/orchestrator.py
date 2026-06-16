@@ -2344,6 +2344,9 @@ def _ensure_phase3_frozen_runtime_defaults(config_snapshot: dict[str, Any]) -> d
             "view_image_enabled": False,
             "view_image_disabled_reason": "missing_multimodal_config",
         }
+    thinking = frozen.get("thinking")
+    if not isinstance(thinking, dict):
+        frozen["thinking"] = {"enabled": False, "effort": "high"}
     return frozen
 
 

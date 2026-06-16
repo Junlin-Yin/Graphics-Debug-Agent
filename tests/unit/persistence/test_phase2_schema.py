@@ -5,13 +5,13 @@ import sqlite3
 import pytest
 
 from debug_agent.persistence.settings import (
-    PHASE_3_SCHEMA_USER_VERSION,
+    PHASE_4_SCHEMA_USER_VERSION,
     READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
 )
 from debug_agent.persistence.sqlite import RuntimeBootstrapError, RuntimeDatabase
 
 
-def test_fresh_bootstrap_creates_phase_3_schema_and_todo_plan_table(tmp_path) -> None:
+def test_fresh_bootstrap_creates_phase_4_schema_and_todo_plan_table(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
@@ -20,7 +20,7 @@ def test_fresh_bootstrap_creates_phase_3_schema_and_todo_plan_table(tmp_path) ->
 
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == (
-            PHASE_3_SCHEMA_USER_VERSION
+            PHASE_4_SCHEMA_USER_VERSION
         )
         table_names = {
             row[0]
@@ -55,8 +55,8 @@ def test_fresh_bootstrap_creates_phase_3_schema_and_todo_plan_table(tmp_path) ->
     ]
 
 
-@pytest.mark.parametrize("user_version", [0, 1, 2])
-def test_startup_legacy_database_resets_without_rewrite(
+@pytest.mark.parametrize("user_version", [0, 1, 2, 3])
+def test_startup_legacy_database_fails_closed_without_rewrite(
     tmp_path, user_version: int
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -73,12 +73,14 @@ def test_startup_legacy_database_resets_without_rewrite(
         conn.commit()
     finally:
         conn.close()
-    db = RuntimeDatabase.bootstrap(workspace)
-    db.close()
+    with pytest.raises(RuntimeBootstrapError) as exc:
+        RuntimeDatabase.bootstrap(workspace)
 
+    assert exc.value.error_class == "config_error"
+    assert exc.value.reason in {"schema_version_missing", "legacy_schema_version"}
     with sqlite3.connect(db_path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == PHASE_3_SCHEMA_USER_VERSION
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == user_version
+        assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "running"
 
 
 def test_existing_future_database_fails_closed_without_rewrite(tmp_path) -> None:

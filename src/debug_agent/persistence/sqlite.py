@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ from debug_agent.persistence.settings import (
     PHASE_3_5_STARTUP_LEGACY_RESET_GUIDANCE,
     PHASE_2_SCHEMA_USER_VERSION,
     PHASE_3_SCHEMA_USER_VERSION,
+    PHASE_4_SCHEMA_USER_VERSION,
     READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
     SQLITE_SCHEMA,
     STARTUP_LEGACY_RESET_GUIDANCE,
@@ -55,22 +57,24 @@ class RuntimeDatabase:
     def bootstrap(cls, workspace_root: str | Path) -> Self:
         return cls._bootstrap(
             workspace_root,
-            expected_user_version=PHASE_3_SCHEMA_USER_VERSION,
-            legacy_user_versions=LEGACY_SCHEMA_USER_VERSIONS,
+            expected_user_version=PHASE_4_SCHEMA_USER_VERSION,
+            legacy_user_versions=frozenset({0, 1, 2, 3, 4}),
             delete_sidecars=False,
             startup_reset_guidance=STARTUP_LEGACY_RESET_GUIDANCE,
             read_only_guidance=READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
+            forward_upgrade_user_version=PHASE_3_5_SCHEMA_USER_VERSION,
         )
 
     @classmethod
     def bootstrap_phase_3_5_internal(cls, workspace_root: str | Path) -> Self:
         return cls._bootstrap(
             workspace_root,
-            expected_user_version=PHASE_3_5_SCHEMA_USER_VERSION,
-            legacy_user_versions=PHASE_3_5_LEGACY_SCHEMA_USER_VERSIONS,
+            expected_user_version=PHASE_4_SCHEMA_USER_VERSION,
+            legacy_user_versions=frozenset({0, 1, 2, 3, 4}),
             delete_sidecars=True,
             startup_reset_guidance=PHASE_3_5_STARTUP_LEGACY_RESET_GUIDANCE,
             read_only_guidance=PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
+            forward_upgrade_user_version=PHASE_3_5_SCHEMA_USER_VERSION,
         )
 
     @classmethod
@@ -83,6 +87,7 @@ class RuntimeDatabase:
         delete_sidecars: bool,
         startup_reset_guidance: str,
         read_only_guidance: str,
+        forward_upgrade_user_version: int | None = None,
     ) -> Self:
         sessions_root = Path(workspace_root).resolve() / ".sessions"
         try:
@@ -93,9 +98,13 @@ class RuntimeDatabase:
             if existed:
                 user_version = _read_user_version(db_path)
                 if user_version in legacy_user_versions:
-                    _delete_runtime_database_files(db_path, include_sidecars=delete_sidecars)
-                    existed = False
-                    startup_messages.append(startup_reset_guidance)
+                    if user_version != forward_upgrade_user_version:
+                        raise _schema_error(
+                            user_version,
+                            startup=True,
+                            legacy_user_versions=legacy_user_versions,
+                            read_only_guidance=read_only_guidance,
+                        )
                 elif user_version != expected_user_version:
                     raise _schema_error(
                         user_version,
@@ -105,12 +114,16 @@ class RuntimeDatabase:
             connection = sqlite3.connect(db_path, check_same_thread=False)
             connection.execute("PRAGMA foreign_keys = ON")
             if existed:
-                _validate_open_connection_user_version(
-                    connection,
-                    startup=True,
-                    expected_user_version=expected_user_version,
-                    read_only_guidance=read_only_guidance,
-                )
+                user_version = _connection_user_version(connection)
+                if user_version == forward_upgrade_user_version:
+                    _upgrade_phase_3_5_to_phase_4(connection)
+                else:
+                    _validate_open_connection_user_version(
+                        connection,
+                        startup=True,
+                        expected_user_version=expected_user_version,
+                        read_only_guidance=read_only_guidance,
+                    )
             connection.executescript(SQLITE_SCHEMA)
             connection.execute(f"PRAGMA user_version = {expected_user_version}")
             connection.commit()
@@ -126,8 +139,8 @@ class RuntimeDatabase:
     def bootstrap_read_only(cls, workspace_root: str | Path) -> Self | None:
         return cls._bootstrap_read_only(
             workspace_root,
-            expected_user_version=PHASE_3_SCHEMA_USER_VERSION,
-            legacy_user_versions=LEGACY_SCHEMA_USER_VERSIONS,
+            expected_user_version=PHASE_4_SCHEMA_USER_VERSION,
+            legacy_user_versions=frozenset({0, 1, 2, 3, 4}),
             read_only_guidance=READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
         )
 
@@ -137,8 +150,8 @@ class RuntimeDatabase:
     ) -> Self | None:
         return cls._bootstrap_read_only(
             workspace_root,
-            expected_user_version=PHASE_3_5_SCHEMA_USER_VERSION,
-            legacy_user_versions=PHASE_3_5_LEGACY_SCHEMA_USER_VERSIONS,
+            expected_user_version=PHASE_4_SCHEMA_USER_VERSION,
+            legacy_user_versions=frozenset({0, 1, 2, 3, 4}),
             read_only_guidance=PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
         )
 
@@ -146,8 +159,8 @@ class RuntimeDatabase:
     def open_phase_3_5_existing_read_write(cls, workspace_root: str | Path) -> Self | None:
         return cls._open_existing_read_write(
             workspace_root,
-            expected_user_version=PHASE_3_5_SCHEMA_USER_VERSION,
-            legacy_user_versions=PHASE_3_5_LEGACY_SCHEMA_USER_VERSIONS,
+            expected_user_version=PHASE_4_SCHEMA_USER_VERSION,
+            legacy_user_versions=frozenset({0, 1, 2, 3, 4}),
             read_only_guidance=PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
         )
 
@@ -262,8 +275,7 @@ def _validate_open_connection_user_version(
     legacy_user_versions: frozenset[int] | None = None,
     read_only_guidance: str = READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
 ) -> None:
-    row = connection.execute("PRAGMA user_version").fetchone()
-    user_version = int(row[0]) if row is not None else 0
+    user_version = _connection_user_version(connection)
     if user_version != expected_user_version:
         raise _schema_error(
             user_version,
@@ -271,6 +283,48 @@ def _validate_open_connection_user_version(
             legacy_user_versions=legacy_user_versions,
             read_only_guidance=read_only_guidance,
         )
+
+
+def _connection_user_version(connection: sqlite3.Connection) -> int:
+    row = connection.execute("PRAGMA user_version").fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def _upgrade_phase_3_5_to_phase_4(connection: sqlite3.Connection) -> None:
+    rows = connection.execute(
+        "SELECT session_id, config_snapshot_json FROM sessions"
+    ).fetchall()
+    for session_id, snapshot_json in rows:
+        try:
+            snapshot = json.loads(snapshot_json)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeBootstrapError(
+                "Runtime database schema validation failed: session config snapshot is invalid.",
+                error_class="config_error",
+                reason="legacy_schema_version",
+                recoverable=False,
+            ) from exc
+        if not isinstance(snapshot, dict):
+            raise RuntimeBootstrapError(
+                "Runtime database schema validation failed: session config snapshot is invalid.",
+                error_class="config_error",
+                reason="legacy_schema_version",
+                recoverable=False,
+            )
+        if "thinking" in snapshot:
+            continue
+        upgraded = {
+            **snapshot,
+            "thinking": {"enabled": False, "effort": "high"},
+        }
+        connection.execute(
+            "UPDATE sessions SET config_snapshot_json = ? WHERE session_id = ?",
+            (
+                json.dumps(upgraded, ensure_ascii=False, sort_keys=True),
+                session_id,
+            ),
+        )
+    connection.execute(f"PRAGMA user_version = {PHASE_4_SCHEMA_USER_VERSION}")
 
 
 def _schema_error(

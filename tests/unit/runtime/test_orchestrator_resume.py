@@ -867,6 +867,7 @@ def test_resume_preserves_frozen_agent_loop_and_expanded_execution_config(
         "max_shell_timeout_seconds": 22,
         "cancellation_timeout_seconds": 3,
     }
+    config["thinking"] = {"enabled": False, "effort": "low"}
 
     one_shot = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
         "freeze config",
@@ -881,6 +882,10 @@ max_tool_call_iterations = 999
 
 [execution]
 default_tool_timeout_seconds = 999
+
+[thinking]
+enabled = true
+effort = "high"
 """.strip(),
         encoding="utf-8",
     )
@@ -901,6 +906,7 @@ default_tool_timeout_seconds = 999
         "max_shell_timeout_seconds": 22,
         "cancellation_timeout_seconds": 3,
     }
+    assert session.config_snapshot["thinking"] == {"enabled": False, "effort": "low"}
 
 
 def test_start_resumed_repl_runtime_construction_failure_does_not_revive(

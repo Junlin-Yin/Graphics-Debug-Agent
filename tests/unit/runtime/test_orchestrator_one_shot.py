@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
 from debug_agent.adapters.model_factory import ModelFactoryResult
-from debug_agent.persistence.settings import PHASE_3_5_SCHEMA_USER_VERSION
+from debug_agent.persistence.settings import PHASE_4_SCHEMA_USER_VERSION
 from debug_agent.runtime import orchestrator as orchestrator_module
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator
 
@@ -354,7 +354,7 @@ def test_one_shot_default_path_exposes_todo_but_keeps_view_image_gated(
 
     with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == (
-            PHASE_3_5_SCHEMA_USER_VERSION
+            PHASE_4_SCHEMA_USER_VERSION
         )
         manifest_version = conn.execute(
             """

@@ -127,6 +127,7 @@ base_url_env = "ANTHROPIC_BASE_URL"
         "development": {
             "allow_incomplete_phase3_prompt_execution": False,
         },
+        "thinking": {"enabled": False, "effort": "high"},
     }
     assert "secret-value" not in str(result.snapshot)
 
@@ -190,6 +191,7 @@ fake_response = "hello"
             "view_image_enabled": False,
             "view_image_disabled_reason": "missing_multimodal_config",
         },
+        "thinking": {"enabled": False, "effort": "high"},
         "fake_response": "hello",
     }
 

@@ -7,8 +7,8 @@ from debug_agent.cli.exit_codes import ERROR_LOOKUP_NOT_FOUND, ERROR_STARTUP_PER
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.settings import (
     PHASE_3_5_SCHEMA_USER_VERSION,
+    PHASE_4_SCHEMA_USER_VERSION,
     PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
-    PHASE_3_5_STARTUP_LEGACY_RESET_GUIDANCE,
 )
 from debug_agent.runtime.contracts import RunEvent, utc_now_iso
 
@@ -296,7 +296,7 @@ def test_status_query_returns_missing_session_error(tmp_path) -> None:
     assert not (workspace / ".sessions" / "runtime.db").exists()
 
 
-def test_status_trace_and_resume_fail_closed_for_legacy_schema_but_startup_resets(
+def test_status_trace_resume_and_startup_fail_closed_for_legacy_schema(
     tmp_path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -307,6 +307,7 @@ def test_status_trace_and_resume_fail_closed_for_legacy_schema_but_startup_reset
         conn.execute("CREATE TABLE sessions (session_id TEXT)")
         conn.execute("INSERT INTO sessions VALUES ('legacy_session')")
         conn.execute("PRAGMA user_version = 0")
+        conn.commit()
     finally:
         conn.close()
 
@@ -320,13 +321,13 @@ def test_status_trace_and_resume_fail_closed_for_legacy_schema_but_startup_reset
     for result in (status, trace, resume):
         assert result.exit_code == ERROR_STARTUP_PERSISTENCE
         assert PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE in result.message
-    assert one_shot.exit_code == 0
-    assert PHASE_3_5_STARTUP_LEGACY_RESET_GUIDANCE in one_shot.message
+    assert one_shot.exit_code == ERROR_STARTUP_PERSISTENCE
+    assert PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE in one_shot.message
     with sqlite3.connect(db_dir / "runtime.db") as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
-            PHASE_3_5_SCHEMA_USER_VERSION
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert conn.execute("SELECT session_id FROM sessions").fetchone()[0] == (
+            "legacy_session"
         )
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
 
 
 def test_trace_and_resume_missing_database_return_lookup_without_creating_db(
@@ -463,7 +464,7 @@ def test_status_trace_resume_fail_closed_for_future_schema(
     with sqlite3.connect(db_path) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT)")
         conn.execute("INSERT INTO sessions VALUES ('future_session')")
-        conn.execute(f"PRAGMA user_version = {PHASE_3_5_SCHEMA_USER_VERSION + 1}")
+        conn.execute(f"PRAGMA user_version = {PHASE_4_SCHEMA_USER_VERSION + 1}")
 
     orchestrator = RuntimeOrchestrator(workspace_root=workspace)
 
@@ -479,7 +480,7 @@ def test_status_trace_resume_fail_closed_for_future_schema(
             "future_session"
         )
         assert conn.execute("PRAGMA user_version").fetchone()[0] == (
-            PHASE_3_5_SCHEMA_USER_VERSION + 1
+            PHASE_4_SCHEMA_USER_VERSION + 1
         )
 
 

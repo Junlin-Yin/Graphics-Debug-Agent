@@ -75,6 +75,103 @@ def test_missing_multimodal_config_freezes_disabled_view_image_without_startup_e
         db.close()
 
 
+def test_thinking_config_defaults_freeze_disabled_high_for_fake_provider(
+    tmp_path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    _write_config(home, _base_fake_config())
+    monkeypatch.setenv("HOME", str(home))
+
+    config = load_config_snapshot()
+
+    assert config.error is None
+    assert config.snapshot is not None
+    assert config.snapshot["thinking"] == {"enabled": False, "effort": "high"}
+
+
+def test_thinking_config_accepts_effort_when_disabled(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    _write_config(
+        home,
+        _base_fake_config(
+            """
+[thinking]
+enabled = false
+effort = "low"
+"""
+        ),
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    config = load_config_snapshot()
+
+    assert config.error is None
+    assert config.snapshot is not None
+    assert config.snapshot["thinking"] == {"enabled": False, "effort": "low"}
+
+
+def test_thinking_config_accepts_enabled_effort_for_real_provider(
+    tmp_path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    _write_config(
+        home,
+        """
+[defaults]
+provider = "anthropic"
+model = "kimi-k2.5"
+
+[thinking]
+enabled = true
+effort = "medium"
+""",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret-key")
+
+    config = load_config_snapshot()
+
+    assert config.error is None
+    assert config.snapshot is not None
+    assert config.snapshot["thinking"] == {"enabled": True, "effort": "medium"}
+    assert "secret-key" not in json.dumps(config.snapshot, sort_keys=True)
+
+
+def test_thinking_config_rejects_invalid_values(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    for body, expected in [
+        ('enabled = "yes"\neffort = "high"', "thinking.enabled must be a boolean."),
+        ("enabled = false\neffort = 3", "thinking.effort must be a string."),
+        (
+            'enabled = false\neffort = "maximum"',
+            'thinking.effort must be one of: "low", "medium", "high".',
+        ),
+    ]:
+        _write_config(
+            home,
+            _base_fake_config(
+                f"""
+[thinking]
+{body}
+"""
+            ),
+        )
+
+        config = load_config_snapshot()
+
+        assert config.snapshot is None
+        assert config.error is not None
+        assert config.error.error_class == "config_error"
+        assert config.error.reason == "invalid_runtime_config"
+        assert expected in config.error.message
+
+
 def test_complete_multimodal_config_freezes_enabled_ready_but_keeps_tool_gated(
     tmp_path, monkeypatch
 ) -> None:

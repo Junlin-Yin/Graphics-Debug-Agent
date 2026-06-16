@@ -202,31 +202,31 @@ The milestones below are ordered by dependency. Each milestone is an incremental
 
 **Freeze/review checkpoint:** do not implement model-call thinking projection until schema identity, upgrade preservation, frozen config behavior, and upgraded-checkpoint checksum compatibility are reviewed.
 
-- [ ] Define the Phase 4 SQLite schema user version as `5` in the persistence settings owner.
-- [ ] Ensure fresh Phase 4 database bootstrap writes `PRAGMA user_version = 5`.
-- [ ] Add an explicit startup-only compatibility branch for existing `PRAGMA user_version = 4`.
-- [ ] Keep missing schema version, `0`, legacy `1`, `2`, `3`, corrupt/unreadable, and unknown future versions fail-closed.
-- [ ] Ensure `status`, `trace`, and `resume` with schema version `4` fail closed unless startup has already upgraded the database to `5`.
-- [ ] Ensure `status`, `trace`, and `resume` with missing database do not create `.sessions/runtime.db`.
-- [ ] Update user-facing schema guidance for Phase 4 without describing unsupported destructive reset behavior.
-- [ ] Add unit and integration tests for all schema gate cases.
-- [ ] Add `thinking.enabled` default `false`, boolean validation, and frozen snapshot persistence.
-- [ ] Add `thinking.effort` default `"high"`, enum validation for `"low"`, `"medium"`, and `"high"`, and frozen snapshot persistence.
-- [ ] Reject non-boolean `enabled`, non-string `effort`, and unsupported effort strings as `config_error/invalid_runtime_config`.
-- [ ] Accept configured `effort` when `enabled = false`.
-- [ ] Ensure fake-provider and real-provider session snapshots use the same `thinking` object shape.
-- [ ] Implement v4-to-v5 backfill for existing `sessions.config_snapshot_json` rows missing `thinking`.
-- [ ] Ensure v4-to-v5 backfill uses disabled defaults and never current mutable `config.toml`.
-- [ ] Add preservation assertions for checkpoint payloads, `payload_sha256`, checkpoint manifests, frozen snapshot checksum fields, active owner, session, run, event, durable conversation, Todo Plan, approval grant, and artifact metadata rows.
-- [ ] Prove startup upgrade does not terminalize sessions, release ownership, write metrics, or rebuild trace.
-- [ ] Add resume tests proving frozen thinking config is restored and current config changes are ignored.
-- [ ] Add canonical config projection helper that omits only the exact default disabled Phase 4 `thinking` object for fallback validation.
-- [ ] Validate full Phase 4 frozen config checksum first.
-- [ ] Retry checksum validation against the fallback projection only when the full checksum fails and `thinking` is exactly `{enabled: false, effort: "high"}`.
-- [ ] Reject fallback when `thinking.enabled = true`, when `effort` is non-default, or when any other config shape differs.
-- [ ] Prove fallback does not mutate checkpoint, snapshot, or manifest storage.
-- [ ] Prove resume uses upgraded frozen disabled thinking after fallback validation succeeds.
-- [ ] Run canonical verification for the changed surface.
+- [x] Define the Phase 4 SQLite schema user version as `5` in the persistence settings owner.
+- [x] Ensure fresh Phase 4 database bootstrap writes `PRAGMA user_version = 5`.
+- [x] Add an explicit startup-only compatibility branch for existing `PRAGMA user_version = 4`.
+- [x] Keep missing schema version, `0`, legacy `1`, `2`, `3`, corrupt/unreadable, and unknown future versions fail-closed.
+- [x] Ensure `status`, `trace`, and `resume` with schema version `4` fail closed unless startup has already upgraded the database to `5`.
+- [x] Ensure `status`, `trace`, and `resume` with missing database do not create `.sessions/runtime.db`.
+- [x] Update user-facing schema guidance for Phase 4 without describing unsupported destructive reset behavior.
+- [x] Add unit and integration tests for all schema gate cases.
+- [x] Add `thinking.enabled` default `false`, boolean validation, and frozen snapshot persistence.
+- [x] Add `thinking.effort` default `"high"`, enum validation for `"low"`, `"medium"`, and `"high"`, and frozen snapshot persistence.
+- [x] Reject non-boolean `enabled`, non-string `effort`, and unsupported effort strings as `config_error/invalid_runtime_config`.
+- [x] Accept configured `effort` when `enabled = false`.
+- [x] Ensure fake-provider and real-provider session snapshots use the same `thinking` object shape.
+- [x] Implement v4-to-v5 backfill for existing `sessions.config_snapshot_json` rows missing `thinking`.
+- [x] Ensure v4-to-v5 backfill uses disabled defaults and never current mutable `config.toml`.
+- [x] Add preservation assertions for checkpoint payloads, `payload_sha256`, checkpoint manifests, frozen snapshot checksum fields, active owner, session, run, event, durable conversation, Todo Plan, approval grant, and artifact metadata rows.
+- [x] Prove startup upgrade does not terminalize sessions, release ownership, write metrics, or rebuild trace.
+- [x] Add resume tests proving frozen thinking config is restored and current config changes are ignored.
+- [x] Add canonical config projection helper that omits only the exact default disabled Phase 4 `thinking` object for fallback validation.
+- [x] Validate full Phase 4 frozen config checksum first.
+- [x] Retry checksum validation against the fallback projection only when the full checksum fails and `thinking` is exactly `{enabled: false, effort: "high"}`.
+- [x] Reject fallback when `thinking.enabled = true`, when `effort` is non-default, or when any other config shape differs.
+- [x] Prove fallback does not mutate checkpoint, snapshot, or manifest storage.
+- [x] Prove resume uses upgraded frozen disabled thinking after fallback validation succeeds.
+- [x] Run canonical verification for the changed surface.
 
 ### Milestone 2: Main-Agent Thinking Projection And Response Stripping
 

@@ -23,6 +23,7 @@ class ConfigError:
     message: str
     source: str
     recoverable: bool
+    reason: str = "invalid_runtime_config"
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,9 @@ def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
     if isinstance(development_result, ConfigError):
         return ConfigLoadResult(snapshot=None, error=development_result, defaults=defaults)
     multimodal_result = _resolve_multimodal_settings(raw_config.get("multimodal"))
+    thinking_result = _resolve_thinking_settings(raw_config.get("thinking", {}))
+    if isinstance(thinking_result, ConfigError):
+        return ConfigLoadResult(snapshot=None, error=thinking_result, defaults=defaults)
     provider = config_defaults.get("provider")
     model = config_defaults.get("model")
 
@@ -82,6 +86,7 @@ def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
             "agent_loop": agent_loop_result,
             "development": development_result,
             "multimodal": multimodal_result,
+            "thinking": thinking_result,
             "fake_response": config_defaults.get("fake_response", "fake response"),
         }
         if "fake_error" in config_defaults:
@@ -134,6 +139,7 @@ def load_config_snapshot(config_path: Path | None = None) -> ConfigLoadResult:
             "base_url_present": bool(os.environ.get(base_url_env)),
         },
         "multimodal": multimodal_result,
+        "thinking": thinking_result,
     }
     return ConfigLoadResult(snapshot=snapshot, error=None, defaults=defaults)
 
@@ -292,6 +298,22 @@ def _resolve_development_settings(raw_development: Any) -> dict[str, Any] | Conf
     return {
         "allow_incomplete_phase3_prompt_execution": allow_prompt_execution,
     }
+
+
+def _resolve_thinking_settings(raw_thinking: Any) -> dict[str, Any] | ConfigError:
+    if raw_thinking is None:
+        raw_thinking = {}
+    if not isinstance(raw_thinking, dict):
+        return _config_error("[thinking] must be a table.")
+    enabled = raw_thinking.get("enabled", False)
+    effort = raw_thinking.get("effort", "high")
+    if not isinstance(enabled, bool):
+        return _config_error("thinking.enabled must be a boolean.")
+    if not isinstance(effort, str):
+        return _config_error("thinking.effort must be a string.")
+    if effort not in {"low", "medium", "high"}:
+        return _config_error('thinking.effort must be one of: "low", "medium", "high".')
+    return {"enabled": enabled, "effort": effort}
 
 
 def _resolve_multimodal_settings(raw_multimodal: Any) -> dict[str, Any]:

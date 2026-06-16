@@ -13,9 +13,7 @@ from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.sqlite import (
     PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
-    PHASE_3_5_SCHEMA_USER_VERSION,
     RuntimeDatabase,
-    PHASE_3_5_STARTUP_LEGACY_RESET_GUIDANCE,
 )
 from debug_agent.runtime.contracts import RunEvent, utc_now_iso
 
@@ -352,8 +350,8 @@ def test_startup_status_and_trace_fail_closed_on_legacy_schema(tmp_path) -> None
         text=True,
         check=False,
     )
-    assert startup.returncode == 0
-    assert PHASE_3_5_STARTUP_LEGACY_RESET_GUIDANCE in startup.stdout
+    assert startup.returncode == 6
+    assert PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE in startup.stderr
     status_after_startup = subprocess.run(
         [executable, "status", "sess_legacy"],
         cwd=workspace,
@@ -370,18 +368,10 @@ def test_startup_status_and_trace_fail_closed_on_legacy_schema(tmp_path) -> None
         text=True,
         check=False,
     )
-    assert status_after_startup.returncode == 10
-    assert "No session found for id: sess_legacy" in status_after_startup.stderr
-    assert trace_after_startup.returncode == 10
-    assert "No session found for id: sess_legacy" in trace_after_startup.stderr
+    assert status_after_startup.returncode == 6
+    assert PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE in status_after_startup.stderr
+    assert trace_after_startup.returncode == 6
+    assert PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE in trace_after_startup.stderr
     with sqlite3.connect(sessions_dir / "runtime.db") as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
-            PHASE_3_5_SCHEMA_USER_VERSION
-        )
-        tables = {
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            ).fetchall()
-        }
-    assert "run_events" in tables
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "running"

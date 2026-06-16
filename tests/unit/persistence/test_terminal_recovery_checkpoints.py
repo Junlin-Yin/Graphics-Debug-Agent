@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from debug_agent.persistence.approval_grants import ApprovalGrantStore
@@ -277,6 +279,112 @@ def test_phase_3_5_terminal_recovery_rejects_tool_availability_checksum_mismatch
                 created_at=checkpoint.created_at,
             )
         )
+
+
+def test_phase_4_resume_checksum_fallback_accepts_default_disabled_thinking_without_mutation(
+    tmp_path,
+):
+    db, sessions, _runs, artifacts, session, run = _stores(tmp_path)
+    checkpoints = _checkpoint_store(db, artifacts).for_phase_3_5_internal()
+    checkpoint = checkpoints.create_terminal_recovery(
+        checkpoint_id="chk_terminal",
+        session_id=session.session_id,
+        run_id=run.run_id,
+        terminal_status="completed",
+        terminal_reason="user_exit",
+        terminal_error=None,
+        created_at="2026-06-06T00:00:00Z",
+    )
+    before_state_json = db.connection.execute(
+        "SELECT state_json FROM checkpoints WHERE checkpoint_id = ?",
+        (checkpoint.checkpoint_id,),
+    ).fetchone()[0]
+    upgraded = dict(session.config_snapshot)
+    upgraded["thinking"] = {"enabled": False, "effort": "high"}
+    db.connection.execute(
+        "UPDATE sessions SET config_snapshot_json = ? WHERE session_id = ?",
+        (
+            json.dumps(upgraded, ensure_ascii=False, sort_keys=True),
+            session.session_id,
+        ),
+    )
+    db.connection.commit()
+
+    checkpoints.validate_terminal_recovery(checkpoint)
+
+    assert sessions.get(session.session_id).config_snapshot["thinking"] == {
+        "enabled": False,
+        "effort": "high",
+    }
+    after_state_json = db.connection.execute(
+        "SELECT state_json FROM checkpoints WHERE checkpoint_id = ?",
+        (checkpoint.checkpoint_id,),
+    ).fetchone()[0]
+    assert after_state_json == before_state_json
+
+
+@pytest.mark.parametrize(
+    "thinking",
+    [
+        {"enabled": True, "effort": "high"},
+        {"enabled": False, "effort": "low"},
+    ],
+)
+def test_phase_4_resume_checksum_fallback_rejects_non_default_thinking(
+    tmp_path, thinking
+):
+    db, _sessions, _runs, artifacts, session, run = _stores(tmp_path)
+    checkpoints = _checkpoint_store(db, artifacts).for_phase_3_5_internal()
+    checkpoint = checkpoints.create_terminal_recovery(
+        checkpoint_id="chk_terminal",
+        session_id=session.session_id,
+        run_id=run.run_id,
+        terminal_status="completed",
+        terminal_reason="user_exit",
+        terminal_error=None,
+        created_at="2026-06-06T00:00:00Z",
+    )
+    upgraded = dict(session.config_snapshot)
+    upgraded["thinking"] = thinking
+    db.connection.execute(
+        "UPDATE sessions SET config_snapshot_json = ? WHERE session_id = ?",
+        (
+            json.dumps(upgraded, ensure_ascii=False, sort_keys=True),
+            session.session_id,
+        ),
+    )
+    db.connection.commit()
+
+    with pytest.raises(StoreError, match="frozen snapshot"):
+        checkpoints.validate_terminal_recovery(checkpoint)
+
+
+def test_phase_4_resume_checksum_fallback_rejects_other_config_drift(tmp_path):
+    db, _sessions, _runs, artifacts, session, run = _stores(tmp_path)
+    checkpoints = _checkpoint_store(db, artifacts).for_phase_3_5_internal()
+    checkpoint = checkpoints.create_terminal_recovery(
+        checkpoint_id="chk_terminal",
+        session_id=session.session_id,
+        run_id=run.run_id,
+        terminal_status="completed",
+        terminal_reason="user_exit",
+        terminal_error=None,
+        created_at="2026-06-06T00:00:00Z",
+    )
+    upgraded = dict(session.config_snapshot)
+    upgraded["model"] = "different-model"
+    upgraded["thinking"] = {"enabled": False, "effort": "high"}
+    db.connection.execute(
+        "UPDATE sessions SET config_snapshot_json = ? WHERE session_id = ?",
+        (
+            json.dumps(upgraded, ensure_ascii=False, sort_keys=True),
+            session.session_id,
+        ),
+    )
+    db.connection.commit()
+
+    with pytest.raises(StoreError, match="frozen snapshot"):
+        checkpoints.validate_terminal_recovery(checkpoint)
 
 
 def test_terminal_recovery_rejects_zero_message_failure(tmp_path):

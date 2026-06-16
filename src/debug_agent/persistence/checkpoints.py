@@ -535,8 +535,19 @@ class CheckpointStore:
             session_id=session_id,
             config_snapshot=config_snapshot,
         )
-        if payload.get("frozen_snapshots") != expected:
+        actual = payload.get("frozen_snapshots")
+        if not isinstance(actual, dict):
             raise _store_error("Terminal recovery frozen snapshot reference is invalid.")
+        if actual != expected:
+            fallback = self._frozen_snapshots(
+                session_id=session_id,
+                config_snapshot=config_snapshot,
+                omit_default_disabled_thinking=True,
+            )
+            if actual != fallback:
+                raise _store_error(
+                    "Terminal recovery frozen snapshot reference is invalid."
+                )
         expected_tools = self._tool_availability(config_snapshot)
         if payload.get("tool_availability") != expected_tools:
             raise _store_error("Terminal recovery tool availability reference is invalid.")
@@ -588,15 +599,17 @@ class CheckpointStore:
         }
 
     def _frozen_snapshots(
-        self, *, session_id: str, config_snapshot: dict[str, Any]
+        self,
+        *,
+        session_id: str,
+        config_snapshot: dict[str, Any],
+        omit_default_disabled_thinking: bool = False,
     ) -> dict[str, Any]:
         policy = config_snapshot.get("policy") if isinstance(config_snapshot, dict) else None
-        config_ref = {
-            "provider": config_snapshot.get("provider"),
-            "model": config_snapshot.get("model"),
-            "execution": config_snapshot.get("execution"),
-            "multimodal": config_snapshot.get("multimodal"),
-        }
+        config_ref = canonical_config_projection(
+            config_snapshot,
+            omit_default_disabled_thinking=omit_default_disabled_thinking,
+        )
         return {
             "config_snapshot_id": f"config:{session_id}",
             "config_checksum": sha256_hex(canonical_json_bytes(config_ref)),
@@ -685,6 +698,27 @@ def _checkpoint_from_row(row: tuple) -> Checkpoint:
         created_at=row[6],
         version=row[7],
     )
+
+
+def canonical_config_projection(
+    config_snapshot: dict[str, Any],
+    *,
+    omit_default_disabled_thinking: bool = False,
+) -> dict[str, Any]:
+    config_ref = {
+        "provider": config_snapshot.get("provider"),
+        "model": config_snapshot.get("model"),
+        "execution": config_snapshot.get("execution"),
+        "multimodal": config_snapshot.get("multimodal"),
+    }
+    if "thinking" not in config_snapshot:
+        return config_ref
+    thinking = config_snapshot["thinking"]
+    if not omit_default_disabled_thinking:
+        config_ref["thinking"] = thinking
+    elif thinking != {"enabled": False, "effort": "high"}:
+        config_ref["thinking"] = thinking
+    return config_ref
 
 
 def _highest_message_index(connection: sqlite3.Connection, run_id: str) -> int:
