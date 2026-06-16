@@ -903,13 +903,16 @@ def _invoke_with_timeout(
     request: AgentRunRequest,
     context: RunContext,
 ) -> object:
+    invoke_kwargs = _main_agent_request_options(request)
     ainvoke = getattr(model, "ainvoke", None)
     if callable(ainvoke):
         return run_async_provider_call(
             operation="main_model",
             provider=request.model_config.get("provider"),
             model=request.model_config.get("model"),
-            call=lambda: ainvoke(messages),
+            call=lambda: ainvoke(messages, **invoke_kwargs)
+            if invoke_kwargs
+            else ainvoke(messages),
             timeout_seconds=request.timeout_seconds,
             cancellation_token=context.cancellation_token,
             register_cancellation_handle=_provider_cancellation_registry(context),
@@ -919,7 +922,9 @@ def _invoke_with_timeout(
         operation="main_model",
         provider=request.model_config.get("provider"),
         model=request.model_config.get("model"),
-        call=lambda: model.invoke(messages),
+        call=lambda: model.invoke(messages, **invoke_kwargs)
+        if invoke_kwargs
+        else model.invoke(messages),
         timeout_seconds=request.timeout_seconds,
         cancellation_token=context.cancellation_token,
         register_cancellation_handle=_provider_cancellation_registry(context),
@@ -933,13 +938,16 @@ def _stream_with_timeout(
     request: AgentRunRequest,
     context: RunContext,
 ):
+    stream_kwargs = _main_agent_request_options(request)
     astream = getattr(model, "astream", None)
     if callable(astream):
         yield from stream_async_provider_call(
             operation="main_model_stream",
             provider=request.model_config.get("provider"),
             model=request.model_config.get("model"),
-            stream=lambda: astream(messages),
+            stream=lambda: astream(messages, **stream_kwargs)
+            if stream_kwargs
+            else astream(messages),
             timeout_seconds=request.timeout_seconds,
             cancellation_token=context.cancellation_token,
             register_cancellation_handle=_provider_cancellation_registry(context),
@@ -950,12 +958,24 @@ def _stream_with_timeout(
         operation="main_model_stream",
         provider=request.model_config.get("provider"),
         model=request.model_config.get("model"),
-        stream=lambda: model.stream(messages),
+        stream=lambda: model.stream(messages, **stream_kwargs)
+        if stream_kwargs
+        else model.stream(messages),
         timeout_seconds=request.timeout_seconds,
         cancellation_token=context.cancellation_token,
         register_cancellation_handle=_provider_cancellation_registry(context),
         cleanup_timeout_seconds=_provider_cleanup_timeout_seconds(request),
     )
+
+
+def _main_agent_request_options(request: AgentRunRequest) -> dict[str, Any]:
+    thinking = request.model_config.get("thinking")
+    if not isinstance(thinking, dict) or thinking.get("enabled") is not True:
+        return {}
+    effort = thinking.get("effort")
+    if not isinstance(effort, str) or not effort:
+        return {"thinking": {"type": "enabled"}}
+    return {"thinking": {"type": "enabled"}, "effort": effort}
 
 
 def _provider_cancellation_registry(
@@ -1000,7 +1020,32 @@ def _record_model_failure(
 
 
 def _tool_calls(response: object) -> list[dict[str, Any]]:
-    return list(getattr(response, "tool_calls", []) or [])
+    direct = list(getattr(response, "tool_calls", []) or [])
+    if direct:
+        return direct
+    return _tool_calls_from_content_blocks(getattr(response, "content", None))
+
+
+def _tool_calls_from_content_blocks(content: object) -> list[dict[str, Any]]:
+    if not isinstance(content, list):
+        return []
+    tool_calls: list[dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        name = block.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        args = block.get("input")
+        tool_call = {
+            "name": name,
+            "args": dict(args) if isinstance(args, dict) else {},
+        }
+        tool_call_id = block.get("id")
+        if isinstance(tool_call_id, str) and tool_call_id:
+            tool_call["id"] = tool_call_id
+        tool_calls.append(tool_call)
+    return tool_calls
 
 
 def _tool_call_chunks(response: object) -> list[dict[str, Any]]:
@@ -1359,6 +1404,8 @@ def _response_content(response: object) -> str:
     content = getattr(response, "content", response)
     if isinstance(content, str):
         return content
+    if isinstance(content, list):
+        return _text_from_content_blocks(content)
     text = _message_text(response)
     if text:
         return text
@@ -1373,16 +1420,20 @@ def _message_text(message: object) -> str:
         return str(text())
     content = getattr(message, "content", "")
     if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                value = block.get("text")
-                if isinstance(value, str):
-                    parts.append(value)
-        return "".join(parts)
+        return _text_from_content_blocks(content)
     if isinstance(content, str):
         return content
     return ""
+
+
+def _text_from_content_blocks(content: list[object]) -> str:
+    parts = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            value = block.get("text")
+            if isinstance(value, str):
+                parts.append(value)
+    return "".join(parts)
 
 
 def _streaming_fallback(result: AgentRunResult) -> AgentRunResult:

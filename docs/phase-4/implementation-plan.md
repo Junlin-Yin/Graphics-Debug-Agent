@@ -242,19 +242,19 @@ The milestones below are ordered by dependency. Each milestone is an incremental
 
 **Freeze/review checkpoint:** do not wire metrics/token accounting until provider response normalization and thinking stripping are reviewed.
 
-- [ ] Project no thinking options and no effort when frozen `thinking.enabled = false`.
-- [ ] Project explicit provider thinking enable option and frozen effort when `thinking.enabled = true`.
-- [ ] Add tests proving `effort` alone is not treated as thinking enabled.
-- [ ] Preserve accepted text blocks when adjacent thinking blocks are stripped.
-- [ ] Preserve accepted `tool_use` blocks, ids, names, and arguments when adjacent thinking blocks are stripped.
-- [ ] Ensure tool calls adjacent to stripped thinking blocks still execute through ToolBroker and continue correctly.
-- [ ] Ensure durable `conversation_messages` never contain thinking blocks.
-- [ ] Ensure subsequent model-call tool continuation messages never contain thinking blocks.
-- [ ] Ensure trace rendering, metrics inputs, compression inputs, TUI/REPL display, assistant final text, and audit outputs never include thinking text.
-- [ ] Prove `view_image` request projection remains thinking-disabled and ignores Phase 4 main-agent thinking config.
-- [ ] Prove context compression calls do not include Phase 4 thinking options.
-- [ ] Ensure thinking-enabled tests do not rely on provider-forced tool choice.
-- [ ] Run canonical verification for the changed surface.
+- [x] Project no thinking options and no effort when frozen `thinking.enabled = false`.
+- [x] Project explicit provider thinking enable option and frozen effort when `thinking.enabled = true`.
+- [x] Add tests proving `effort` alone is not treated as thinking enabled.
+- [x] Preserve accepted text blocks when adjacent thinking blocks are stripped.
+- [x] Preserve accepted `tool_use` blocks, ids, names, and arguments when adjacent thinking blocks are stripped.
+- [x] Ensure tool calls adjacent to stripped thinking blocks still execute through ToolBroker and continue correctly.
+- [x] Ensure durable `conversation_messages` never contain thinking blocks.
+- [x] Ensure subsequent model-call tool continuation messages never contain thinking blocks.
+- [x] Ensure trace rendering, metrics inputs, compression inputs, TUI/REPL display, assistant final text, and audit outputs never include thinking text.
+- [x] Prove `view_image` request projection remains thinking-disabled and ignores Phase 4 main-agent thinking config.
+- [x] Prove context compression calls do not include Phase 4 thinking options.
+- [x] Ensure thinking-enabled tests do not rely on provider-forced tool choice.
+- [x] Run canonical verification for the changed surface.
 
 ### Milestone 3: Provider Usage Normalization And Cumulative Token Accounting
 

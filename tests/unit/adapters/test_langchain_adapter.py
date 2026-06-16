@@ -4,7 +4,7 @@ import json
 import asyncio
 import threading
 import time
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import Any
 
 import pytest
@@ -16,6 +16,7 @@ from debug_agent.adapters.langchain_adapter import (
     _provider_messages_from_segments,
 )
 from debug_agent.adapters.model_factory import FakeChatModel
+from debug_agent.adapters.vision_client import VisionImageInput, project_chat_completions_request
 from debug_agent.persistence.checkpoints import CheckpointStore
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
@@ -29,6 +30,7 @@ from debug_agent.runtime.contracts import (
 )
 from debug_agent.runtime.model_context import ConversationMessage, ModelContextFrame
 from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
+from debug_agent.runtime.prompt_executor import make_compression_model_callable
 from debug_agent.runtime.settings import DEFAULT_AGENT_LOOP_MAX_TOOL_CALL_ITERATIONS
 from debug_agent.runtime.stream_events import AgentStreamEvent
 
@@ -164,6 +166,357 @@ def test_langchain_adapter_maps_model_success() -> None:
     assert "runtime safety" in adapter.model.messages[0]["content"]
     assert adapter.model.messages[-1]["role"] == "user"
     assert adapter.model.messages[-1]["content"] == "hello"
+
+
+def test_langchain_adapter_omits_thinking_request_options_when_disabled() -> None:
+    class RecordingModel:
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        def invoke(self, messages, **kwargs):
+            self.kwargs = kwargs
+            return type(
+                "Response",
+                (),
+                {"content": "answer", "tool_calls": [], "usage": {}},
+            )()
+
+    model = RecordingModel()
+    request = replace(
+        _request(),
+        model_config={
+            "provider": "fake",
+            "thinking": {"enabled": False, "effort": "high"},
+        },
+    )
+
+    result = LangChainAgentLoopAdapter(model=model).run(request, _context())
+
+    assert result.status == "completed"
+    assert model.kwargs == {}
+
+
+def test_langchain_adapter_does_not_enable_thinking_from_effort_alone() -> None:
+    class RecordingModel:
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        def invoke(self, messages, **kwargs):
+            self.kwargs = kwargs
+            return type(
+                "Response",
+                (),
+                {"content": "answer", "tool_calls": [], "usage": {}},
+            )()
+
+    model = RecordingModel()
+    request = replace(
+        _request(),
+        model_config={"provider": "fake", "thinking": {"effort": "low"}},
+    )
+
+    result = LangChainAgentLoopAdapter(model=model).run(request, _context())
+
+    assert result.status == "completed"
+    assert model.kwargs == {}
+
+
+def test_langchain_adapter_projects_enabled_thinking_and_frozen_effort() -> None:
+    class RecordingModel:
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        def invoke(self, messages, **kwargs):
+            self.kwargs = kwargs
+            return type(
+                "Response",
+                (),
+                {"content": "answer", "tool_calls": [], "usage": {}},
+            )()
+
+    model = RecordingModel()
+    request = replace(
+        _request(),
+        model_config={
+            "provider": "fake",
+            "thinking": {"enabled": True, "effort": "medium"},
+        },
+    )
+
+    result = LangChainAgentLoopAdapter(model=model).run(request, _context())
+
+    assert result.status == "completed"
+    assert model.kwargs == {
+        "thinking": {"type": "enabled"},
+        "effort": "medium",
+    }
+
+
+def test_langchain_adapter_stream_projects_enabled_thinking_and_frozen_effort() -> None:
+    class RecordingStreamingModel:
+        stream_chunks = ["answer"]
+
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        def stream(self, messages, **kwargs):
+            self.kwargs = kwargs
+            yield type(
+                "Chunk",
+                (),
+                {"content": "answer", "tool_calls": [], "usage": {}},
+            )()
+
+    model = RecordingStreamingModel()
+    request = replace(
+        _request(),
+        model_config={
+            "provider": "fake",
+            "thinking": {"enabled": True, "effort": "high"},
+        },
+    )
+
+    result = LangChainAgentLoopAdapter(model=model).stream(
+        request,
+        _context(),
+        lambda _event: None,
+    )
+
+    assert result.status == "completed"
+    assert model.kwargs == {
+        "thinking": {"type": "enabled"},
+        "effort": "high",
+    }
+
+
+def test_langchain_adapter_strips_thinking_blocks_but_preserves_text_blocks() -> None:
+    class ThinkingTextModel:
+        def invoke(self, messages):
+            return type(
+                "Response",
+                (),
+                {
+                    "content": [
+                        {"type": "thinking", "thinking": "hidden reasoning"},
+                        {"type": "text", "text": "visible "},
+                        {"type": "thinking", "thinking": "more hidden"},
+                        {"type": "text", "text": "answer"},
+                    ],
+                    "tool_calls": [],
+                    "usage": {},
+                },
+            )()
+
+    events = []
+    result = LangChainAgentLoopAdapter(model=ThinkingTextModel()).run(
+        _request(),
+        replace(_context(), model_event_recorder=lambda kind, payload: events.append((kind, payload))),
+    )
+
+    assert result.status == "completed"
+    assert result.assistant_output == "visible answer"
+    assert "hidden" not in json.dumps(asdict(result), ensure_ascii=False)
+    completed_payload = [payload for kind, payload in events if kind == "model_call_completed"][0]
+    assert completed_payload["content"] == "visible answer"
+    assert "hidden" not in json.dumps(completed_payload, ensure_ascii=False)
+
+
+def test_langchain_adapter_preserves_tool_use_blocks_when_stripping_thinking() -> None:
+    calls = []
+
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            calls.append((tool_name, arguments))
+            return ToolResult(
+                status="ok",
+                output="file text",
+                error=None,
+                artifacts=[],
+                metadata={},
+                redacted_output=None,
+            )
+
+    class ThinkingToolUseModel:
+        def __init__(self) -> None:
+            self.messages_by_call = []
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            self.messages_by_call.append(messages)
+            if len(self.messages_by_call) == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": [
+                            {"type": "thinking", "thinking": "hidden tool plan"},
+                            {"type": "text", "text": "checking"},
+                            {
+                                "type": "tool_use",
+                                "id": "provider_tool_1",
+                                "name": "read_file",
+                                "input": {"path": "a.txt"},
+                            },
+                        ],
+                        "tool_calls": [],
+                        "usage": {},
+                    },
+                )()
+            assert "hidden tool plan" not in str(messages)
+            return type(
+                "Response",
+                (),
+                {"content": "used tool", "tool_calls": [], "usage": {}},
+            )()
+
+    model = ThinkingToolUseModel()
+
+    result = LangChainAgentLoopAdapter(
+        model=model,
+        tool_broker=RecordingBroker(),
+    ).run(_request(), _context())
+
+    assert result.status == "completed"
+    assert result.assistant_output == "used tool"
+    assert calls == [("read_file", {"path": "a.txt"})]
+    assert len(model.messages_by_call) == 2
+    assistant_message = model.messages_by_call[1][-2]
+    assert assistant_message.content == "checking"
+    assert [
+        {
+            "id": call["id"],
+            "name": call["name"],
+            "args": call["args"],
+        }
+        for call in assistant_message.tool_calls
+    ] == [
+        {
+            "id": "model_call_1_tool_1",
+            "name": "read_file",
+            "args": {"path": "a.txt"},
+        }
+    ]
+
+
+def test_langchain_adapter_conversation_writeback_excludes_thinking_on_tool_denial() -> None:
+    class DenyingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="denied",
+                output=None,
+                error={
+                    "error_class": "policy_error",
+                    "reason": "approval_denied",
+                    "message": "Turn cancelled by user.",
+                    "source": "toolbroker",
+                    "recoverable": True,
+                },
+                artifacts=[],
+                metadata={"turn_aborted": True},
+                redacted_output=None,
+            )
+
+    class ThinkingToolUseModel:
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            return type(
+                "Response",
+                (),
+                {
+                    "content": [
+                        {"type": "thinking", "thinking": "hidden denial plan"},
+                        {"type": "text", "text": "checking"},
+                        {
+                            "type": "tool_use",
+                            "id": "provider_tool_1",
+                            "name": "read_file",
+                            "input": {"path": "a.txt"},
+                        },
+                    ],
+                    "tool_calls": [],
+                    "usage": {},
+                },
+            )()
+
+    result = LangChainAgentLoopAdapter(
+        model=ThinkingToolUseModel(),
+        tool_broker=DenyingBroker(),
+    ).run(_request(), _context())
+
+    assert result.status == "failed"
+    assert "hidden denial plan" not in json.dumps(result.metadata, ensure_ascii=False)
+    assert result.metadata["turn_tool_loop_messages"][0]["content"] == {
+        "content": "checking",
+        "tool_calls": [
+            {
+                "id": "model_call_1_tool_1",
+                "name": "read_file",
+                "args": {"path": "a.txt"},
+            }
+        ],
+    }
+
+
+def test_view_image_projection_remains_thinking_disabled() -> None:
+    projected = project_chat_completions_request(
+        model="kimi-k2.5",
+        images=[VisionImageInput(mime_type="image/png", data=b"png")],
+        instruction="inspect",
+        max_tokens=128,
+    )
+
+    assert projected["thinking"] == {"type": "disabled"}
+    assert "effort" not in projected
+
+
+def test_compression_model_callable_does_not_send_thinking_options() -> None:
+    class RecordingCompressionModel:
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        def invoke(self, messages, **kwargs):
+            self.kwargs = kwargs
+            return type("Response", (), {"content": "compressed"})()
+
+    model = RecordingCompressionModel()
+    compression = make_compression_model_callable(model)
+    frame = ModelContextFrame(
+        message_segments=[
+            ConversationMessage(
+                seq=1,
+                role="user",
+                kind="compressed_history",
+                turn_id="turn-1",
+                model_call_id=None,
+                tool_call_id=None,
+                content="old content",
+            )
+        ]
+    )
+    compression_frame = type(
+        "CompressionFrame",
+        (),
+        {
+            "previous_summary": None,
+            "evicted_messages": frame.message_segments,
+            "instruction_segment": ConversationMessage(
+                seq=2,
+                role="user",
+                kind="compression_instruction",
+                turn_id=None,
+                model_call_id=None,
+                tool_call_id=None,
+                content="summarize",
+            ),
+        },
+    )()
+
+    assert compression(compression_frame) == "compressed"
+    assert model.kwargs == {}
 
 
 def test_langchain_adapter_run_uses_async_invoke_when_available() -> None:

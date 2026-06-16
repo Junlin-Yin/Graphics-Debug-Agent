@@ -3757,6 +3757,120 @@ def test_repl_runtime_persists_tool_loop_messages_for_next_turn_context(tmp_path
     db.close()
 
 
+def test_repl_runtime_strips_thinking_before_durable_and_followup_context(tmp_path) -> None:
+    class ThinkingToolHistoryModel:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.messages_by_call = []
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            self.calls += 1
+            self.messages_by_call.append(messages)
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": [
+                            {"type": "thinking", "thinking": "hidden durable plan"},
+                            {"type": "text", "text": "reading notes"},
+                            {
+                                "type": "tool_use",
+                                "id": "provider_tool_1",
+                                "name": "read_file",
+                                "input": {"path": "notes.txt"},
+                            },
+                        ],
+                        "tool_calls": [],
+                        "usage": {},
+                    },
+                )()
+            if self.calls == 2:
+                assert "hidden durable plan" not in str(messages)
+                return type(
+                    "Response",
+                    (),
+                    {"content": "first answer", "tool_calls": [], "usage": {}},
+                )()
+            assert "hidden durable plan" not in str(messages)
+            return type(
+                "Response",
+                (),
+                {"content": "second answer", "tool_calls": [], "usage": {}},
+            )()
+
+    model = ThinkingToolHistoryModel()
+    (
+        workspace,
+        db,
+        sessions,
+        runs,
+        events,
+        checkpoints,
+        artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, model)
+    (workspace / "notes.txt").write_text("persisted tool output", encoding="utf-8")
+    runtime = ReplRuntime(
+        db=db,
+        sessions=sessions,
+        runs=runs,
+        events=events,
+        checkpoints=checkpoints,
+        executor=executor,
+        session_id=session.session_id,
+        run_id=run.run_id,
+        workspace_root=workspace,
+    )
+
+    first = runtime.run_turn("read notes")
+    second = runtime.run_turn("continue")
+    rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
+        run.run_id
+    )
+    durable_payload = json.dumps(
+        [row.content for row in rows],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    event_payload = json.dumps(
+        [event.payload for event in events.list_for_run(run.run_id)],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+    assert first.status == "completed"
+    assert second.status == "completed"
+    assert "hidden durable plan" not in json.dumps(
+        runtime.conversation,
+        ensure_ascii=False,
+    )
+    assert "hidden durable plan" not in durable_payload
+    assert "hidden durable plan" not in event_payload
+    assert runtime.conversation[1]["content"] == {
+        "content": "reading notes",
+        "tool_calls": [
+            {
+                "id": "turn-1:model_call_1_tool_1",
+                "name": "read_file",
+                "args": {"path": "notes.txt"},
+            }
+        ],
+    }
+    second_turn_text = "\n".join(
+        _provider_message_content(message) for message in model.messages_by_call[2]
+    )
+    assert "reading notes" in second_turn_text
+    assert "persisted tool output" in second_turn_text
+    assert "hidden durable plan" not in second_turn_text
+    db.close()
+
+
 def test_repl_runtime_excludes_runtime_cancellation_fact_from_provider_prompt(
     tmp_path,
 ) -> None:
