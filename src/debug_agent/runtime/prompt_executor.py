@@ -44,6 +44,12 @@ from debug_agent.runtime.settings import (
     NO_COMPRESSIBLE_HISTORY_MESSAGE,
 )
 from debug_agent.runtime.stream_events import AgentStreamEvent
+from debug_agent.runtime.usage_accounting import (
+    ModelCallTokenObservation,
+    estimate_model_call_usage,
+    summarize_model_call_window,
+    token_usage_from_mapping,
+)
 
 
 class CompressionFailedAbort(Exception):
@@ -418,6 +424,11 @@ class PromptAgentExecutor:
             context=context,
             stream_callback=None if agent_stream_callback is None else stream_callback,
         )
+        if compression_result is not None:
+            result = _with_compression_usage(
+                result,
+                compression_result.get("estimated_usage"),
+            )
         continuation_reason = (
             "approval_denied_abort"
             if result.metadata.get("approval_denied_abort") is True
@@ -1192,6 +1203,10 @@ class PromptAgentExecutor:
             "artifact_refs": artifact_refs,
             "before_estimate": dict(initial_estimate),
             "compression_estimate": plan.estimate.to_dict(),
+            "estimated_usage": estimate_model_call_usage(
+                provider_messages=_provider_messages_from_compression_frame(plan.frame),
+                accepted_output=output,
+            ),
             "metadata": {
                 "trigger": trigger,
                 **({"retry": retry_metadata} if retry_metadata is not None else {}),
@@ -1798,17 +1813,7 @@ def _compression_failure_message(reason: str) -> str:
 
 def make_compression_model_callable(model: object) -> Callable[[CompressionContextFrame], str]:
     def _call(frame: CompressionContextFrame) -> str:
-        messages: list[dict[str, str]] = []
-        if frame.previous_summary is not None:
-            messages.append(
-                {
-                    "role": "system",
-                    "content": frame.previous_summary,
-                }
-            )
-        for message in frame.evicted_messages:
-            messages.append(_provider_message_from_conversation(message))
-        messages.append(_provider_message_from_conversation(frame.instruction_segment))
+        messages = _provider_messages_from_compression_frame(frame)
         response = model.invoke(messages)
         content = getattr(response, "content", response)
         if isinstance(content, str):
@@ -1816,6 +1821,70 @@ def make_compression_model_callable(model: object) -> Callable[[CompressionConte
         return json.dumps(content, ensure_ascii=False, sort_keys=True)
 
     return _call
+
+
+def _provider_messages_from_compression_frame(
+    frame: CompressionContextFrame,
+) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    if frame.previous_summary is not None:
+        messages.append(
+            {
+                "role": "system",
+                "content": frame.previous_summary,
+            }
+        )
+    for message in frame.evicted_messages:
+        messages.append(_provider_message_from_conversation(message))
+    messages.append(_provider_message_from_conversation(frame.instruction_segment))
+    return messages
+
+
+def _with_compression_usage(
+    result: AgentRunResult,
+    estimated_usage: object,
+) -> AgentRunResult:
+    compression_estimate = token_usage_from_mapping(estimated_usage)
+    result_estimate = token_usage_from_mapping(result.metadata.get("estimated_usage"))
+    if compression_estimate is None or result_estimate is None:
+        return result
+    provider_usage = (
+        token_usage_from_mapping(result.usage)
+        if result.metadata.get("token_source") == "provider"
+        else None
+    )
+    summary = summarize_model_call_window(
+        [
+            ModelCallTokenObservation(
+                provider_usage=provider_usage,
+                estimated_usage=result_estimate,
+            ),
+            ModelCallTokenObservation(
+                provider_usage=None,
+                estimated_usage=compression_estimate,
+            ),
+        ]
+    )
+    usage = summary.get("usage")
+    if not isinstance(usage, dict):
+        return result
+    merged_estimated_usage = dict(summary.get("estimated_usage") or {})
+    estimator_version = summary.get("estimator_version")
+    if isinstance(estimator_version, str):
+        merged_estimated_usage["estimator_version"] = estimator_version
+    return AgentRunResult(
+        status=result.status,
+        assistant_output=result.assistant_output,
+        tool_results=result.tool_results,
+        usage=dict(usage),
+        error=result.error,
+        metadata={
+            **result.metadata,
+            "provider_usage_available": bool(summary.get("provider_usage_available")),
+            "token_source": str(summary.get("token_source") or "estimated"),
+            "estimated_usage": merged_estimated_usage,
+        },
+    )
 
 
 def _provider_message_from_conversation(message: ConversationMessage) -> dict[str, str]:

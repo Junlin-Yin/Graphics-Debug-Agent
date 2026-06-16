@@ -270,19 +270,19 @@ The milestones below are ordered by dependency. Each milestone is an incremental
 
 **Freeze/review checkpoint:** do not write metrics files until usage normalization, estimator fallback, and REPL/TUI cumulative semantics are reviewed.
 
-- [ ] Normalize usage from direct `usage`.
-- [ ] Normalize usage from `usage_metadata`.
-- [ ] Normalize usage from `response_metadata.usage`.
-- [ ] Accept `prompt_tokens`/`completion_tokens` aliases where existing provider response shapes expose them.
-- [ ] Derive per-call `total_tokens` from input plus output when provider omits total.
-- [ ] Accumulate provider token totals across all counted model calls in the invocation when every call has usage.
-- [ ] Switch the whole counted window to deterministic estimates when any counted model call lacks provider usage.
-- [ ] Estimate input tokens from provider-visible requests and output tokens from accepted provider outputs.
-- [ ] Tag estimated windows with a stable estimator version.
-- [ ] Keep `view_image` provider usage out of model-call token totals while leaving `view_image` as a brokered tool for timing/counting.
-- [ ] Update existing REPL/TUI token surfaces to show cumulative provider or estimated `input_tokens`, `output_tokens`, and `total_tokens`.
-- [ ] Add tests proving latest context-token estimates are not substituted for cumulative token totals.
-- [ ] Run canonical verification for the changed surface.
+- [x] Normalize usage from direct `usage`.
+- [x] Normalize usage from `usage_metadata`.
+- [x] Normalize usage from `response_metadata.usage`.
+- [x] Accept `prompt_tokens`/`completion_tokens` aliases where existing provider response shapes expose them.
+- [x] Derive per-call `total_tokens` from input plus output when provider omits total.
+- [x] Accumulate provider token totals across all counted model calls in the invocation when every call has usage.
+- [x] Switch the whole counted window to deterministic estimates when any counted model call lacks provider usage.
+- [x] Estimate input tokens from provider-visible requests and output tokens from accepted provider outputs.
+- [x] Tag estimated windows with a stable estimator version.
+- [x] Keep `view_image` provider usage out of model-call token totals while leaving `view_image` as a brokered tool for timing/counting.
+- [x] Update existing REPL/TUI token surfaces to show cumulative provider or estimated `input_tokens`, `output_tokens`, and `total_tokens`.
+- [x] Add tests proving latest context-token estimates are not substituted for cumulative token totals.
+- [x] Run canonical verification for the changed surface.
 
 ### Milestone 4: Non-Authoritative Run Metrics Writer
 

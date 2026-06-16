@@ -28,6 +28,13 @@ from debug_agent.runtime.settings import (
     RUNTIME_SAFETY_PREFIX,
 )
 from debug_agent.runtime.stream_events import AgentStreamEvent
+from debug_agent.runtime.usage_accounting import (
+    ModelCallTokenObservation,
+    estimate_model_call_usage,
+    normalize_provider_usage,
+    summarize_model_call_window,
+    token_usage_from_mapping,
+)
 
 
 class _StreamModelResponse:
@@ -37,6 +44,7 @@ class _StreamModelResponse:
         content: str,
         tool_calls: list[dict[str, Any]],
         usage: dict[str, Any],
+        estimated_usage: dict[str, Any],
         duration_seconds: float,
         provider_finish: dict[str, Any],
     ) -> None:
@@ -44,6 +52,7 @@ class _StreamModelResponse:
         self.text = content
         self.tool_calls = tool_calls
         self.usage = usage
+        self.estimated_usage = estimated_usage
         self.duration_seconds = duration_seconds
         self.provider_finish = provider_finish
 
@@ -59,12 +68,13 @@ class LangChainAgentLoopAdapter:
         if _request_tool_bindings(request) and hasattr(model, "bind_tools"):
             model = model.bind_tools(
                 _langchain_tools(request, context, tool_broker=self.tool_broker)
-        )
+            )
         tool_results: list[dict[str, Any]] = []
-        aggregate_usage: dict[str, Any] = {}
+        token_observations: list[ModelCallTokenObservation] = []
         try:
             for model_call_index in range(_tool_call_iteration_limit(request)):
                 model_call_id = f"model_call_{model_call_index + 1}"
+                provider_messages = list(messages)
                 response = _invoke_model(
                     model,
                     messages,
@@ -72,10 +82,14 @@ class LangChainAgentLoopAdapter:
                     context,
                     model_call_id=model_call_id,
                 )
-                aggregate_usage = _aggregate_usage(
-                    aggregate_usage,
-                    getattr(response, "usage", {}) or {},
+                token_observations.append(
+                    _model_call_token_observation(
+                        response=response,
+                        provider_messages=provider_messages,
+                        model_call_id=model_call_id,
+                    )
                 )
+                usage_summary = summarize_model_call_window(token_observations)
                 tool_calls = _normalized_tool_calls(
                     _tool_calls(response),
                     model_call_id=model_call_id,
@@ -85,9 +99,12 @@ class LangChainAgentLoopAdapter:
                         status="completed",
                         assistant_output=_response_content(response),
                         tool_results=tool_results,
-                        usage=aggregate_usage,
+                        usage=dict(usage_summary["usage"]),
                         error=None,
-                        metadata=_result_metadata(response),
+                        metadata={
+                            **_result_metadata(response),
+                            **_usage_metadata(usage_summary),
+                        },
                     )
                 invoked_results = self._invoke_tool_calls(request, context, tool_calls)
                 tool_results.extend(result.to_dict() for _, result in invoked_results)
@@ -145,19 +162,27 @@ class LangChainAgentLoopAdapter:
 
         messages = _compose_messages(request)
         tool_results: list[dict[str, Any]] = []
-        aggregate_usage: dict[str, Any] = {}
+        token_observations: list[ModelCallTokenObservation] = []
         try:
             for model_call_index in range(_tool_call_iteration_limit(request)):
                 model_call_id = f"model_call_{model_call_index + 1}"
+                provider_messages = list(messages)
                 response = _stream_model_call(
                     model=model,
                     messages=messages,
                     request=request,
                     context=context,
                     model_call_id=model_call_id,
+                    provider_messages=provider_messages,
                     on_event=on_event,
                 )
-                aggregate_usage = _aggregate_usage(aggregate_usage, response.usage)
+                token_observations.append(
+                    _token_observation_from_usage_dicts(
+                        provider_usage=response.usage,
+                        estimated_usage=response.estimated_usage,
+                    )
+                )
+                usage_summary = summarize_model_call_window(token_observations)
                 tool_calls = _normalized_stream_tool_calls(
                     _tool_calls(response),
                     model_call_id=model_call_id,
@@ -181,11 +206,16 @@ class LangChainAgentLoopAdapter:
                         status="completed",
                         assistant_output=response.text,
                         tool_results=tool_results,
-                        usage=aggregate_usage,
+                        usage=dict(usage_summary["usage"]),
                         error=None,
-                        metadata={"provider_finish": response.provider_finish}
-                        if response.provider_finish
-                        else {},
+                        metadata={
+                            **(
+                                {"provider_finish": response.provider_finish}
+                                if response.provider_finish
+                                else {}
+                            ),
+                            **_usage_metadata(usage_summary),
+                        },
                     )
                 invoked_results = self._invoke_stream_tool_calls(
                     request=request,
@@ -736,10 +766,11 @@ def _invoke_model(
         _record_model_failure(recorder, "model_error", str(exc), start)
         raise
     if recorder is not None:
+        usage = normalize_provider_usage(response)
         recorder(
             "model_call_completed",
             {
-                "usage": getattr(response, "usage", {}) or {},
+                "usage": usage,
                 "metadata": {},
                 "provider_finish": _provider_finish_metadata(response),
                 "duration": monotonic() - start,
@@ -762,6 +793,7 @@ def _stream_model_call(
     request: AgentRunRequest,
     context: RunContext,
     model_call_id: str,
+    provider_messages: list[object],
     on_event: Callable[[AgentStreamEvent], None],
 ) -> _StreamModelResponse:
     recorder = context.model_event_recorder
@@ -802,7 +834,7 @@ def _stream_model_call(
             chunk_tool_call_chunks = _tool_call_chunks(chunk)
             if chunk_tool_call_chunks:
                 tool_call_chunks.extend(chunk_tool_call_chunks)
-            chunk_usage = getattr(chunk, "usage", {}) or {}
+            chunk_usage = normalize_provider_usage(chunk)
             if chunk_usage:
                 usage = dict(chunk_usage)
             chunk_finish = _provider_finish_metadata(chunk)
@@ -842,6 +874,16 @@ def _stream_model_call(
         content="".join(text_parts),
         tool_calls=_merge_stream_tool_calls(tool_calls, tool_call_chunks),
         usage=usage,
+        estimated_usage=estimate_model_call_usage(
+            provider_messages=provider_messages,
+            accepted_output={
+                "content": "".join(text_parts),
+                "tool_calls": _normalized_tool_calls(
+                    _merge_stream_tool_calls(tool_calls, tool_call_chunks),
+                    model_call_id=model_call_id,
+                ),
+            },
+        ),
         duration_seconds=monotonic() - started_at,
         provider_finish=provider_finish,
     )
@@ -862,6 +904,7 @@ def _emit_stream_model_call_completed(
                 "model_call_id": model_call_id,
                 "is_final": is_final,
                 "usage": response.usage,
+                "estimated_usage": response.estimated_usage,
                 **(
                     {"provider_finish": response.provider_finish}
                     if response.provider_finish
@@ -1450,6 +1493,64 @@ def _streaming_fallback(result: AgentRunResult) -> AgentRunResult:
 def _result_metadata(response: object) -> dict[str, Any]:
     provider_finish = _provider_finish_metadata(response)
     return {"provider_finish": provider_finish} if provider_finish else {}
+
+
+def _model_call_token_observation(
+    *,
+    response: object,
+    provider_messages: list[object],
+    model_call_id: str,
+) -> ModelCallTokenObservation:
+    usage = normalize_provider_usage(response)
+    tool_calls = _normalized_tool_calls(_tool_calls(response), model_call_id=model_call_id)
+    estimated_usage = estimate_model_call_usage(
+        provider_messages=provider_messages,
+        accepted_output={
+            "content": _response_content(response),
+            "tool_calls": tool_calls,
+        },
+    )
+    return _token_observation_from_usage_dicts(
+        provider_usage=usage,
+        estimated_usage=estimated_usage,
+    )
+
+
+def _token_observation_from_usage_dicts(
+    *,
+    provider_usage: dict[str, Any],
+    estimated_usage: dict[str, Any],
+) -> ModelCallTokenObservation:
+    estimated = token_usage_from_mapping(estimated_usage)
+    if estimated is None:
+        raise ValueError("Estimated model-call usage must be complete.")
+    return ModelCallTokenObservation(
+        provider_usage=token_usage_from_mapping(provider_usage),
+        estimated_usage=estimated,
+    )
+
+
+def _usage_metadata(summary: dict[str, Any]) -> dict[str, Any]:
+    estimated_usage = (
+        dict(summary["estimated_usage"])
+        if isinstance(summary.get("estimated_usage"), dict)
+        else {}
+    )
+    estimator_version = summary.get("estimator_version")
+    if isinstance(estimator_version, str):
+        estimated_usage["estimator_version"] = estimator_version
+    token_source = summary.get("token_source")
+    if token_source == "provider":
+        return {
+            "provider_usage_available": True,
+            "token_source": "provider",
+            "estimated_usage": estimated_usage,
+        }
+    return {
+        "provider_usage_available": False,
+        "token_source": "estimated",
+        "estimated_usage": estimated_usage,
+    }
 
 
 def _provider_finish_metadata(response: object) -> dict[str, Any]:

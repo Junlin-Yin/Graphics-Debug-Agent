@@ -161,7 +161,12 @@ def test_langchain_adapter_maps_model_success() -> None:
     assert result.status == "completed"
     assert result.assistant_output == "answer"
     assert result.error is None
-    assert result.usage == {}
+    assert result.usage["input_tokens"] > 0
+    assert result.usage["output_tokens"] > 0
+    assert result.usage["total_tokens"] == (
+        result.usage["input_tokens"] + result.usage["output_tokens"]
+    )
+    assert result.metadata["token_source"] == "estimated"
     assert adapter.model.messages[0]["role"] == "system"
     assert "runtime safety" in adapter.model.messages[0]["content"]
     assert adapter.model.messages[-1]["role"] == "user"
@@ -571,6 +576,127 @@ def test_langchain_adapter_extracts_provider_finish_metadata_for_token_limit() -
     }
 
 
+@pytest.mark.parametrize(
+    ("response_attrs", "expected_usage"),
+    [
+        (
+            {"usage": {"input_tokens": 3, "output_tokens": 5, "total_tokens": 8}},
+            {"input_tokens": 3, "output_tokens": 5, "total_tokens": 8},
+        ),
+        (
+            {"usage_metadata": {"input_tokens": 7, "output_tokens": 11}},
+            {"input_tokens": 7, "output_tokens": 11, "total_tokens": 18},
+        ),
+        (
+            {
+                "response_metadata": {
+                    "usage": {
+                        "prompt_tokens": 13,
+                        "completion_tokens": 17,
+                        "total_tokens": 30,
+                    }
+                }
+            },
+            {"input_tokens": 13, "output_tokens": 17, "total_tokens": 30},
+        ),
+    ],
+)
+def test_langchain_adapter_normalizes_provider_usage_sources(
+    response_attrs: dict[str, Any],
+    expected_usage: dict[str, int],
+) -> None:
+    class UsageModel:
+        def invoke(self, messages):
+            attrs = {
+                "content": "answer",
+                "tool_calls": [],
+                **response_attrs,
+            }
+            return type("Response", (), attrs)()
+
+    events = []
+
+    result = LangChainAgentLoopAdapter(model=UsageModel()).run(
+        _request(),
+        replace(
+            _context(),
+            model_event_recorder=lambda kind, payload: events.append((kind, payload)),
+        ),
+    )
+
+    assert result.status == "completed"
+    assert result.usage == expected_usage
+    completed_payload = [
+        payload for kind, payload in events if kind == "model_call_completed"
+    ][0]
+    assert completed_payload["usage"] == expected_usage
+
+
+def test_langchain_adapter_uses_estimates_for_whole_mixed_usage_window() -> None:
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="ok",
+                output="tool result",
+                error=None,
+                artifacts=[],
+                metadata={},
+                redacted_output=None,
+            )
+
+    class MixedUsageToolModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": [
+                            {"type": "text", "text": "checking"},
+                            {
+                                "type": "tool_use",
+                                "id": "provider_tool_1",
+                                "name": "read_file",
+                                "input": {"path": "a.txt"},
+                            },
+                        ],
+                        "tool_calls": [],
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 200,
+                            "total_tokens": 300,
+                        },
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "final", "tool_calls": [], "usage": {}},
+            )()
+
+    result = LangChainAgentLoopAdapter(
+        model=MixedUsageToolModel(),
+        tool_broker=RecordingBroker(),
+    ).run(_request(), _context())
+
+    assert result.status == "completed"
+    assert result.metadata["provider_usage_available"] is False
+    assert result.metadata["token_source"] == "estimated"
+    assert result.metadata["estimated_usage"] == {
+        **result.usage,
+        "estimator_version": "deterministic-char-v1",
+    }
+    assert result.usage["total_tokens"] > 0
+    assert result.usage["total_tokens"] != 300
+
+
 def test_langchain_adapter_stream_extracts_provider_finish_metadata() -> None:
     class TokenLimitStreamingModel:
         stream_chunks = ["partial"]
@@ -752,8 +878,10 @@ def test_langchain_adapter_stream_emits_model_lifecycle_and_text_deltas() -> Non
         "model_call_id": model_call_id,
         "is_final": True,
         "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+        "estimated_usage": events[-1].payload["estimated_usage"],
         "duration_ms": events[-1].payload["duration_ms"],
     }
+    assert events[-1].payload["estimated_usage"]["total_tokens"] > 0
     assert events[-1].payload["duration_ms"] >= 0
 
 

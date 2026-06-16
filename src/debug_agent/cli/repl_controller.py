@@ -21,6 +21,11 @@ from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.orchestrator import ReplRuntime, RuntimeOrchestrator
 from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
 from debug_agent.runtime.stream_events import AgentStreamEvent
+from debug_agent.runtime.usage_accounting import (
+    ModelCallTokenObservation,
+    summarize_model_call_window,
+    token_usage_from_mapping,
+)
 from debug_agent.tools.broker import ApprovalDecision
 
 
@@ -46,6 +51,7 @@ class ReplController:
     _usage_input_tokens: int | None = None
     _usage_output_tokens: int | None = None
     _usage_total_tokens: int | None = None
+    _token_observations: list[ModelCallTokenObservation] = field(default_factory=list)
     _context_used_tokens: int | None = None
     _stream_usage_accounted: bool = False
     _restored_history_rendered: bool = False
@@ -592,7 +598,7 @@ class ReplController:
                 model_call_id = _required_str(event.payload, "model_call_id")
                 self._update_usage_from_values(
                     event.payload.get("usage"),
-                    fallback_estimate=event.payload.get("context_estimate"),
+                    estimated_usage=event.payload.get("estimated_usage"),
                 )
                 self._stream_usage_accounted = True
                 if bool(event.payload.get("is_final")):
@@ -826,7 +832,7 @@ class ReplController:
         if not self._stream_usage_accounted:
             self._update_usage_from_values(
                 result.usage,
-                fallback_estimate=result.metadata.get("context_estimate"),
+                estimated_usage=result.metadata.get("estimated_usage"),
             )
         estimate = getattr(self.runtime, "latest_context_estimate", None)
         self._update_context_from_estimate(estimate)
@@ -835,29 +841,29 @@ class ReplController:
         self,
         usage_value: object,
         *,
-        fallback_estimate: object,
+        estimated_usage: object,
     ) -> None:
-        usage = usage_value if isinstance(usage_value, dict) else {}
-        input_tokens = _usage_value(usage, "input_tokens", "prompt_tokens")
-        output_tokens = _usage_value(usage, "output_tokens", "completion_tokens")
-        total_tokens = _usage_value(usage, "total_tokens")
-        if input_tokens is not None:
-            self._usage_input_tokens = input_tokens
-        if output_tokens is not None:
-            self._usage_output_tokens = output_tokens
-        if total_tokens is not None:
-            self._usage_total_tokens = (self._usage_total_tokens or 0) + total_tokens
-        elif input_tokens is not None or output_tokens is not None:
-            known_input = self._usage_input_tokens or 0
-            known_output = self._usage_output_tokens or 0
-            self._usage_total_tokens = known_input + known_output
-        else:
-            if isinstance(fallback_estimate, dict):
-                fallback_total = fallback_estimate.get("total_tokens")
-                if isinstance(fallback_total, int):
-                    self._usage_total_tokens = (
-                        self._usage_total_tokens or 0
-                    ) + fallback_total
+        provider = token_usage_from_mapping(usage_value)
+        estimate = token_usage_from_mapping(estimated_usage)
+        if provider is None and estimate is None:
+            return
+        if estimate is None:
+            estimate = provider
+        if estimate is None:
+            return
+        self._token_observations.append(
+            ModelCallTokenObservation(
+                provider_usage=provider,
+                estimated_usage=estimate,
+            )
+        )
+        summary = summarize_model_call_window(self._token_observations)
+        usage = summary.get("usage")
+        if not isinstance(usage, dict):
+            return
+        self._usage_input_tokens = _usage_value(usage, "input_tokens")
+        self._usage_output_tokens = _usage_value(usage, "output_tokens")
+        self._usage_total_tokens = _usage_value(usage, "total_tokens")
 
     def _update_context_from_estimate(self, estimate: object) -> None:
         if isinstance(estimate, dict):

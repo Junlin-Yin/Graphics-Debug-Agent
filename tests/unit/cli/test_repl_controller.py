@@ -686,7 +686,7 @@ def test_streamed_turn_finalization_does_not_double_count_aggregate_provider_usa
     assert view.status_bars[-1].total_tokens == 8
 
 
-def test_stream_model_call_completion_uses_context_estimate_fallback_when_usage_absent() -> None:
+def test_stream_model_call_completion_uses_estimated_usage_when_provider_usage_absent() -> None:
     from debug_agent.cli.repl_controller import ReplController
 
     view = FakeView()
@@ -700,6 +700,7 @@ def test_stream_model_call_completion_uses_context_estimate_fallback_when_usage_
                 "model_call_id": "model_1",
                 "is_final": False,
                 "usage": {},
+                "estimated_usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
                 "context_estimate": {"total_tokens": 21},
                 "duration_ms": 1,
             },
@@ -712,6 +713,7 @@ def test_stream_model_call_completion_uses_context_estimate_fallback_when_usage_
                 "model_call_id": "model_2",
                 "is_final": True,
                 "usage": {},
+                "estimated_usage": {"input_tokens": 7, "output_tokens": 11, "total_tokens": 18},
                 "context_estimate": {"total_tokens": 34},
                 "duration_ms": 1,
             },
@@ -719,10 +721,12 @@ def test_stream_model_call_completion_uses_context_estimate_fallback_when_usage_
     )
 
     assert controller.drain_stream_events() == 2
-    assert view.status_bars[-1].total_tokens == 55
+    assert view.status_bars[-1].input_tokens == 9
+    assert view.status_bars[-1].output_tokens == 14
+    assert view.status_bars[-1].total_tokens == 23
 
 
-def test_streamed_turn_finalization_does_not_double_count_fallback_estimate() -> None:
+def test_streamed_turn_finalization_does_not_double_count_estimated_usage() -> None:
     from debug_agent.cli.repl_controller import ReplController
 
     view = FakeView()
@@ -736,6 +740,7 @@ def test_streamed_turn_finalization_does_not_double_count_fallback_estimate() ->
                 "model_call_id": "model_1",
                 "is_final": True,
                 "usage": {},
+                "estimated_usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
                 "context_estimate": {"total_tokens": 21},
                 "duration_ms": 1,
             },
@@ -748,11 +753,16 @@ def test_streamed_turn_finalization_does_not_double_count_fallback_estimate() ->
             "completed",
             assistant_output="answer",
             usage={},
-            metadata={"context_estimate": {"total_tokens": 21}},
+            metadata={
+                "estimated_usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+                "context_estimate": {"total_tokens": 21},
+            },
         )
     )
 
-    assert view.status_bars[-1].total_tokens == 21
+    assert view.status_bars[-1].input_tokens == 2
+    assert view.status_bars[-1].output_tokens == 3
+    assert view.status_bars[-1].total_tokens == 5
 
 
 def test_notify_event_ready_does_not_mutate_view_state() -> None:
@@ -2250,10 +2260,12 @@ def test_provider_total_tokens_are_accumulated_across_model_calls() -> None:
         )
     )
 
+    assert view.status_bars[-1].input_tokens == 9
+    assert view.status_bars[-1].output_tokens == 14
     assert view.status_bars[-1].total_tokens == 23
 
 
-def test_usage_falls_back_to_deterministic_context_estimate_when_provider_usage_absent() -> None:
+def test_usage_uses_cumulative_estimates_when_provider_usage_absent() -> None:
     from debug_agent.cli.repl_controller import ReplController
 
     view = FakeView()
@@ -2265,7 +2277,15 @@ def test_usage_falls_back_to_deterministic_context_estimate_when_provider_usage_
             "completed",
             assistant_output="one",
             usage={},
-            metadata={"context_estimate": {"total_tokens": 11}},
+            metadata={
+                "estimated_usage": {
+                    "input_tokens": 2,
+                    "output_tokens": 3,
+                    "total_tokens": 5,
+                    "estimator_version": "deterministic-char-v1",
+                },
+                "context_estimate": {"total_tokens": 111},
+            },
         )
     )
     controller.on_turn_finished(
@@ -2273,11 +2293,64 @@ def test_usage_falls_back_to_deterministic_context_estimate_when_provider_usage_
             "completed",
             assistant_output="two",
             usage={},
-            metadata={"context_estimate": {"total_tokens": 13}},
+            metadata={
+                "estimated_usage": {
+                    "input_tokens": 7,
+                    "output_tokens": 11,
+                    "total_tokens": 18,
+                    "estimator_version": "deterministic-char-v1",
+                },
+                "context_estimate": {"total_tokens": 222},
+            },
         )
     )
 
-    assert view.status_bars[-1].total_tokens == 24
+    assert view.status_bars[-1].input_tokens == 9
+    assert view.status_bars[-1].output_tokens == 14
+    assert view.status_bars[-1].total_tokens == 23
+
+
+def test_mixed_provider_and_missing_usage_recomputes_whole_window_as_estimated() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.on_turn_finished(
+        _result(
+            "completed",
+            assistant_output="one",
+            usage={"input_tokens": 100, "output_tokens": 200, "total_tokens": 300},
+            metadata={
+                "estimated_usage": {
+                    "input_tokens": 2,
+                    "output_tokens": 3,
+                    "total_tokens": 5,
+                    "estimator_version": "deterministic-char-v1",
+                }
+            },
+        )
+    )
+    controller.on_turn_finished(
+        _result(
+            "completed",
+            assistant_output="two",
+            usage={},
+            metadata={
+                "estimated_usage": {
+                    "input_tokens": 7,
+                    "output_tokens": 11,
+                    "total_tokens": 18,
+                    "estimator_version": "deterministic-char-v1",
+                }
+            },
+        )
+    )
+
+    assert view.status_bars[-1].input_tokens == 9
+    assert view.status_bars[-1].output_tokens == 14
+    assert view.status_bars[-1].total_tokens == 23
 
 
 def test_status_bar_context_uses_runtime_model_context_estimate() -> None:

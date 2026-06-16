@@ -19,13 +19,47 @@ from debug_agent.runtime.context_manager import ContextManager
 from debug_agent.runtime.model_context import ConversationMessage
 from debug_agent.runtime.model_context import TokenEstimator
 from debug_agent.runtime.orchestrator import ReplRuntime
-from debug_agent.runtime.prompt_executor import PromptAgentExecutor
+from debug_agent.runtime.prompt_executor import PromptAgentExecutor, _with_compression_usage
 from debug_agent.runtime.query_control import QueryControlPlane
 from debug_agent.runtime.settings import PHASE_0_SYSTEM_PROMPT
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.tools.broker import ToolBroker
 from debug_agent.tools.native import tool_definitions
 from debug_agent.tools.broker import ApprovalDecision
+
+
+def test_compression_usage_switches_provider_result_window_to_estimated() -> None:
+    result = AgentRunResult(
+        status="completed",
+        assistant_output="answer",
+        tool_results=[],
+        usage={"input_tokens": 100, "output_tokens": 200, "total_tokens": 300},
+        error=None,
+        metadata={
+            "provider_usage_available": True,
+            "token_source": "provider",
+            "estimated_usage": {
+                "input_tokens": 2,
+                "output_tokens": 3,
+                "total_tokens": 5,
+            },
+        },
+    )
+
+    merged = _with_compression_usage(
+        result,
+        {"input_tokens": 7, "output_tokens": 11, "total_tokens": 18},
+    )
+
+    assert merged.usage == {"input_tokens": 9, "output_tokens": 14, "total_tokens": 23}
+    assert merged.metadata["provider_usage_available"] is False
+    assert merged.metadata["token_source"] == "estimated"
+    assert merged.metadata["estimated_usage"] == {
+        "input_tokens": 9,
+        "output_tokens": 14,
+        "total_tokens": 23,
+        "estimator_version": "deterministic-char-v1",
+    }
 
 
 def _runtime(tmp_path, model):
