@@ -9,9 +9,19 @@ from pathlib import Path
 def materialize_fake_rdc(tmp_path: Path, workspace: Path) -> Path:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    executable = bin_dir / ("rdc.cmd" if os.name == "nt" else "rdc")
     script = _script(workspace)
-    executable.write_text(script, encoding="utf-8")
+    if os.name == "nt":
+        script_path = bin_dir / "fake_rdc.py"
+        script_path.write_text(script, encoding="utf-8")
+        executable = bin_dir / "rdc.cmd"
+        python_executable = str(Path(os.sys.executable))
+        executable.write_text(
+            f'@echo off\n"{python_executable}" "%~dp0fake_rdc.py" %*\nexit /b %ERRORLEVEL%\n',
+            encoding="utf-8",
+        )
+    else:
+        executable = bin_dir / "rdc"
+        executable.write_text(script, encoding="utf-8")
     executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
     return executable
 

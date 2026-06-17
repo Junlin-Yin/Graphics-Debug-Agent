@@ -23,7 +23,7 @@ def _load_fake_rdc_helper():
     return module
 
 
-def _config(output_png: str) -> dict:
+def _config(output_png: str, rdc_command: str = "rdc") -> dict:
     return {
         "provider": "fake",
         "model": "fake-model",
@@ -63,13 +63,13 @@ def _config(output_png: str) -> dict:
         "thinking": {"enabled": False, "effort": "high"},
         "fake_response": "fake rdc readiness complete",
         "fake_tool_calls": [
-            {"name": "shell_exec", "args": {"argv": ["rdc", "doctor"]}, "id": "call_rdc_doctor"},
-            {"name": "shell_exec", "args": {"argv": ["rdc", "open", "sample.rdc"]}, "id": "call_rdc_open"},
-            {"name": "shell_exec", "args": {"argv": ["rdc", "info", "--json"]}, "id": "call_rdc_info"},
-            {"name": "shell_exec", "args": {"argv": ["rdc", "draws", "--limit", "20"]}, "id": "call_rdc_draws"},
-            {"name": "shell_exec", "args": {"argv": ["rdc", "rt", "42", "-o", output_png]}, "id": "call_rdc_rt"},
+            {"name": "shell_exec", "args": {"argv": [rdc_command, "doctor"]}, "id": "call_rdc_doctor"},
+            {"name": "shell_exec", "args": {"argv": [rdc_command, "open", "sample.rdc"]}, "id": "call_rdc_open"},
+            {"name": "shell_exec", "args": {"argv": [rdc_command, "info", "--json"]}, "id": "call_rdc_info"},
+            {"name": "shell_exec", "args": {"argv": [rdc_command, "draws", "--limit", "20"]}, "id": "call_rdc_draws"},
+            {"name": "shell_exec", "args": {"argv": [rdc_command, "rt", "42", "-o", output_png]}, "id": "call_rdc_rt"},
             {"name": "view_image", "args": {"paths": [output_png], "query": "Inspect the exported render target."}, "id": "call_view_image"},
-            {"name": "shell_exec", "args": {"argv": ["rdc", "close"]}, "id": "call_rdc_close"},
+            {"name": "shell_exec", "args": {"argv": [rdc_command, "close"]}, "id": "call_rdc_close"},
         ],
     }
 
@@ -88,6 +88,7 @@ def test_phase4_fake_rdc_readiness_uses_brokered_shell_and_view_image(
     monkeypatch.setenv("MOONSHOT_API_KEY", "fake-key")
     monkeypatch.setenv("MOONSHOT_BASE_URL", "https://vision.invalid/v1")
     monkeypatch.setenv("PATH", f"{fake_rdc.parent}{os.pathsep}{os.environ['PATH']}")
+    rdc_command = str(fake_rdc) if os.name == "nt" else "rdc"
 
     vision_calls: list[dict] = []
 
@@ -111,7 +112,7 @@ def test_phase4_fake_rdc_readiness_uses_brokered_shell_and_view_image(
     output_png = "exports/target.png"
     result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
         "Run the fake rdc readiness flow.",
-        _config(output_png),
+        _config(output_png, rdc_command),
         approval_mode="yolo",
     )
 
@@ -165,12 +166,12 @@ def test_phase4_fake_rdc_readiness_uses_brokered_shell_and_view_image(
     shell_rows = [row for row in tool_rows if row[0] == "shell_exec"]
     assert len(shell_rows) == 6
     assert [json.loads(row[1]) for row in shell_rows] == [
-        ["rdc", "doctor"],
-        ["rdc", "open", "sample.rdc"],
-        ["rdc", "info", "--json"],
-        ["rdc", "draws", "--limit", "20"],
-        ["rdc", "rt", "42", "-o", output_png],
-        ["rdc", "close"],
+        [rdc_command, "doctor"],
+        [rdc_command, "open", "sample.rdc"],
+        [rdc_command, "info", "--json"],
+        [rdc_command, "draws", "--limit", "20"],
+        [rdc_command, "rt", "42", "-o", output_png],
+        [rdc_command, "close"],
     ]
     assert {row[2] for row in shell_rows} == {str(workspace.resolve())}
     assert all(row[3] == "ok" for row in shell_rows)

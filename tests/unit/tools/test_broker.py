@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import io
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -911,9 +912,7 @@ def test_write_file_timeout_after_parent_creation_audits_side_effects_without_ca
             parent = Path(arguments["planned_parent_directories"][0])
             parent.mkdir()
             context.record_created_directory(parent)
-            time.sleep(0.01)
-            context.check_deadline()
-            return NativeHandlerResult(status="ok", output={})
+            raise FutureTimeoutError
 
     runtime = _runtime(tmp_path, approval_mode="semi-auto")
     runtime["broker"] = ToolBroker(
@@ -927,11 +926,17 @@ def test_write_file_timeout_after_parent_creation_audits_side_effects_without_ca
         runtime,
         "write_file",
         {"path": "nested/file.txt", "content": "late"},
-        timeout_seconds=0.001,
+        timeout_seconds=1,
     )
-    failed = [event.payload for event in runtime["events"].list_for_run("run_1") if event.kind == "tool_call_failed"][-1]
+    failed_events = [
+        event.payload
+        for event in runtime["events"].list_for_run("run_1")
+        if event.kind == "tool_call_failed"
+    ]
 
     assert result.status == "timeout"
+    assert failed_events
+    failed = failed_events[-1]
     assert (runtime["workspace"] / "nested").is_dir()
     assert not (runtime["workspace"] / "nested" / "file.txt").exists()
     assert failed["side_effects"]["created_directories"] == [
