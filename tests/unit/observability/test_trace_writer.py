@@ -96,6 +96,7 @@ def _persist_session_with_conversation(tmp_path):
                 kind="assistant_tool_call",
                 content={
                     "kind": "assistant_tool_call",
+                    "content": "I will write the file before explaining the result.",
                     "tool_calls": [
                         {
                             "id": "tool-call-1",
@@ -118,9 +119,13 @@ def _persist_session_with_conversation(tmp_path):
                 kind="tool_result",
                 tool_call_id="tool-call-1",
                 content={
-                    "status": "ok",
-                    "content": {"path": str(workspace / "secret.txt"), "bytes": 14},
-                    "error": None,
+                    "status": "error",
+                    "content": None,
+                    "error": {
+                        "error_class": "tool_error",
+                        "reason": "tool_execution_failed",
+                        "message": "write failed",
+                    },
                     "artifact_ids": [],
                 },
             ),
@@ -218,13 +223,18 @@ def test_trace_writer_renders_phase35_conversation_transcript(tmp_path) -> None:
     assert "# user markdown\nhello" in content
     assert "## 🤖 Assistant" in content
     assert "### 🔧 Tool Calls" in content
-    assert "**✅ write_file** (`write_file`)" in content
+    assert "I will write the file before explaining the result." in content
+    assert "**❌ write_file** (`write_file`)" in content
     assert "- **Tool Result Index**: 4" in content
     assert "- **Arguments**:\n    {" in content
     assert '"redacted": true' in content
     assert '"sha256": "1d2b0d590597f55a716a4f4e60e91827ee71c3ab6ab5b0e6ab1245305b1f6dbc"' in content
     assert '"bytes": 14' in content
-    assert "- **Result**:\n    {" in content
+    assert "- **Error**:\n    {" in content
+    assert '"error_class": "tool_error"' in content
+    assert '"reason": "tool_execution_failed"' in content
+    assert '"message": "write failed"' in content
+    assert "- **Result**:\n    null" not in content
     assert "Done.\n```kept" in content
     assert "## ⚠️ Runtime Fact" in content
     assert "`tool_error/tool_execution_failed`: Tool failed." in content

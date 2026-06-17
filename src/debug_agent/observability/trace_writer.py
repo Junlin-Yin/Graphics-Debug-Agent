@@ -185,7 +185,7 @@ def _append_tool_call_message(
     tool_results: dict[tuple[str | None, str], Any],
 ) -> None:
     lines.extend(["", "---", "", "## 🤖 Assistant", _message_meta(row), ""])
-    text = row.content.get("text") if isinstance(row.content, dict) else None
+    text = _assistant_tool_call_text(row.content)
     if isinstance(text, str) and text:
         lines.extend([text, ""])
     lines.append("### 🔧 Tool Calls")
@@ -207,8 +207,17 @@ def _append_tool_call_message(
             ]
         )
         lines.extend(_indented_preview(_redacted_arguments(name, call.get("args", {}))))
-        lines.append("- **Result**:")
-        lines.extend(_indented_preview(_tool_result_preview(result)))
+        error = _tool_result_error(result)
+        preview = _tool_result_preview(result)
+        if error is not None:
+            lines.append("- **Error**:")
+            lines.extend(_indented_preview(error))
+            if preview is not None:
+                lines.append("- **Result**:")
+                lines.extend(_indented_preview(preview))
+        else:
+            lines.append("- **Result**:")
+            lines.extend(_indented_preview(preview))
 
 
 def _append_runtime_fact(lines: list[str], row: Any) -> None:
@@ -248,6 +257,27 @@ def _message_content(row: Any, artifact_by_id: dict[str, Any]) -> str:
     if isinstance(content, str):
         return content
     return json.dumps(content, ensure_ascii=False, sort_keys=True, indent=2)
+
+
+def _assistant_tool_call_text(content: Any) -> str | None:
+    if not isinstance(content, dict):
+        return None
+    for key in ("content", "text"):
+        value = content.get(key)
+        if isinstance(value, str) and value:
+            return value
+        if isinstance(value, list):
+            text_blocks = [
+                str(item["text"])
+                for item in value
+                if isinstance(item, dict)
+                and item.get("type") == "text"
+                and isinstance(item.get("text"), str)
+                and item.get("text")
+            ]
+            if text_blocks:
+                return "\n".join(text_blocks)
+    return None
 
 
 def _row_artifact_reference(row: Any, artifact_by_id: dict[str, Any]) -> dict[str, Any]:
@@ -469,6 +499,11 @@ def _tool_result_status(row: Any) -> str:
 def _tool_result_preview(row: Any) -> Any:
     content = row.content if isinstance(row.content, dict) else {}
     return content.get("content")
+
+
+def _tool_result_error(row: Any) -> Any:
+    content = row.content if isinstance(row.content, dict) else {}
+    return content.get("error")
 
 
 def _redacted_arguments(tool_name: str, args: Any) -> Any:
