@@ -358,15 +358,15 @@ The milestones below are ordered by dependency. Each milestone is an incremental
 
 **Freeze/review checkpoint:** Phase 4 is ready for review only when all automated commands pass and manual gates are recorded, or when the final report explicitly lists unverified gates and why Phase 4/v1 acceptance remains blocked.
 
-- [ ] Run `uv run pytest tests/unit -v`.
-- [ ] Run `uv run pytest tests/integration -v`.
-- [ ] Run `uv run pytest -v`.
-- [ ] Run `uv build`.
-- [ ] Install the generated wheel with `uv tool install --force`.
-- [ ] Create `/tmp/debug-agent-smoke` or equivalent throwaway workspace.
-- [ ] Run installed `debug-agent --help` outside the source checkout.
+- [x] Run `uv run pytest tests/unit -v`.
+- [x] Run `uv run pytest tests/integration -v`.
+- [x] Run `uv run pytest -v`.
+- [x] Run `uv build`.
+- [x] Install the generated wheel with `uv tool install --force`.
+- [x] Create `/tmp/debug-agent-smoke` or equivalent throwaway workspace.
+- [x] Run installed `debug-agent --help` outside the source checkout.
 - [ ] If package metadata changes were required, run `uv lock` and verify the lockfile change belongs to that dependency/metadata change.
-- [ ] Record package smoke command output summary in the implementation review evidence.
+- [x] Record package smoke command output summary in the implementation review evidence.
 - [ ] Record external adapted skill location/version or content hash.
 - [ ] Record how the adapted skill was exposed under project skill discovery.
 - [ ] Record evidence that `renderdoc-gpu-debug` was discoverable and activated.
@@ -376,8 +376,8 @@ The milestones below are ordered by dependency. Each milestone is an incremental
 - [ ] Record relevant environment variables and PATH notes.
 - [ ] Record sample `.rdc` path, real `rdc` command sequence, expected result, observed result, session id, run id, trace path, metrics path, and known limitations.
 - [ ] If the same run satisfies adapted skill smoke and Windows + real `rdc` smoke, ensure all fields required by both records are present.
-- [ ] Confirm fake `rdc` readiness runs in ordinary integration automation.
+- [x] Confirm fake `rdc` readiness runs in ordinary integration automation.
 - [ ] Confirm manual adapted `renderdoc-gpu-debug` skill smoke record exists.
 - [ ] Confirm Windows + real `rdc` smoke record exists for v1 completion.
-- [ ] Review `git diff` for scope creep, future-phase behavior, fake `rdc` runtime leakage, docs/spec edits, and formatting churn.
-- [ ] Prepare implementation review summary with commands run, evidence paths, and any residual risk.
+- [x] Review `git diff` for scope creep, future-phase behavior, fake `rdc` runtime leakage, docs/spec edits, and formatting churn.
+- [x] Prepare implementation review summary with commands run, evidence paths, and any residual risk.
