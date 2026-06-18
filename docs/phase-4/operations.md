@@ -56,7 +56,10 @@ Prefer targeted tests for:
 - read-only `status`, `trace`, and `resume` schema gates.
 - `[thinking]` config parsing, defaults, validation, frozen snapshot, and
   resume behavior.
-- main-agent thinking request projection.
+- main-agent LangChain Anthropic-compatible construction-time thinking request
+  projection.
+- absence of top-level per-call `effort` kwargs for Phase 4 thinking
+  projection.
 - thinking-enabled projection requiring an explicit provider thinking-enable
   option, not only `effort`.
 - stripping `thinking` blocks from all accepted/durable/subsequent paths.

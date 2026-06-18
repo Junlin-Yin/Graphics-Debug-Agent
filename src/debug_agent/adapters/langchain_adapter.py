@@ -1012,13 +1012,7 @@ def _stream_with_timeout(
 
 
 def _main_agent_request_options(request: AgentRunRequest) -> dict[str, Any]:
-    thinking = request.model_config.get("thinking")
-    if not isinstance(thinking, dict) or thinking.get("enabled") is not True:
-        return {}
-    effort = thinking.get("effort")
-    if not isinstance(effort, str) or not effort:
-        return {"thinking": {"type": "enabled"}}
-    return {"thinking": {"type": "enabled"}, "effort": effort}
+    return {}
 
 
 def _provider_cancellation_registry(

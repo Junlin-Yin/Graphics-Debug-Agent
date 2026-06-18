@@ -127,13 +127,25 @@ The request projection may use the SDK-supported representation for the current
 Anthropic-compatible adapter path, but it must include an explicit thinking
 enable option. Passing `effort` alone is not sufficient to enable thinking.
 
-For the current LangChain Anthropic-compatible adapter path, the expected
-projection is equivalent to:
+For the current LangChain Anthropic-compatible adapter path, the supported
+projection is `ChatAnthropic` construction-time configuration. When the frozen
+config has `thinking.enabled = true`, runtime constructs the main-agent model
+with arguments equivalent to:
 
 ```python
-thinking={"type": "enabled"}
-effort="<frozen-effort>"
+ChatAnthropic(
+    ...,
+    thinking={"type": "enabled"},
+    effort="<frozen-effort>",
+)
 ```
+
+LangChain owns the provider-specific request translation for those constructor
+arguments. In the supported dependency line, `effort` is translated into the
+Anthropic SDK payload as `output_config.effort`; it must not be sent as a
+top-level per-call `invoke()` / `stream()` keyword argument. Runtime may still
+pass unrelated per-call request options when needed, but Phase 4 thinking
+projection must not rely on top-level per-call `effort`.
 
 Phase 4 does not apply thinking to:
 

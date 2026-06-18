@@ -128,6 +128,12 @@ class ModelFactory:
         }
         if base_url:
             kwargs["base_url"] = base_url
+        thinking = config_snapshot.get("thinking")
+        if isinstance(thinking, dict) and thinking.get("enabled") is True:
+            kwargs["thinking"] = {"type": "enabled"}
+            effort = thinking.get("effort")
+            if isinstance(effort, str) and effort:
+                kwargs["effort"] = effort
         ChatAnthropic = _load_chat_anthropic()
         return ModelFactoryResult(model=ChatAnthropic(**kwargs), error=None)
 

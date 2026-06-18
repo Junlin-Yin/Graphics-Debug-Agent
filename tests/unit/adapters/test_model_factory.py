@@ -146,6 +146,76 @@ def test_model_factory_constructs_anthropic_model_without_exposing_secret(
     assert "secret-token" not in str(result)
 
 
+def test_model_factory_constructs_anthropic_model_with_enabled_thinking(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    class DummyChatAnthropic:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "debug_agent.adapters.model_factory._load_chat_anthropic",
+        lambda: DummyChatAnthropic,
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret-token")
+
+    result = ModelFactory().create(
+        {
+            "provider": "anthropic",
+            "model": "kimi-k2.5",
+            "temperature": 0.2,
+            "max_tokens": 8192,
+            "timeout_seconds": 120,
+            "auth": {
+                "api_key_env": "ANTHROPIC_API_KEY",
+                "api_key_present": True,
+            },
+            "thinking": {"enabled": True, "effort": "medium"},
+        }
+    )
+
+    assert result.error is None
+    assert isinstance(result.model, DummyChatAnthropic)
+    assert captured["thinking"] == {"type": "enabled"}
+    assert captured["effort"] == "medium"
+
+
+def test_model_factory_omits_anthropic_thinking_when_disabled(monkeypatch) -> None:
+    captured = {}
+
+    class DummyChatAnthropic:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "debug_agent.adapters.model_factory._load_chat_anthropic",
+        lambda: DummyChatAnthropic,
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret-token")
+
+    result = ModelFactory().create(
+        {
+            "provider": "anthropic",
+            "model": "kimi-k2.5",
+            "temperature": 0.2,
+            "max_tokens": 8192,
+            "timeout_seconds": 120,
+            "auth": {
+                "api_key_env": "ANTHROPIC_API_KEY",
+                "api_key_present": True,
+            },
+            "thinking": {"enabled": False, "effort": "medium"},
+        }
+    )
+
+    assert result.error is None
+    assert isinstance(result.model, DummyChatAnthropic)
+    assert "thinking" not in captured
+    assert "effort" not in captured
+
+
 def test_model_factory_constructs_locked_anthropic_model_without_network(
     monkeypatch,
 ) -> None:

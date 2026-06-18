@@ -103,8 +103,12 @@ Phase 4 acceptance requires:
 ### Thinking Projection And Stripping
 
 - main-agent request projection omits thinking options when disabled.
-- main-agent request projection includes an explicit thinking-enable option and
-  effort when enabled.
+- main-agent LangChain Anthropic-compatible model construction omits thinking
+  options when disabled.
+- main-agent LangChain Anthropic-compatible model construction includes an
+  explicit thinking-enable option and frozen effort when enabled.
+- main-agent per-call `invoke()` / `stream()` kwargs do not include top-level
+  `effort` for Phase 4 thinking projection.
 - thinking-enabled request projection is not satisfied by sending `effort`
   alone.
 - request projection omits effort when thinking is disabled.

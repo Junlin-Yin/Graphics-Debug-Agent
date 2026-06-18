@@ -226,7 +226,7 @@ def test_langchain_adapter_does_not_enable_thinking_from_effort_alone() -> None:
     assert model.kwargs == {}
 
 
-def test_langchain_adapter_projects_enabled_thinking_and_frozen_effort() -> None:
+def test_langchain_adapter_does_not_send_per_call_thinking_kwargs() -> None:
     class RecordingModel:
         def __init__(self) -> None:
             self.kwargs = None
@@ -251,13 +251,10 @@ def test_langchain_adapter_projects_enabled_thinking_and_frozen_effort() -> None
     result = LangChainAgentLoopAdapter(model=model).run(request, _context())
 
     assert result.status == "completed"
-    assert model.kwargs == {
-        "thinking": {"type": "enabled"},
-        "effort": "medium",
-    }
+    assert model.kwargs == {}
 
 
-def test_langchain_adapter_stream_projects_enabled_thinking_and_frozen_effort() -> None:
+def test_langchain_adapter_stream_does_not_send_per_call_thinking_kwargs() -> None:
     class RecordingStreamingModel:
         stream_chunks = ["answer"]
 
@@ -288,10 +285,7 @@ def test_langchain_adapter_stream_projects_enabled_thinking_and_frozen_effort() 
     )
 
     assert result.status == "completed"
-    assert model.kwargs == {
-        "thinking": {"type": "enabled"},
-        "effort": "high",
-    }
+    assert model.kwargs == {}
 
 
 def test_langchain_adapter_strips_thinking_blocks_but_preserves_text_blocks() -> None:
