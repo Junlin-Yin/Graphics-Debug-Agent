@@ -13,6 +13,10 @@ when they are required to support the documented Phase 4 readiness checks:
 - non-authoritative per-invocation run metrics for readiness review.
 - provider usage normalization and cumulative token accounting for run metrics
   and existing REPL/TUI token surfaces.
+- main-agent default harness prompt replacement and skill-resource affordance
+  clarification needed for real RenderDoc skill-driven runs.
+- generic `view_image` default query strengthening needed for real image-driven
+  debugging observations.
 - fake `rdc` automated readiness scenario.
 - Windows + real `rdc` smoke as the v1 completion gate.
 - package/deployment smoke verification.
@@ -24,6 +28,30 @@ readiness path with a fake `rdc` scenario; the externally adapted
 `renderdoc-gpu-debug` skill is verified through a canonical manual smoke record.
 
 ## Must Implement
+
+### Main-Agent Harness Prompt
+
+- replace the legacy Phase 0 default system prompt with a generic
+  `debug-agent` harness prompt for Phase 4 prompt sessions. The exact built-in
+  `SYSTEM_PROMPT` text is defined in `architecture.md` and must be implemented
+  from that document, not from external drafts or source notes.
+- rename the runtime default prompt constant from the Phase 0-specific name to a
+  phase-neutral `SYSTEM_PROMPT`.
+- keep the default prompt generic: it must define runtime harness discipline,
+  tool usage discipline, evidence/failure discipline, Todo Plan usage for
+  multi-step debugging, skill-resource loading discipline, and output
+  completion discipline.
+- do not encode RenderDoc, `rdc`, shader, report-schema, or case-specific
+  workflow semantics in the default prompt. Domain procedure remains owned by
+  the user prompt and active prompt skills.
+- make active skill resource lists explicit model-visible indexes: listing a
+  resource path is not loaded content, and the model must call
+  `load_skill_resource` before relying on a listed resource's contents. The
+  exact active skill context guidance text is defined in `architecture.md`.
+- strengthen the model-visible `load_skill_resource` tool description so the
+  tool's intended trigger is clear when active skill instructions or
+  `available_resources` reference needed content. The exact tool description is
+  defined in `architecture.md`.
 
 ### Compatibility
 
@@ -104,6 +132,11 @@ readiness path with a fake `rdc` scenario; the externally adapted
 
 - add `specs/renderdoc-readiness.md` as the authoritative Phase 4 RenderDoc
   readiness contract.
+- strengthen the default `view_image` query as generic visual debugging
+  guidance. The exact default query text is defined in `architecture.md` and
+  supersedes the Phase 2 default query for current Phase 4 runtime behavior.
+- keep the default `view_image` query domain-neutral. It must not encode
+  RenderDoc, `rdc`, shader, report-schema, or case-specific workflow semantics.
 - verify the runtime RenderDoc readiness path through a fake `rdc` automated
   scenario.
 - verify the externally adapted `renderdoc-gpu-debug` skill through a manual
@@ -176,6 +209,12 @@ Phase 4 is complete when:
 - a manual adapted `renderdoc-gpu-debug` skill smoke is recorded.
 - run metrics are written for terminal prompt sessions as non-authoritative
   artifacts.
+- the Phase 4 default system prompt uses the phase-neutral `SYSTEM_PROMPT`
+  constant and contains the documented generic harness discipline.
+- active skill resource lists and the `load_skill_resource` tool description
+  make resource loading requirements model-visible.
+- the Phase 4 default `view_image` query uses the exact generic visual
+  debugging text defined in `architecture.md`.
 - package deployment smoke is part of canonical Phase 4 verification.
 - Windows + real `rdc` smoke is executed and recorded as the v1 completion gate,
   either manually or through optional self-hosted automation.

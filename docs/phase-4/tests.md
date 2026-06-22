@@ -29,6 +29,18 @@ Phase 4 acceptance requires:
 - `view_image` provider calls continue to disable Kimi thinking and do not use
   Phase 4 main-agent thinking settings.
 - context compression calls do not use Phase 4 thinking settings.
+- the built-in default system prompt is exposed through a phase-neutral
+  `SYSTEM_PROMPT` constant and exactly matches the Phase 4 text defined in
+  `architecture.md`.
+- configured `system_prompt` values continue to override the built-in default
+  in frozen config snapshots.
+- prompt composition keeps the runtime safety prefix, main agent system prompt,
+  active skill context, and tool schema bindings on their existing
+  model-visible paths.
+- active skill context contains the exact `available_resources` index guidance
+  text defined in `architecture.md`.
+- the model-visible `load_skill_resource` tool description exactly matches the
+  Phase 4 text defined in `architecture.md`.
 - provider `thinking` content blocks are stripped before durable conversation,
   trace, events, metrics, compression, resume projection, tool continuation,
   TUI display, or assistant final text.
@@ -49,6 +61,11 @@ Phase 4 acceptance requires:
 - fake `rdc rt` writes a real PNG inspected through `view_image`.
 - fake `rdc` readiness uses brokered `shell_exec` and `view_image`, not PTY,
   interactive shell, long-running shell, workflow, subagent, MCP, or cache.
+- default `view_image` query exactly matches the Phase 4 text defined in
+  `architecture.md`.
+- default `view_image` query remains generic visual debugging guidance and does
+  not include RenderDoc, `rdc`, shader, report-schema, or case-specific
+  workflow terms.
 - fake `rdc` readiness terminalizes and produces trace plus run metrics.
 - deployment smoke builds a wheel, installs it with `uv tool install`, and runs
   installed `debug-agent --help` outside the source checkout.
@@ -125,6 +142,33 @@ Phase 4 acceptance requires:
   blocks.
 - trace rendering never includes thinking text.
 - metrics files never include thinking text.
+
+### Harness Prompt And Skill Resources
+
+- runtime settings expose `SYSTEM_PROMPT` and no longer expose a
+  Phase 0-named default prompt constant.
+- built-in non-provider defaults use `SYSTEM_PROMPT` for `system_prompt`.
+- the default prompt exactly matches the Phase 4 `SYSTEM_PROMPT` text defined
+  in `architecture.md`, including generic runtime harness discipline for tool
+  use, Todo Plan usage, active skill resource loading, evidence/failure
+  handling, hidden thinking non-disclosure, output formatting, and completion
+  checks.
+- the default prompt does not include RenderDoc, `rdc`, shader, report-schema,
+  or case-specific workflow instructions.
+- custom `system_prompt` values from config continue to freeze into the session
+  snapshot and override the built-in default.
+- active skill context includes `available_resources` and the exact resource
+  index guidance text defined in `architecture.md`.
+- `load_skill_resource` tool schema description exactly matches the Phase 4
+  text defined in `architecture.md`.
+- `DEFAULT_VIEW_IMAGE_QUERY` exactly matches the Phase 4 text defined in
+  `architecture.md`.
+- omitted `view_image.query` still uses the runtime-owned provider instruction
+  wrapper with the Phase 4 default query as the analysis focus.
+- custom assistant-supplied `view_image.query` remains supported and continues
+  to override the default query for that tool call.
+- the default `view_image` query does not include RenderDoc, `rdc`, shader,
+  report-schema, or case-specific workflow terms.
 
 ### Run Metrics
 
