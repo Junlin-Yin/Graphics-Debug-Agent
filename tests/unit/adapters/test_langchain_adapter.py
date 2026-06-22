@@ -14,6 +14,7 @@ from debug_agent.adapters.langchain_adapter import (
     LangChainAgentLoopAdapter,
     _langchain_tools,
     _provider_messages_from_segments,
+    _tool_observation,
 )
 from debug_agent.adapters.model_factory import FakeChatModel
 from debug_agent.adapters.vision_client import VisionImageInput, project_chat_completions_request
@@ -110,6 +111,22 @@ def _context() -> RunContext:
         cancellation_token=None,
         metadata={},
     )
+
+
+def test_tool_observation_preserves_redacted_output_for_durable_replay() -> None:
+    observation = _tool_observation(
+        {
+            "status": "ok",
+            "output": "raw secret output",
+            "redacted_output": "[redacted output]",
+            "artifacts": [],
+            "metadata": {"tool_name": "view_image"},
+        },
+        tool_call_id="model_call_1_tool_1",
+    )
+
+    assert observation["content"] == "raw secret output"
+    assert observation["redacted_output"] == "[redacted output]"
 
 
 def _event_payloads(events: list[AgentStreamEvent], kind: str) -> list[dict[str, Any]]:

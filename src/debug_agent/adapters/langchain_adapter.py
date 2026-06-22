@@ -1463,6 +1463,7 @@ def _tool_observation(
         "tool_call_id": tool_call_id,
         "status": status,
         "content": content,
+        "redacted_output": result.get("redacted_output"),
         "error": error,
         "artifact_ids": artifact_ids,
         "metadata": {},

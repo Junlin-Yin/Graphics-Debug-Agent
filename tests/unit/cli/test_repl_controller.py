@@ -2008,6 +2008,58 @@ def test_controller_renders_restored_tool_history_for_resumed_tui() -> None:
     assert "README.md" in view.events[1].payload["preview"].text
 
 
+def test_controller_renders_restored_shell_command_target_for_resumed_tui() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    runtime.conversation = [
+        {
+            "seq": 1,
+            "role": "assistant",
+            "kind": "assistant_tool_call",
+            "model_call_id": "turn-1:model_call_1",
+            "tool_call_id": "turn-1:model_call_1_tool_1",
+            "content": {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "turn-1:model_call_1_tool_1",
+                        "name": "shell_exec",
+                        "args": {"argv": ["pytest", "tests/unit"]},
+                    }
+                ],
+            },
+        },
+        {
+            "seq": 2,
+            "role": "tool",
+            "kind": "tool_result",
+            "model_call_id": "turn-1:model_call_1",
+            "tool_call_id": "turn-1:model_call_1_tool_1",
+            "content": {
+                "message_type": "tool_result",
+                "tool_name": "shell_exec",
+                "tool_call_id": "turn-1:model_call_1_tool_1",
+                "status": "ok",
+                "content": {"stdout": "passed\n", "stderr": "", "returncode": 0},
+                "redacted_output": "[redacted shell output]",
+                "error": None,
+                "artifact_ids": [],
+                "metadata": {"tool_name": "shell_exec"},
+            },
+        },
+    ]
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.render_restored_history()
+
+    tool_block = view.events[0]
+    assert tool_block.kind == "tool_block"
+    assert tool_block.payload["metadata"]["target"] == "pytest tests/unit"
+    assert tool_block.payload["preview"].text == "> [redacted shell output]"
+
+
 def test_exit_slash_command_completes_runtime_and_shows_summary() -> None:
     from debug_agent.cli.repl_controller import ReplController
 

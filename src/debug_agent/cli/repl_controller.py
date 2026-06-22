@@ -386,6 +386,7 @@ class ReplController:
                     restored_tool_calls[tool_call_id] = {
                         "name": str(call.get("name") or "unknown"),
                         "model_call_id": model_call_id,
+                        "args": call.get("args", {}),
                     }
             elif role == "tool" and kind == "tool_result":
                 tool_call_id = _message_str(message, "tool_call_id")
@@ -401,6 +402,9 @@ class ReplController:
                 metadata = dict(content_dict.get("metadata") or {})
                 metadata.setdefault("tool_name", tool_name)
                 metadata["tool_call_id"] = tool_call_id
+                target = _restored_tool_target(tool_name, restored_call.get("args"))
+                if target:
+                    metadata.setdefault("target", target)
                 model_call_id = _message_str(message, "model_call_id") or str(
                     restored_call.get("model_call_id") or ""
                 )
@@ -1035,6 +1039,18 @@ def _conversation_tool_calls(content: object) -> list[dict[str, Any]]:
     if not isinstance(tool_calls, list):
         return []
     return [call for call in tool_calls if isinstance(call, dict)]
+
+
+def _restored_tool_target(tool_name: str, args: object) -> str | None:
+    if tool_name != "shell_exec" or not isinstance(args, dict):
+        return None
+    argv = args.get("argv")
+    if not isinstance(argv, list) or not argv:
+        return None
+    parts = [str(part) for part in argv if isinstance(part, str)]
+    if len(parts) != len(argv):
+        return None
+    return " ".join(parts)
 
 
 def _message_str(message: dict[str, Any], key: str) -> str:
