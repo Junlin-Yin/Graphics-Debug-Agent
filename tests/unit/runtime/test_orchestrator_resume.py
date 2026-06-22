@@ -15,6 +15,7 @@ from debug_agent.persistence.conversation import ConversationAppend, Conversatio
 from debug_agent.persistence.errors import StoreError
 from debug_agent.runtime import orchestrator as orchestrator_module
 from debug_agent.runtime.orchestrator import RuntimeOrchestrator, visible_tool_definitions
+from debug_agent.runtime.settings import SYSTEM_PROMPT
 
 
 def _config(response: str = "fake answer") -> dict:
@@ -25,10 +26,7 @@ def _config(response: str = "fake answer") -> dict:
         "temperature": 0.2,
         "max_tokens": 8192,
         "timeout_seconds": 120,
-        "system_prompt": (
-            "You are debug-agent, a local debugging assistant. Answer concisely "
-            "and use only tools exposed by the runtime."
-        ),
+        "system_prompt": SYSTEM_PROMPT,
     }
 
 

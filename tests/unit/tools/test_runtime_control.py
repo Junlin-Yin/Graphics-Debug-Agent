@@ -112,6 +112,10 @@ def test_runtime_control_tool_definitions_are_strict() -> None:
     assert "load_skill_ref_file" not in definitions
     assert definitions["load_skill_resource"].category == "runtime_control"
     assert definitions["load_skill_resource"].risk_level == "read"
+    assert definitions["load_skill_resource"].description == (
+        "Load one frozen resource file for an active skill. Use this when active skill\n"
+        "instructions or available_resources reference a file whose contents are needed."
+    )
     assert definitions["load_skill_resource"].input_schema == {
         "type": "object",
         "properties": {

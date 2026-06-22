@@ -54,7 +54,10 @@ def tool_definitions() -> list[ToolDefinition]:
         ),
         ToolDefinition(
             name="load_skill_resource",
-            description="Load one frozen resource file for an active skill.",
+            description=(
+                "Load one frozen resource file for an active skill. Use this when active skill\n"
+                "instructions or available_resources reference a file whose contents are needed."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {

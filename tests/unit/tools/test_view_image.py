@@ -22,6 +22,16 @@ from debug_agent.tools.settings import LARGE_OUTPUT_THRESHOLD_BYTES
 from debug_agent.tools.view_image import ViewImageTool, tool_definition
 
 
+EXPECTED_DEFAULT_VIEW_IMAGE_QUERY = (
+    "Describe the visible contents of the image(s). When multiple images are\n"
+    "provided, compare them directly and call out visible differences or anomalies.\n"
+    "For any anomaly, describe the affected region, color or brightness change,\n"
+    "missing or extra visual elements, transparency, geometry, edges, text, or other\n"
+    "observable symptoms when visible. Transcribe visible text when useful. Note\n"
+    "uncertainty and do not infer causes that are not visible in the image(s)."
+)
+
+
 try:
     from PIL import Image
 except ImportError:  # pragma: no cover - dependency is required by Phase 2
@@ -236,7 +246,12 @@ def test_view_image_tool_definition_uses_fixed_settings_limits() -> None:
     assert tool_settings.MAX_VIEW_IMAGE_DIMENSION == 4096
     assert tool_settings.MAX_VIEW_IMAGE_PIXELS == 4096 * 2160
     assert tool_settings.MAX_VIEW_IMAGE_REQUEST_BODY_BYTES == 100_000_000
-    assert tool_settings.DEFAULT_VIEW_IMAGE_QUERY
+    assert tool_settings.DEFAULT_VIEW_IMAGE_QUERY == EXPECTED_DEFAULT_VIEW_IMAGE_QUERY
+    forbidden_terms = ("RenderDoc", "rdc", "shader", "report-schema", "workflow")
+    assert not any(
+        term.lower() in tool_settings.DEFAULT_VIEW_IMAGE_QUERY.lower()
+        for term in forbidden_terms
+    )
 
 
 def test_disabled_view_image_is_known_tool_denied_by_config_without_routing(
@@ -371,9 +386,37 @@ def test_enabled_view_image_definition_routes_with_fake_provider(
     assert result.metadata["effective_query_source"] == "default"
     assert result.metadata["images"][0]["byte_size"] == len(data)
     assert "query" not in result.metadata
+    assert vision_client.calls[0]["instruction"].endswith(
+        f"Analysis focus:\n{EXPECTED_DEFAULT_VIEW_IMAGE_QUERY}"
+    )
     assert vision_client.calls[0]["timeout_seconds"] == 60
     assert vision_client.calls[0]["config"].model == "kimi-k2.5"
     assert vision_client.calls[0]["images"][0].mime_type == "image/png"
+    runtime["db"].close()
+
+
+def test_view_image_custom_query_overrides_default_analysis_focus(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = _runtime(tmp_path, multimodal=_enabled_multimodal())
+    image = runtime["workspace"] / "capture.png"
+    _write_image(image)
+    vision_client = _FakeVisionClient()
+    monkeypatch.setenv("MOONSHOT_API_KEY", "secret")
+    monkeypatch.setenv("MOONSHOT_BASE_URL", "https://example.test/v1")
+
+    result = _invoke_enabled(
+        runtime,
+        {"paths": ["capture.png"], "query": "Focus on visible edge artifacts."},
+        vision_client=vision_client,
+    )
+
+    assert result.status == "ok"
+    assert result.metadata["effective_query_source"] == "assistant"
+    assert vision_client.calls[0]["instruction"].endswith(
+        "Analysis focus:\nFocus on visible edge artifacts."
+    )
     runtime["db"].close()
 
 

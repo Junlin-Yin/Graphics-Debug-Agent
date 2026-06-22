@@ -409,16 +409,16 @@ comments to reconstruct the target prompt or replacement text. The exact
 model-visible strings for this milestone are the strings embedded in
 `docs/phase-4/architecture.md`.
 
-- [ ] Add tests for `SYSTEM_PROMPT` naming, exact default prompt content from `architecture.md`, and absence of the legacy Phase 0 prompt constant.
-- [ ] Add tests proving configured `system_prompt` still overrides the built-in default.
-- [ ] Add tests for exact active skill context resource-index guidance from `architecture.md`.
-- [ ] Add tests for the exact clarified `load_skill_resource` tool description from `architecture.md`.
-- [ ] Add tests for the exact `DEFAULT_VIEW_IMAGE_QUERY` text from `architecture.md`.
-- [ ] Add tests proving omitted `view_image.query` uses the Phase 4 default query as the analysis focus while custom assistant-supplied query still overrides it.
-- [ ] Rename the default prompt constant from `PHASE_0_SYSTEM_PROMPT` to `SYSTEM_PROMPT`.
-- [ ] Replace the built-in default prompt text with the exact `SYSTEM_PROMPT` text from `architecture.md`.
-- [ ] Update runtime imports and fallback paths to use `SYSTEM_PROMPT`.
-- [ ] Add the exact model-visible resource-index guidance from `architecture.md` to active skill context near `available_resources`.
-- [ ] Replace the `load_skill_resource` model-visible tool description with the exact text from `architecture.md` without changing its schema, risk, access, or handler behavior.
-- [ ] Replace `DEFAULT_VIEW_IMAGE_QUERY` with the exact text from `architecture.md` without changing the `view_image` schema, provider instruction wrapper, redaction behavior, or custom-query override behavior.
-- [ ] Run canonical verification for the changed surface.
+- [x] Add tests for `SYSTEM_PROMPT` naming, exact default prompt content from `architecture.md`, and absence of the legacy Phase 0 prompt constant.
+- [x] Add tests proving configured `system_prompt` still overrides the built-in default.
+- [x] Add tests for exact active skill context resource-index guidance from `architecture.md`.
+- [x] Add tests for the exact clarified `load_skill_resource` tool description from `architecture.md`.
+- [x] Add tests for the exact `DEFAULT_VIEW_IMAGE_QUERY` text from `architecture.md`.
+- [x] Add tests proving omitted `view_image.query` uses the Phase 4 default query as the analysis focus while custom assistant-supplied query still overrides it.
+- [x] Rename the default prompt constant from `PHASE_0_SYSTEM_PROMPT` to `SYSTEM_PROMPT`.
+- [x] Replace the built-in default prompt text with the exact `SYSTEM_PROMPT` text from `architecture.md`.
+- [x] Update runtime imports and fallback paths to use `SYSTEM_PROMPT`.
+- [x] Add the exact model-visible resource-index guidance from `architecture.md` to active skill context near `available_resources`.
+- [x] Replace the `load_skill_resource` model-visible tool description with the exact text from `architecture.md` without changing its schema, risk, access, or handler behavior.
+- [x] Replace `DEFAULT_VIEW_IMAGE_QUERY` with the exact text from `architecture.md` without changing the `view_image` schema, provider instruction wrapper, redaction behavior, or custom-query override behavior.
+- [x] Run canonical verification for the changed surface.

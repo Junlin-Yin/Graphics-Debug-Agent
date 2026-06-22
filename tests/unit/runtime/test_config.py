@@ -1,6 +1,7 @@
 import pytest
 
 from debug_agent.runtime.config import ConfigError, load_config_snapshot
+from debug_agent.runtime.settings import SYSTEM_PROMPT
 
 
 def test_absent_config_applies_non_provider_defaults_without_guessing_provider(
@@ -23,7 +24,7 @@ def test_absent_config_applies_non_provider_defaults_without_guessing_provider(
     assert result.defaults["temperature"] == 0.2
     assert result.defaults["max_tokens"] == 8192
     assert result.defaults["timeout_seconds"] == 120
-    assert result.defaults["system_prompt"].startswith("You are debug-agent")
+    assert result.defaults["system_prompt"] == SYSTEM_PROMPT
 
 
 def test_default_config_path_honors_home_environment_on_all_platforms(
@@ -84,10 +85,7 @@ base_url_env = "ANTHROPIC_BASE_URL"
         "temperature": 0.1,
         "max_tokens": 4096,
         "timeout_seconds": 60,
-        "system_prompt": (
-            "You are debug-agent, a local debugging assistant. Answer "
-            "concisely and use only tools exposed by the runtime."
-        ),
+        "system_prompt": SYSTEM_PROMPT,
         "auth": {
             "api_key_env": "ANTHROPIC_API_KEY",
             "api_key_present": True,
@@ -129,6 +127,29 @@ base_url_env = "ANTHROPIC_BASE_URL"
         },
         "thinking": {"enabled": False, "effort": "high"},
     }
+
+
+def test_configured_system_prompt_still_overrides_builtin_default(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    config_dir = home / ".debug-agent"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.toml").write_text(
+        """
+[defaults]
+provider = "fake"
+model = "fake-model"
+system_prompt = "custom harness prompt"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    result = load_config_snapshot()
+
+    assert result.error is None
+    assert result.snapshot is not None
+    assert result.defaults["system_prompt"] == SYSTEM_PROMPT
+    assert result.snapshot["system_prompt"] == "custom harness prompt"
     assert "secret-value" not in str(result.snapshot)
 
 
@@ -156,10 +177,7 @@ fake_response = "hello"
         "temperature": 0.2,
         "max_tokens": 8192,
         "timeout_seconds": 120,
-        "system_prompt": (
-            "You are debug-agent, a local debugging assistant. Answer "
-            "concisely and use only tools exposed by the runtime."
-        ),
+        "system_prompt": SYSTEM_PROMPT,
         "context": {
             "window_tokens": 200000,
             "omit_old_tool_results_at_ratio": 0.60,

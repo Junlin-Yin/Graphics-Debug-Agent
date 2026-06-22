@@ -13,7 +13,6 @@ from debug_agent.runtime.settings import (
     EXECUTION_DEFAULTS,
     MULTIMODAL_LIMIT_DEFAULTS,
     NON_PROVIDER_DEFAULTS,
-    PHASE_0_SYSTEM_PROMPT,
 )
 
 
@@ -153,7 +152,7 @@ def _resolve_runtime_settings(
         "timeout_seconds": config_defaults.get(
             "timeout_seconds", builtins["timeout_seconds"]
         ),
-        "system_prompt": builtins["system_prompt"],
+        "system_prompt": config_defaults.get("system_prompt", builtins["system_prompt"]),
     }
 
 

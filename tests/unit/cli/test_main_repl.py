@@ -12,6 +12,7 @@ from debug_agent.cli.repl import PlainApprovalProvider, run_repl
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
+from debug_agent.runtime.settings import SYSTEM_PROMPT
 
 
 class TtyStringIO(io.StringIO):
@@ -278,10 +279,7 @@ def test_repl_rejects_ordinary_input_while_execution_is_active(
             "temperature": 0.2,
             "max_tokens": 8192,
             "timeout_seconds": 120,
-            "system_prompt": (
-                "You are debug-agent, a local debugging assistant. Answer concisely "
-                "and use only tools exposed by the runtime."
-            ),
+            "system_prompt": SYSTEM_PROMPT,
             "development": {
                 "allow_incomplete_phase3_prompt_execution": True,
             },
@@ -319,10 +317,7 @@ def test_repl_ctrl_c_after_session_creation_marks_failed_and_releases_ownership(
         "temperature": 0.2,
         "max_tokens": 8192,
         "timeout_seconds": 120,
-        "system_prompt": (
-            "You are debug-agent, a local debugging assistant. Answer concisely "
-            "and use only tools exposed by the runtime."
-        ),
+        "system_prompt": SYSTEM_PROMPT,
         "development": {
             "allow_incomplete_phase3_prompt_execution": True,
         },
@@ -458,10 +453,7 @@ def test_tty_repl_ctrl_c_marks_failed_and_releases_ownership(
         "temperature": 0.2,
         "max_tokens": 8192,
         "timeout_seconds": 120,
-        "system_prompt": (
-            "You are debug-agent, a local debugging assistant. Answer concisely "
-            "and use only tools exposed by the runtime."
-        ),
+            "system_prompt": SYSTEM_PROMPT,
         "development": {
             "allow_incomplete_phase3_prompt_execution": True,
         },

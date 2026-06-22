@@ -49,7 +49,7 @@ from debug_agent.runtime.settings import (
     AGENT_LOOP_DEFAULTS,
     EXECUTION_DEFAULTS,
     MULTIMODAL_LIMIT_DEFAULTS,
-    PHASE_0_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
 )
 from debug_agent.runtime.contracts import (
     APPROVAL_MODES,
@@ -929,7 +929,7 @@ class RuntimeOrchestrator:
                 artifact_store=artifacts,
                 adapter=adapter,
                 tool_definitions=visible_tool_definitions(config_snapshot),
-                system_prompt=config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
+                system_prompt=config_snapshot.get("system_prompt", SYSTEM_PROMPT),
                 skill_snapshot_store=SkillSnapshotStore(db.connection),
                 todo_plan_store=TodoPlanStore(db.connection),
                 conversation_store=ConversationStore(
@@ -1891,7 +1891,7 @@ class RuntimeOrchestrator:
             artifact_store=artifacts,
             adapter=adapter,
             tool_definitions=visible_tool_definitions(config_snapshot),
-            system_prompt=config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
+            system_prompt=config_snapshot.get("system_prompt", SYSTEM_PROMPT),
             skill_snapshot_store=SkillSnapshotStore(db.connection),
             todo_plan_store=TodoPlanStore(db.connection),
             conversation_store=ConversationStore(
@@ -3064,7 +3064,7 @@ def _runtime_from_resumed_session(
         artifact_store=artifacts,
         adapter=adapter,
         tool_definitions=visible_tool_definitions(session.config_snapshot),
-        system_prompt=session.config_snapshot.get("system_prompt", PHASE_0_SYSTEM_PROMPT),
+        system_prompt=session.config_snapshot.get("system_prompt", SYSTEM_PROMPT),
         skill_snapshot_store=SkillSnapshotStore(db.connection),
         todo_plan_store=TodoPlanStore(db.connection),
         conversation_store=conversation_store,

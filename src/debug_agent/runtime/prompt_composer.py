@@ -13,6 +13,13 @@ from debug_agent.runtime.model_context import (
 )
 
 
+RESOURCE_INDEX_GUIDANCE = (
+    "Resource paths listed under available_resources are indexes only, not loaded\n"
+    "content. Call load_skill_resource(skill_name, path) before relying on any listed\n"
+    "resource's content."
+)
+
+
 @dataclass(frozen=True)
 class PromptCompositionRequest:
     session_id: str
@@ -247,6 +254,7 @@ class PromptComposer:
                 "",
                 "Listing allowed_tools or path_policy here is non-authorizing.",
                 "Actual authorization is decided only by runtime and ToolBroker.",
+                RESOURCE_INDEX_GUIDANCE,
                 "",
                 *entries,
             ]

@@ -24,11 +24,12 @@ LARGE_OUTPUT_THRESHOLD_BYTES = 16 * 1024
 DEFAULT_TOOL_TIMEOUT_SECONDS = 30.0
 
 # Default visual analysis prompt used when view_image.query is omitted.
-DEFAULT_VIEW_IMAGE_QUERY = (
-    "Describe the visible contents of the image(s), call out visual differences or "
-    "anomalies when multiple images are provided, transcribe visible text when "
-    "useful, and note uncertainty."
-)
+DEFAULT_VIEW_IMAGE_QUERY = """Describe the visible contents of the image(s). When multiple images are
+provided, compare them directly and call out visible differences or anomalies.
+For any anomaly, describe the affected region, color or brightness change,
+missing or extra visual elements, transparency, geometry, edges, text, or other
+observable symptoms when visible. Transcribe visible text when useful. Note
+uncertainty and do not infer causes that are not visible in the image(s)."""
 
 # Fixed maximum number of local images accepted by one view_image call.
 MAX_VIEW_IMAGE_COUNT = 4

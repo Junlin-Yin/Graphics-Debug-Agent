@@ -11,6 +11,7 @@ from debug_agent.persistence.settings import (
     PHASE_3_5_READ_ONLY_SCHEMA_FAILURE_GUIDANCE,
 )
 from debug_agent.runtime.contracts import RunEvent, utc_now_iso
+from debug_agent.runtime.settings import SYSTEM_PROMPT
 
 
 def _config(response: str = "fake answer") -> dict:
@@ -21,10 +22,7 @@ def _config(response: str = "fake answer") -> dict:
         "temperature": 0.2,
         "max_tokens": 8192,
         "timeout_seconds": 120,
-        "system_prompt": (
-            "You are debug-agent, a local debugging assistant. Answer concisely "
-            "and use only tools exposed by the runtime."
-        ),
+        "system_prompt": SYSTEM_PROMPT,
         "development": {
             "allow_incomplete_phase3_prompt_execution": True,
         },

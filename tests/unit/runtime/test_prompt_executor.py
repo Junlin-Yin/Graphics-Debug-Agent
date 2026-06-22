@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from hashlib import sha256
 
 from debug_agent.adapters.langchain_adapter import LangChainAgentLoopAdapter
@@ -21,7 +22,7 @@ from debug_agent.runtime.model_context import TokenEstimator
 from debug_agent.runtime.orchestrator import ReplRuntime
 from debug_agent.runtime.prompt_executor import PromptAgentExecutor, _with_compression_usage
 from debug_agent.runtime.query_control import QueryControlPlane
-from debug_agent.runtime.settings import PHASE_0_SYSTEM_PROMPT
+from debug_agent.runtime.settings import SYSTEM_PROMPT
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.tools.broker import ToolBroker
 from debug_agent.tools.native import tool_definitions
@@ -88,7 +89,7 @@ def _runtime(tmp_path, model):
         conversation_store=ConversationStore(db.connection, artifact_store=artifacts),
         adapter=adapter,
         tool_definitions=tool_definitions(),
-        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
         todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
@@ -1264,6 +1265,7 @@ def test_tool_loop_followup_runs_omission_before_second_model_call(tmp_path) -> 
         run,
         executor,
     ) = _runtime(tmp_path, ToolLoopModel())
+    executor = replace(executor, system_prompt="system")
     session = type(session)(
         **{
             **session.to_dict(),
@@ -1440,7 +1442,7 @@ def test_tool_loop_followup_runs_compression_before_second_model_call(tmp_path) 
             tool_broker=ToolBroker(event_writer=events, artifact_store=artifacts),
         ),
         tool_definitions=tool_definitions(),
-        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        system_prompt="system",
         skill_snapshot_store=SkillSnapshotStore(db.connection),
         todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
@@ -1559,7 +1561,7 @@ def test_tool_loop_followup_compression_failure_preserves_boundary(tmp_path) -> 
             tool_broker=ToolBroker(event_writer=events, artifact_store=artifacts),
         ),
         tool_definitions=tool_definitions(),
-        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        system_prompt="system",
         skill_snapshot_store=SkillSnapshotStore(db.connection),
         todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
@@ -1687,7 +1689,7 @@ def test_tool_loop_followup_omission_then_compression_failure_does_not_write_bac
             tool_broker=ToolBroker(event_writer=events, artifact_store=artifacts),
         ),
         tool_definitions=tool_definitions(),
-        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        system_prompt="system",
         skill_snapshot_store=SkillSnapshotStore(db.connection),
         todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,
@@ -1947,7 +1949,7 @@ def test_prompt_executor_passes_session_timeout_to_adapter_request(tmp_path) -> 
         artifact_store=ArtifactStore(db.connection, db.path.parent),
         adapter=adapter,
         tool_definitions=tool_definitions(),
-        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
         todo_plan_store=TodoPlanStore(db.connection),
     )
@@ -2004,7 +2006,7 @@ def test_prompt_executor_passes_estimated_model_context_frame_identity_to_adapte
         artifact_store=ArtifactStore(db.connection, db.path.parent),
         adapter=adapter,
         tool_definitions=tool_definitions(),
-        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
         todo_plan_store=TodoPlanStore(db.connection),
     )
@@ -2081,7 +2083,7 @@ def test_prompt_executor_injects_todo_plan_from_store_without_persisting_to_conv
         artifact_store=ArtifactStore(db.connection, db.path.parent),
         adapter=adapter,
         tool_definitions=tool_definitions(),
-        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
         todo_plan_store=todo_store,
     )
@@ -2168,7 +2170,7 @@ def test_prompt_executor_uses_stream_path_when_callback_is_supplied(tmp_path) ->
         artifact_store=ArtifactStore(db.connection, db.path.parent),
         adapter=adapter,
         tool_definitions=tool_definitions(),
-        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
         todo_plan_store=TodoPlanStore(db.connection),
     )
@@ -2251,7 +2253,7 @@ def test_prompt_executor_streams_context_estimate_before_adapter_call(tmp_path) 
         artifact_store=ArtifactStore(db.connection, db.path.parent),
         adapter=adapter,
         tool_definitions=tool_definitions(),
-        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
         todo_plan_store=TodoPlanStore(db.connection),
     )
@@ -2324,7 +2326,7 @@ def test_prompt_executor_does_not_persist_agent_stream_events(tmp_path) -> None:
         artifact_store=ArtifactStore(db.connection, db.path.parent),
         adapter=StreamingAdapter(),
         tool_definitions=tool_definitions(),
-        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
         todo_plan_store=TodoPlanStore(db.connection),
     )
@@ -4294,7 +4296,7 @@ def test_repl_runtime_updates_latest_context_estimate_from_stream_event(tmp_path
         artifact_store=artifacts,
         adapter=StreamingAdapter(),
         tool_definitions=tool_definitions(),
-        system_prompt=PHASE_0_SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT,
         skill_snapshot_store=SkillSnapshotStore(db.connection),
         todo_plan_store=TodoPlanStore(db.connection),
         run_store=runs,

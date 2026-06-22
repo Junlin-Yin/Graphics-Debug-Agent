@@ -11,6 +11,13 @@ from debug_agent.runtime.prompt_composer import PromptComposer, PromptCompositio
 from debug_agent.skills.registry import SkillRegistry
 
 
+EXPECTED_RESOURCE_INDEX_GUIDANCE = (
+    "Resource paths listed under available_resources are indexes only, not loaded\n"
+    "content. Call load_skill_resource(skill_name, path) before relying on any listed\n"
+    "resource's content."
+)
+
+
 def _skill_md(name: str, description: str, body: str) -> str:
     return f"---\nname: {name}\ndescription: {description}\n---\n# {name}\n\n{body}\n"
 
@@ -371,6 +378,10 @@ def test_active_skill_context_segment_shape_and_metadata(tmp_path) -> None:
     assert "assets/sprite.txt" in segment.content
     assert "scripts/helper.sh" in segment.content
     assert "available_resources:" in segment.content
+    assert EXPECTED_RESOURCE_INDEX_GUIDANCE in segment.content
+    assert segment.content.index(EXPECTED_RESOURCE_INDEX_GUIDANCE) < segment.content.index(
+        "available_resources:"
+    )
     assert "resource_kind: reference" in segment.content
     assert "resource_kind: asset" in segment.content
     assert "resource_kind: script" in segment.content
