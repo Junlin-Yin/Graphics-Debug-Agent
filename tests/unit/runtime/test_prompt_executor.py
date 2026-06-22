@@ -20,7 +20,11 @@ from debug_agent.runtime.context_manager import ContextManager
 from debug_agent.runtime.model_context import ConversationMessage
 from debug_agent.runtime.model_context import TokenEstimator
 from debug_agent.runtime.orchestrator import ReplRuntime
-from debug_agent.runtime.prompt_executor import PromptAgentExecutor, _with_compression_usage
+from debug_agent.runtime.prompt_executor import (
+    PromptAgentExecutor,
+    _normalize_model_call_failed_payload,
+    _with_compression_usage,
+)
 from debug_agent.runtime.query_control import QueryControlPlane
 from debug_agent.runtime.settings import SYSTEM_PROMPT
 from debug_agent.runtime.stream_events import AgentStreamEvent
@@ -296,6 +300,75 @@ def test_prompt_executor_retries_provider_timeout_before_accepting_result(
     db.close()
 
 
+def test_prompt_executor_retries_transient_provider_exception_before_accepting_result(
+    tmp_path,
+) -> None:
+    class RetryableAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, request, context):
+            self.calls += 1
+            if self.calls == 1:
+                return AgentRunResult(
+                    status="failed",
+                    assistant_output=None,
+                    tool_results=[],
+                    usage={},
+                    error={
+                        "error_class": "model_error",
+                        "reason": "provider_exception",
+                        "message": "Connection error.",
+                        "metadata": {"transient": True},
+                    },
+                    metadata={},
+                )
+            return AgentRunResult(
+                status="completed",
+                assistant_output="retried answer",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+    (
+        workspace,
+        db,
+        _sessions,
+        _runs,
+        _events,
+        _checkpoints,
+        artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    adapter = RetryableAdapter()
+    executor = type(executor)(**{**executor.__dict__, "adapter": adapter})
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="hello",
+        workspace_root=str(workspace),
+    )
+    rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
+        run.run_id
+    )
+
+    assert adapter.calls == 2
+    assert result.status == "completed"
+    assert result.assistant_output == "retried answer"
+    assert [(row.role, row.kind, row.content) for row in rows] == [
+        ("user", "user_input", {"content": "hello"}),
+        ("assistant", "assistant_output", {"content": "retried answer"}),
+    ]
+    assert result.metadata["retry"]["attempts"][0]["strategy"] == "repeat_call"
+    assert result.metadata["retry"]["attempts"][0]["reason"] == "provider_exception"
+    db.close()
+
+
 def test_prompt_executor_repeat_call_exhaustion_records_resulting_error(tmp_path) -> None:
     class ExhaustingAdapter:
         def __init__(self) -> None:
@@ -344,6 +417,30 @@ def test_prompt_executor_repeat_call_exhaustion_records_resulting_error(tmp_path
     assert result.metadata["retry"]["resulting_error_class"] == "model_error"
     assert result.metadata["retry"]["resulting_reason"] == "provider_timeout"
     db.close()
+
+
+def test_model_call_failed_normalization_preserves_valid_provider_exception_reason() -> None:
+    normalized = _normalize_model_call_failed_payload(
+        {
+            "error_class": "model_error",
+            "reason": "provider_exception",
+            "message": "Connection error.",
+            "source": "model",
+            "metadata": {"transient": True},
+            "error": {
+                "error_class": "model_error",
+                "reason": "provider_exception",
+                "message": "Connection error.",
+                "source": "model",
+                "metadata": {"transient": True},
+            },
+        }
+    )
+
+    assert normalized["error"]["error_class"] == "model_error"
+    assert normalized["error"]["reason"] == "provider_exception"
+    assert normalized["error"]["recoverability"] == "retryable"
+    assert normalized["error"]["metadata"]["transient"] is True
 
 
 def test_prompt_executor_continues_text_only_output_token_limit_before_durable_append(

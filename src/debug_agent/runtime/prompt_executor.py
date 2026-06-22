@@ -28,7 +28,7 @@ from debug_agent.runtime.contracts import (
 )
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.runtime.context_manager import CompressionError, ContextManager
-from debug_agent.runtime.errors import NormalizedError
+from debug_agent.runtime.errors import ERROR_REASON_REGISTRY, NormalizedError
 from debug_agent.runtime.model_context import (
     CompressionContextFrame,
     ConversationMessage,
@@ -1660,12 +1660,13 @@ def _normalize_model_call_failed_payload(payload: dict[str, Any]) -> dict[str, A
         return payload
     purpose = str(payload.get("purpose") or "main")
     message = _payload_error_message(payload)
-    metadata = {"purpose": purpose}
+    reason = _payload_error_reason(payload)
+    metadata = {"purpose": purpose, **_payload_error_metadata(payload)}
     return {
         **payload,
         "error": _normalized_error_dict(
             "model_error",
-            "model_call_failed",
+            reason,
             message=message,
             scope="provider",
             metadata=metadata,
@@ -1680,6 +1681,32 @@ def _payload_error_message(payload: dict[str, Any]) -> str:
     if isinstance(payload.get("message"), str):
         return payload["message"]
     return "Model call failed."
+
+
+def _payload_error_reason(payload: dict[str, Any]) -> str:
+    error = payload.get("error")
+    candidates: list[Any] = []
+    if isinstance(error, dict):
+        candidates.append(error.get("reason"))
+    candidates.append(payload.get("reason"))
+    for candidate in candidates:
+        if (
+            isinstance(candidate, str)
+            and candidate in ERROR_REASON_REGISTRY["model_error"]
+        ):
+            return candidate
+    return "model_call_failed"
+
+
+def _payload_error_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    payload_metadata = payload.get("metadata")
+    if isinstance(payload_metadata, dict):
+        metadata.update(payload_metadata)
+    error = payload.get("error")
+    if isinstance(error, dict) and isinstance(error.get("metadata"), dict):
+        metadata.update(error["metadata"])
+    return metadata
 
 
 def _is_normalized_error(value: Any) -> bool:

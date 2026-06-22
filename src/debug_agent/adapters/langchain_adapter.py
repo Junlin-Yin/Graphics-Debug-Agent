@@ -144,7 +144,15 @@ class LangChainAgentLoopAdapter:
             compression_failed = _compression_failed_abort_result(exc)
             if compression_failed is not None:
                 return compression_failed
-            return _error_result("failed", "model_error", str(exc), source="model")
+            reason, metadata = _provider_failure_classification(exc)
+            return _error_result(
+                "failed",
+                "model_error",
+                str(exc),
+                source="model",
+                reason=reason,
+                metadata=metadata,
+            )
 
     def stream(
         self,
@@ -262,7 +270,15 @@ class LangChainAgentLoopAdapter:
             compression_failed = _compression_failed_abort_result(exc)
             if compression_failed is not None:
                 return compression_failed
-            return _error_result("failed", "model_error", str(exc), source="model")
+            reason, metadata = _provider_failure_classification(exc)
+            return _error_result(
+                "failed",
+                "model_error",
+                str(exc),
+                source="model",
+                reason=reason,
+                metadata=metadata,
+            )
 
     def _invoke_tool_calls(
         self,
@@ -763,7 +779,15 @@ def _invoke_model(
     except ProviderBoundaryNotClosed:
         raise
     except Exception as exc:
-        _record_model_failure(recorder, "model_error", str(exc), start)
+        reason, metadata = _provider_failure_classification(exc)
+        _record_model_failure(
+            recorder,
+            "model_error",
+            str(exc),
+            start,
+            reason=reason,
+            metadata=metadata,
+        )
         raise
     if recorder is not None:
         usage = normalize_provider_usage(response)
@@ -868,7 +892,15 @@ def _stream_model_call(
     except Exception as exc:
         if isinstance(exc, NotImplementedError):
             raise
-        _record_model_failure(recorder, "model_error", str(exc), started_at)
+        reason, metadata = _provider_failure_classification(exc)
+        _record_model_failure(
+            recorder,
+            "model_error",
+            str(exc),
+            started_at,
+            reason=reason,
+            metadata=metadata,
+        )
         raise
     return _StreamModelResponse(
         content="".join(text_parts),
@@ -1054,6 +1086,43 @@ def _record_model_failure(
         "model_call_failed",
         {**error, "error": error, "duration": monotonic() - start},
     )
+
+
+def _provider_failure_classification(
+    exc: BaseException,
+) -> tuple[str | None, dict[str, Any] | None]:
+    if _exception_chain_has(exc, {"APITimeoutError"}, {"httpx.TimeoutException"}):
+        return "provider_timeout", None
+    if _exception_chain_has(exc, {"RateLimitError"}, set()):
+        return "provider_rate_limited", None
+    if _exception_chain_has(
+        exc,
+        {"APIConnectionError"},
+        {"httpx.TransportError", "httpx.NetworkError", "httpx.ProtocolError"},
+    ):
+        return "provider_exception", {"transient": True}
+    return None, None
+
+
+def _exception_chain_has(
+    exc: BaseException,
+    class_names: set[str],
+    qualified_names: set[str],
+) -> bool:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        for cls in type(current).mro():
+            qualified = f"{cls.__module__}.{cls.__name__}"
+            provider_sdk_error = (
+                cls.__name__ in class_names
+                and cls.__module__.split(".", 1)[0] in {"anthropic", "openai"}
+            )
+            if provider_sdk_error or qualified in qualified_names:
+                return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _tool_calls(response: object) -> list[dict[str, Any]]:
@@ -1661,6 +1730,7 @@ def _error_result(
             "message": message,
             "source": source,
             "recoverable": True,
+            **({"metadata": metadata} if metadata is not None else {}),
         },
         metadata=metadata or {},
     )

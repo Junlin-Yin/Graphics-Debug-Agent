@@ -1368,6 +1368,36 @@ def test_langchain_adapter_times_out_blocking_model_call() -> None:
     assert events[-1][1]["error_class"] == "timeout"
 
 
+def test_langchain_adapter_classifies_provider_connection_error_as_transient_exception() -> None:
+    events = []
+
+    class APIConnectionError(Exception):
+        __module__ = "anthropic"
+
+    class FailingModel:
+        def invoke(self, messages):
+            raise APIConnectionError("Connection error.")
+
+    result = LangChainAgentLoopAdapter(model=FailingModel()).run(
+        _request(),
+        replace(
+            _context(),
+            model_event_recorder=lambda kind, payload: events.append((kind, payload)),
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.error["error_class"] == "model_error"
+    assert result.error["reason"] == "provider_exception"
+    assert result.error["metadata"]["transient"] is True
+    assert [kind for kind, _payload in events] == [
+        "model_call_started",
+        "model_call_failed",
+    ]
+    assert events[-1][1]["error"]["reason"] == "provider_exception"
+    assert events[-1][1]["error"]["metadata"]["transient"] is True
+
+
 def test_langchain_adapter_cancels_worker_and_ignores_late_model_result() -> None:
     events = []
     registered_handles = []
