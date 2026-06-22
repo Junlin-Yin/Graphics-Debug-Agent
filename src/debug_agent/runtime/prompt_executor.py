@@ -366,9 +366,26 @@ class PromptAgentExecutor:
             tools=[],
         )
         accumulated_tool_loop_messages: list[object] = []
+        accumulated_tool_loop_conversation_messages: list[dict[str, Any]] = []
 
-        def refresh_model_context_frame(tool_loop_messages: list[object]) -> dict[str, Any]:
+        def refresh_model_context_frame(
+            tool_loop_messages: list[object],
+            *,
+            tool_loop_conversation_messages: list[dict[str, Any]] | None = None,
+        ) -> dict[str, Any]:
             accumulated_tool_loop_messages.extend(tool_loop_messages)
+            conversation_messages = _provider_messages_to_conversation(
+                tool_loop_messages,
+                turn_id=query_state_box["state"].turn_id,
+            )
+            if tool_loop_conversation_messages is not None:
+                conversation_messages = _merge_tool_loop_presentation_metadata(
+                    conversation_messages,
+                    tool_loop_conversation_messages,
+                )
+            accumulated_tool_loop_conversation_messages.extend(
+                message.to_dict() for message in conversation_messages
+            )
             return self._record_followup_composition(
                 session=session,
                 run=run,
@@ -380,9 +397,8 @@ class PromptAgentExecutor:
                 retained_messages_box=retained_messages_box,
                 current_messages=[
                     *current_messages,
-                    *_provider_messages_to_conversation(
-                        accumulated_tool_loop_messages,
-                        turn_id=query_state_box["state"].turn_id,
+                    *_conversation_messages(
+                        accumulated_tool_loop_conversation_messages
                     ),
                 ],
                 optimization_box=optimization_box,
@@ -463,11 +479,8 @@ class PromptAgentExecutor:
                 for message in optimization_box["optimization"]["retained_messages"]
             ],
             turn_tool_loop_messages=[
-                message.to_dict()
-                for message in _provider_messages_to_conversation(
-                    accumulated_tool_loop_messages,
-                    turn_id=query_state.turn_id,
-                )
+                dict(message)
+                for message in accumulated_tool_loop_conversation_messages
             ],
         )
         if result.metadata.get("compression_failed_abort") is True:
@@ -2042,6 +2055,48 @@ def _provider_messages_to_conversation(
         )
         next_seq += 1
     return converted
+
+
+def _merge_tool_loop_presentation_metadata(
+    converted: list[ConversationMessage],
+    structured: list[dict[str, Any]],
+) -> list[ConversationMessage]:
+    structured_tool_messages = [
+        message
+        for message in structured
+        if message.get("role") == "tool" and message.get("kind") == "tool_result"
+    ]
+    if not structured_tool_messages:
+        return converted
+    merged: list[ConversationMessage] = []
+    tool_index = 0
+    for message in converted:
+        if message.role != "tool" or message.kind != "tool_result":
+            merged.append(message)
+            continue
+        metadata = dict(message.metadata)
+        if tool_index < len(structured_tool_messages):
+            structured_metadata = structured_tool_messages[tool_index].get("metadata")
+            if isinstance(structured_metadata, dict):
+                redacted_output = structured_metadata.get("redacted_output")
+                if isinstance(redacted_output, str):
+                    metadata["redacted_output"] = redacted_output
+        tool_index += 1
+        merged.append(
+            ConversationMessage(
+                seq=message.seq,
+                role=message.role,
+                kind=message.kind,
+                turn_id=message.turn_id,
+                model_call_id=message.model_call_id,
+                tool_call_id=message.tool_call_id,
+                content=message.content,
+                artifact_refs=list(message.artifact_refs),
+                estimated_tokens=message.estimated_tokens,
+                metadata=metadata,
+            )
+        )
+    return merged
 
 
 def _turn_scoped_tool_call_ids(

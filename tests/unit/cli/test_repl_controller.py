@@ -2060,6 +2060,69 @@ def test_controller_renders_restored_shell_command_target_for_resumed_tui() -> N
     assert tool_block.payload["preview"].text == "> [redacted shell output]"
 
 
+def test_controller_uses_restored_tool_metadata_redacted_output_for_resumed_tui() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    view = FakeView()
+    runtime = FakeRuntime()
+    runtime.conversation = [
+        {
+            "seq": 1,
+            "role": "assistant",
+            "kind": "assistant_tool_call",
+            "model_call_id": "turn-1:model_call_1",
+            "tool_call_id": "turn-1:model_call_1_tool_1",
+            "content": {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "turn-1:model_call_1_tool_1",
+                        "name": "todo",
+                        "args": {"items": []},
+                    }
+                ],
+            },
+        },
+        {
+            "seq": 2,
+            "role": "tool",
+            "kind": "tool_result",
+            "model_call_id": "turn-1:model_call_1",
+            "tool_call_id": "turn-1:model_call_1_tool_1",
+            "content": {
+                "message_type": "tool_result",
+                "tool_name": "todo",
+                "tool_call_id": "turn-1:model_call_1_tool_1",
+                "status": "ok",
+                "content": {
+                    "plan_version": 1,
+                    "items": [
+                        {
+                            "index": 1,
+                            "content": "raw plan item",
+                            "status": "pending",
+                        }
+                    ],
+                },
+                "error": None,
+                "artifact_ids": [],
+                "metadata": {"tool_name": "todo"},
+            },
+            "metadata": {
+                "tool_name": "todo",
+                "redacted_output": "Todo Plan v1: compact preview",
+            },
+        },
+    ]
+    controller = ReplController(runtime=runtime, view=view)
+
+    controller.render_restored_history()
+
+    tool_block = view.events[0]
+    assert tool_block.kind == "tool_block"
+    assert tool_block.payload["preview"].text == "> Todo Plan v1: compact preview"
+
+
 def test_exit_slash_command_completes_runtime_and_shows_summary() -> None:
     from debug_agent.cli.repl_controller import ReplController
 

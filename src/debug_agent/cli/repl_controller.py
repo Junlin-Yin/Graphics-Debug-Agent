@@ -410,9 +410,16 @@ class ReplController:
                 )
                 if model_call_id:
                     metadata["model_call_id"] = model_call_id
+                redacted_output = content_dict.get("redacted_output")
+                if redacted_output is None:
+                    message_metadata = message.get("metadata")
+                    if isinstance(message_metadata, dict):
+                        redacted_output = message_metadata.get("redacted_output")
                 preview = formatter.format(
                     output=content_dict.get("content"),
-                    redacted_output=content_dict.get("redacted_output"),
+                    redacted_output=redacted_output
+                    if isinstance(redacted_output, str)
+                    else None,
                     artifact_ids=list(content_dict.get("artifact_ids") or []),
                 )
                 self.view.append_view_event(

@@ -15,7 +15,7 @@ from debug_agent.persistence.sessions import SessionStore
 from debug_agent.persistence.skills import SkillSnapshotStore
 from debug_agent.persistence.sqlite import RuntimeDatabase
 from debug_agent.persistence.todo_plans import TodoPlanStore
-from debug_agent.runtime.contracts import AgentRunResult
+from debug_agent.runtime.contracts import AgentRunResult, ToolResult
 from debug_agent.runtime.context_manager import ContextManager
 from debug_agent.runtime.model_context import ConversationMessage
 from debug_agent.runtime.model_context import TokenEstimator
@@ -1050,6 +1050,100 @@ def test_prompt_executor_records_model_completion_before_react_tool_events(
             "provider_tool_call_id": "read_file_0",
         }
     ]
+    db.close()
+
+
+def test_prompt_executor_preserves_tool_redacted_output_for_durable_replay(
+    tmp_path,
+) -> None:
+    full_output = {
+        "plan_version": 1,
+        "items": [{"index": 1, "content": "raw plan item", "status": "pending"}],
+    }
+
+    class RedactedToolModel:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.second_call_messages = None
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "todo_0",
+                                "name": "todo",
+                                "args": {"items": []},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            self.second_call_messages = messages
+            return type(
+                "Response",
+                (),
+                {"content": "done", "tool_calls": [], "usage": {}},
+            )()
+
+    class RedactedToolBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="ok",
+                output=full_output,
+                error=None,
+                artifacts=[],
+                metadata={"tool_name": tool_name},
+                redacted_output="Todo Plan v1: compact preview",
+            )
+
+    (
+        workspace,
+        db,
+        _sessions,
+        _runs,
+        _events,
+        _checkpoints,
+        artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    model = RedactedToolModel()
+    adapter = LangChainAgentLoopAdapter(
+        model=model,
+        tool_broker=RedactedToolBroker(),
+    )
+    executor = type(executor)(**{**executor.__dict__, "adapter": adapter})
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="update plan",
+        workspace_root=str(workspace),
+    )
+    rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
+        run.run_id
+    )
+    tool_rows = [row for row in rows if row.kind == "tool_result"]
+
+    assert result.status == "completed"
+    assert model.second_call_messages is not None
+    assert json.loads(model.second_call_messages[-1].content) == full_output
+    assert "compact preview" not in model.second_call_messages[-1].content
+    assert len(tool_rows) == 1
+    assert tool_rows[0].content["content"] == full_output
+    assert tool_rows[0].metadata["redacted_output"] == (
+        "Todo Plan v1: compact preview"
+    )
     db.close()
 
 

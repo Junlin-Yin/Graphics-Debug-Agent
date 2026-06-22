@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+import inspect
 import json
 from time import monotonic
 from typing import Any
@@ -109,14 +110,21 @@ class LangChainAgentLoopAdapter:
                 invoked_results = self._invoke_tool_calls(request, context, tool_calls)
                 tool_results.extend(result.to_dict() for _, result in invoked_results)
                 tool_loop_messages = _tool_loop_messages(response, invoked_results)
+                tool_loop_conversation_messages = _tool_loop_conversation_messages(
+                    response, invoked_results
+                )
                 abort_result = _approval_denied_abort_result(
                     tool_results,
                     tool_calls,
-                    _tool_loop_conversation_messages(response, invoked_results),
+                    tool_loop_conversation_messages,
                 )
                 if abort_result is not None:
                     return abort_result
-                refreshed = _refresh_frame_messages(context, tool_loop_messages)
+                refreshed = _refresh_frame_messages(
+                    context,
+                    tool_loop_messages,
+                    tool_loop_conversation_messages=tool_loop_conversation_messages,
+                )
                 if refreshed is None:
                     messages.extend(tool_loop_messages)
                 else:
@@ -241,15 +249,22 @@ class LangChainAgentLoopAdapter:
                     on_event=on_event,
                 )
                 tool_results.extend(result.to_dict() for _, result in invoked_results)
+                tool_loop_conversation_messages = _tool_loop_conversation_messages(
+                    response, invoked_results
+                )
                 abort_result = _approval_denied_abort_result(
                     tool_results,
                     tool_calls,
-                    _tool_loop_conversation_messages(response, invoked_results),
+                    tool_loop_conversation_messages,
                 )
                 if abort_result is not None:
                     return abort_result
                 tool_loop_messages = _tool_loop_messages(response, invoked_results)
-                refreshed = _refresh_frame_messages(context, tool_loop_messages)
+                refreshed = _refresh_frame_messages(
+                    context,
+                    tool_loop_messages,
+                    tool_loop_conversation_messages=tool_loop_conversation_messages,
+                )
                 if refreshed is None:
                     messages.extend(tool_loop_messages)
                 else:
@@ -742,13 +757,34 @@ def _assistant_tool_call_content(content: object) -> tuple[str, list[dict[str, A
 def _refresh_frame_messages(
     context: RunContext,
     tool_loop_messages: list[object],
+    *,
+    tool_loop_conversation_messages: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]] | None:
     refresh = context.metadata.get("refresh_model_context_frame")
     if not callable(refresh):
         return None
-    refreshed = refresh(tool_loop_messages)
+    if _accepts_tool_loop_conversation_messages(refresh):
+        refreshed = refresh(
+            tool_loop_messages,
+            tool_loop_conversation_messages=tool_loop_conversation_messages,
+        )
+    else:
+        refreshed = refresh(tool_loop_messages)
     frame = refreshed.get("frame") if isinstance(refreshed, dict) else refreshed
     return _provider_messages_from_segments(frame.ordered_message_segments())
+
+
+def _accepts_tool_loop_conversation_messages(refresh: Callable[..., object]) -> bool:
+    try:
+        signature = inspect.signature(refresh)
+    except (TypeError, ValueError):
+        return False
+    for parameter in signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == "tool_loop_conversation_messages":
+            return True
+    return False
 
 
 def _invoke_model(
@@ -1385,6 +1421,10 @@ def _tool_loop_conversation_messages(
         tool_call_id = str(call.get("id") or f"{call['name']}_{index}")
         result_dict = result.to_dict()
         observation = _tool_observation(result_dict, tool_call_id=tool_call_id)
+        metadata = dict(result_dict.get("metadata", {}))
+        redacted_output = result_dict.get("redacted_output")
+        if isinstance(redacted_output, str):
+            metadata["redacted_output"] = redacted_output
         messages.append(
             {
                 "role": "tool",
@@ -1393,7 +1433,7 @@ def _tool_loop_conversation_messages(
                 "tool_call_id": tool_call_id,
                 "content": observation,
                 "artifact_refs": list(result_dict.get("artifacts", [])),
-                "metadata": dict(result_dict.get("metadata", {})),
+                "metadata": metadata,
             }
         )
     return messages
