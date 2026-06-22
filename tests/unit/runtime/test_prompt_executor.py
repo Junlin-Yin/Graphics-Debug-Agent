@@ -369,6 +369,73 @@ def test_prompt_executor_retries_transient_provider_exception_before_accepting_r
     db.close()
 
 
+def test_prompt_executor_does_not_retry_provider_exception_after_tool_result(
+    tmp_path,
+) -> None:
+    class FailedAfterToolAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, request, context):
+            self.calls += 1
+            return AgentRunResult(
+                status="failed",
+                assistant_output=None,
+                tool_results=[
+                    {
+                        "status": "ok",
+                        "output": "file text",
+                        "error": None,
+                        "artifacts": [],
+                        "metadata": {"tool_name": "read_file"},
+                        "redacted_output": None,
+                    }
+                ],
+                usage={},
+                error={
+                    "error_class": "model_error",
+                    "reason": "provider_exception",
+                    "message": "Connection error.",
+                    "metadata": {"transient": True},
+                },
+                metadata={},
+            )
+
+    (
+        workspace,
+        db,
+        _sessions,
+        _runs,
+        _events,
+        _checkpoints,
+        artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    adapter = FailedAfterToolAdapter()
+    executor = type(executor)(**{**executor.__dict__, "adapter": adapter})
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="hello",
+        workspace_root=str(workspace),
+    )
+    rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
+        run.run_id
+    )
+
+    assert adapter.calls == 1
+    assert result.status == "failed"
+    assert "retry" not in result.metadata
+    assert [(row.role, row.kind) for row in rows] == [
+        ("user", "user_input"),
+        ("runtime", "failure_fact"),
+    ]
+    db.close()
+
+
 def test_prompt_executor_repeat_call_exhaustion_records_resulting_error(tmp_path) -> None:
     class ExhaustingAdapter:
         def __init__(self) -> None:

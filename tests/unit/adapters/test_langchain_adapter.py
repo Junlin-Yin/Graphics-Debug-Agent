@@ -1946,6 +1946,61 @@ def test_langchain_adapter_delegates_tool_calls_to_toolbroker() -> None:
     ]
 
 
+def test_langchain_adapter_preserves_tool_results_on_provider_failure_after_tool_call() -> None:
+    class APIConnectionError(Exception):
+        __module__ = "anthropic"
+
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="ok",
+                output="file text",
+                error=None,
+                artifacts=[],
+                metadata={"tool_name": tool_name},
+                redacted_output=None,
+            )
+
+    class FailingAfterToolModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {"name": "read_file", "args": {"path": "a.txt"}}
+                        ],
+                        "usage": {},
+                    },
+                )()
+            raise APIConnectionError("Connection error.")
+
+    model = FailingAfterToolModel()
+    result = LangChainAgentLoopAdapter(
+        model=model,
+        tool_broker=RecordingBroker(),
+    ).run(_request(), _context())
+
+    assert result.status == "failed"
+    assert result.error["reason"] == "provider_exception"
+    assert result.tool_results == [
+        {
+            "status": "ok",
+            "output": "file text",
+            "error": None,
+            "artifacts": [],
+            "metadata": {"tool_name": "read_file"},
+            "redacted_output": None,
+        }
+    ]
+
+
 def test_langchain_adapter_does_not_mutate_runtime_state(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

@@ -264,6 +264,29 @@ def test_repl_model_failure_returns_runtime_error(tmp_path, monkeypatch, capsys)
         assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "failed"
 
 
+def test_repl_terminal_model_failure_writes_trace(tmp_path, monkeypatch, capsys) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home.mkdir()
+    workspace.mkdir()
+    _write_fake_config(home, error="provider failed")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr("sys.stdin", io.StringIO("hello\n"))
+
+    exit_code = main([])
+
+    assert exit_code == 1
+    capsys.readouterr()
+    with sqlite3.connect(workspace / ".sessions" / "runtime.db") as conn:
+        session_id = conn.execute("SELECT session_id FROM sessions").fetchone()[0]
+    trace_path = workspace / ".sessions" / session_id / "logs" / "trace.md"
+    assert trace_path.is_file()
+    trace = trace_path.read_text(encoding="utf-8")
+    assert "- **Status**: `failed`" in trace
+    assert "`model_error/model_error`: provider failed" in trace
+
+
 def test_repl_rejects_ordinary_input_while_execution_is_active(
     tmp_path, monkeypatch
 ) -> None:

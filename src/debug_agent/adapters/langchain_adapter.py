@@ -126,9 +126,16 @@ class LangChainAgentLoopAdapter:
                 "internal_error",
                 "Tool call loop exceeded configured iteration limit.",
                 metadata={"failure_scope": "turn"},
+                tool_results=tool_results,
             )
         except TimeoutError as exc:
-            return _error_result("timeout", "timeout", str(exc), source="model")
+            return _error_result(
+                "timeout",
+                "timeout",
+                str(exc),
+                source="model",
+                tool_results=tool_results,
+            )
         except ProviderCallCancelled as exc:
             return _error_result(
                 "cancelled",
@@ -137,6 +144,7 @@ class LangChainAgentLoopAdapter:
                 source="model",
                 reason="model_call_cancelled",
                 metadata={"provider_cancellation": provider_cancellation_uncertainty_metadata()},
+                tool_results=tool_results,
             )
         except ProviderBoundaryNotClosed:
             raise
@@ -152,6 +160,7 @@ class LangChainAgentLoopAdapter:
                 source="model",
                 reason=reason,
                 metadata=metadata,
+                tool_results=tool_results,
             )
 
     def stream(
@@ -250,11 +259,18 @@ class LangChainAgentLoopAdapter:
                 "internal_error",
                 "Tool call loop exceeded Phase 0 iteration limit.",
                 metadata={"failure_scope": "turn"},
+                tool_results=tool_results,
             )
         except NotImplementedError:
             return _streaming_fallback(self.run(request, context))
         except TimeoutError as exc:
-            return _error_result("timeout", "timeout", str(exc), source="model")
+            return _error_result(
+                "timeout",
+                "timeout",
+                str(exc),
+                source="model",
+                tool_results=tool_results,
+            )
         except ProviderCallCancelled as exc:
             return _error_result(
                 "cancelled",
@@ -263,6 +279,7 @@ class LangChainAgentLoopAdapter:
                 source="model",
                 reason="model_call_cancelled",
                 metadata={"provider_cancellation": provider_cancellation_uncertainty_metadata()},
+                tool_results=tool_results,
             )
         except ProviderBoundaryNotClosed:
             raise
@@ -278,6 +295,7 @@ class LangChainAgentLoopAdapter:
                 source="model",
                 reason=reason,
                 metadata=metadata,
+                tool_results=tool_results,
             )
 
     def _invoke_tool_calls(
@@ -1719,11 +1737,12 @@ def _error_result(
     source: str = "adapter",
     reason: str | None = None,
     metadata: dict[str, Any] | None = None,
+    tool_results: list[dict[str, Any]] | None = None,
 ) -> AgentRunResult:
     return AgentRunResult(
         status=status,
         assistant_output=None,
-        tool_results=[],
+        tool_results=list(tool_results or []),
         usage={},
         error={
             "error_class": error_class,
