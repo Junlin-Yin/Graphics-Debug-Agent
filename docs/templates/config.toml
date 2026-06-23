@@ -1,0 +1,135 @@
+# Full debug-agent runtime configuration template.
+#
+# Location:
+#   ~/.debug-agent/config.toml
+#
+# This file controls operational runtime settings. Agent path and shell policy
+# belong in ~/.debug-agent/agent.toml, not here.
+#
+# Project-local config.toml files are not read. Values are resolved at session
+# startup and frozen into the session config snapshot. Resume uses the frozen
+# snapshot, not the current mutable file.
+
+[defaults]
+# Main model provider.
+# Supported real provider: "anthropic".
+# Test-only provider accepted by the runtime: "fake".
+provider = "anthropic"
+
+# Main model name passed to the provider adapter.
+model = "kimi-k2.5"
+
+# Sampling temperature for main model calls.
+temperature = 0.2
+
+# Maximum output tokens for main model calls.
+max_tokens = 8192
+
+# Main model request timeout in seconds.
+timeout_seconds = 120
+
+# Optional system prompt override.
+# Omit this field to use the built-in RenderDoc-Debug-Agent runtime harness
+# prompt. Keep this domain-neutral unless you intentionally want a custom
+# harness prompt for every session.
+# system_prompt = "You are debug-agent, a local debugging assistant."
+
+# Fake-provider fields are for tests and local harness checks only. They are
+# read only when provider = "fake".
+# fake_response = "fake response"
+# fake_error = "model failure"
+# fake_timeout = false
+# fake_cancelled = false
+# fake_stream_chunks = ["first chunk", "second chunk"]
+# fake_tool_calls = []
+
+[auth.anthropic]
+# Environment variable that stores the Anthropic-compatible API key.
+# The secret value is read from the environment and is never persisted.
+api_key_env = "ANTHROPIC_API_KEY"
+
+[providers.anthropic]
+# Environment variable that stores the Anthropic-compatible base URL.
+# The URL value is read from the environment and is not persisted as a secret.
+base_url_env = "ANTHROPIC_BASE_URL"
+
+[context]
+# Maximum model context budget used by runtime-owned omission and compression.
+window_tokens = 200000
+
+# Ratio at which old tool results may be omitted before compression.
+# Must be greater than 0 and at most 1.
+omit_old_tool_results_at_ratio = 0.60
+
+# Ratio at which runtime-owned context compression may run.
+# Must be greater than 0 and at most 1.
+compress_history_at_ratio = 0.80
+
+# Number of recent model calls to preserve when compressing older history.
+retain_recent_model_calls = 4
+
+# Output-token reserve kept outside the compression input budget.
+# Must be non-negative and less than context.window_tokens.
+compression_reserved_output_tokens = 10000
+
+[execution]
+# Default ToolBroker timeout for brokered tools without a tool-specific timeout
+# source. This is not the shell timeout and not the model timeout.
+default_tool_timeout_seconds = 30
+
+# Default timeout for shell_exec when the model omits timeout_seconds.
+default_shell_timeout_seconds = 300
+
+# Maximum timeout allowed for shell_exec timeout_seconds.
+max_shell_timeout_seconds = 3600
+
+# Local runtime cancellation boundary timeout in seconds.
+cancellation_timeout_seconds = 10
+
+[agent_loop]
+# Maximum model/tool-call loop iterations for one agent turn.
+max_tool_call_iterations = 1000
+
+[development]
+# Development escape hatch for incomplete legacy prompt-execution paths.
+# Keep false for ordinary use.
+allow_incomplete_phase3_prompt_execution = false
+
+[multimodal.defaults]
+# Provider used by the brokered view_image tool.
+# Supported value for real multimodal execution: "openai".
+provider = "openai"
+
+# Vision model used by view_image.
+# Supported value for real multimodal execution: "kimi-k2.5".
+model = "kimi-k2.5"
+
+# Provider request timeout for view_image in seconds.
+timeout_seconds = 60
+
+# Maximum output tokens for the vision provider response.
+max_tokens = 4096
+
+# Maximum assistant-supplied image-analysis query length after trimming.
+max_query_chars = 8192
+
+# Maximum accepted analysis text length from the vision provider.
+max_analysis_chars = 8192
+
+[multimodal.auth]
+# Environment variable that stores the OpenAI-compatible vision API key.
+api_key_env = "MOONSHOT_API_KEY"
+
+[multimodal.providers.openai]
+# Environment variable that stores the OpenAI-compatible vision base URL.
+base_url_env = "MOONSHOT_BASE_URL"
+
+[thinking]
+# Enables narrow main-agent thinking request options.
+# Thinking applies only to main agent model calls. It does not apply to
+# view_image provider calls or context compression calls.
+enabled = false
+
+# Effort hint passed only when thinking.enabled = true.
+# Allowed values: "low", "medium", "high".
+effort = "high"
