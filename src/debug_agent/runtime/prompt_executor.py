@@ -47,6 +47,7 @@ from debug_agent.runtime.settings import (
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.runtime.usage_accounting import (
     ModelCallTokenObservation,
+    estimate_model_call_request_usage,
     estimate_model_call_usage,
     summarize_model_call_window,
     token_usage_from_mapping,
@@ -1245,8 +1246,15 @@ class PromptAgentExecutor:
         controller = RetryController()
         retry_attempts: list[dict[str, Any]] = []
         attempt_number = 0
+        provider_messages = _provider_messages_from_compression_frame(frame)
         while True:
             attempt_number += 1
+            model_call_observation_id = (
+                f"compression_model_call_{attempt_number}_metrics"
+            )
+            failed_estimated_usage = estimate_model_call_request_usage(
+                provider_messages=provider_messages
+            )
             self._append_model_event(
                 session=session,
                 run=run,
@@ -1255,6 +1263,8 @@ class PromptAgentExecutor:
                     "provider": session.config_snapshot.get("provider"),
                     "model": session.config_snapshot.get("model"),
                     "purpose": "compression",
+                    "model_call_observation_id": model_call_observation_id,
+                    "estimated_usage": failed_estimated_usage,
                     "tool_schema_bindings": [],
                     "retry_attempt_number": attempt_number if attempt_number > 1 else None,
                 },
@@ -1276,6 +1286,8 @@ class PromptAgentExecutor:
                         "recoverable": transient,
                         "duration": monotonic() - started_at,
                         "purpose": "compression",
+                        "model_call_observation_id": model_call_observation_id,
+                        "estimated_usage": failed_estimated_usage,
                         "metadata": {"transient": transient},
                     },
                 )
@@ -1323,6 +1335,7 @@ class PromptAgentExecutor:
                     "artifact_ids": [],
                     "redacted_output": None,
                     "purpose": "compression",
+                    "model_call_observation_id": model_call_observation_id,
                     "retry_attempt_number": attempt_number if attempt_number > 1 else None,
                 },
             )

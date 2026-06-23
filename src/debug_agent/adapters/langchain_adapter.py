@@ -36,6 +36,7 @@ from debug_agent.runtime.settings import (
 from debug_agent.runtime.stream_events import AgentStreamEvent
 from debug_agent.runtime.usage_accounting import (
     ModelCallTokenObservation,
+    estimate_model_call_request_usage,
     estimate_model_call_usage,
     normalize_provider_usage,
     summarize_model_call_window,
@@ -232,6 +233,7 @@ class LangChainAgentLoopAdapter:
                     context=context,
                     response=response,
                     duration_seconds=response.duration_seconds,
+                    model_call_id=model_call_id,
                 )
                 if is_final:
                     return AgentRunResult(
@@ -805,12 +807,18 @@ def _invoke_model(
     model_call_id: str,
 ) -> object:
     recorder = context.model_event_recorder
+    model_call_observation_id = _model_call_observation_id(model_call_id)
+    failed_estimated_usage = estimate_model_call_request_usage(
+        provider_messages=list(messages)
+    )
     if recorder is not None:
         recorder(
             "model_call_started",
             {
                 "provider": request.model_config.get("provider"),
                 "model": request.model_config.get("model"),
+                "model_call_observation_id": model_call_observation_id,
+                "estimated_usage": failed_estimated_usage,
             },
         )
     start = monotonic()
@@ -823,6 +831,8 @@ def _invoke_model(
             str(exc),
             start,
             reason="model_call_timeout",
+            model_call_observation_id=model_call_observation_id,
+            estimated_usage=failed_estimated_usage,
         )
         raise
     except ProviderCallCancelled as exc:
@@ -833,6 +843,8 @@ def _invoke_model(
             start,
             reason="model_call_cancelled",
             metadata=provider_cancellation_uncertainty_metadata(),
+            model_call_observation_id=model_call_observation_id,
+            estimated_usage=failed_estimated_usage,
         )
         raise
     except KeyboardInterrupt as exc:
@@ -843,6 +855,8 @@ def _invoke_model(
             start,
             reason="model_call_cancelled",
             metadata=provider_cancellation_uncertainty_metadata(),
+            model_call_observation_id=model_call_observation_id,
+            estimated_usage=failed_estimated_usage,
         )
         raise
     except ProviderBoundaryNotClosed:
@@ -856,6 +870,8 @@ def _invoke_model(
             start,
             reason=reason,
             metadata=metadata,
+            model_call_observation_id=model_call_observation_id,
+            estimated_usage=failed_estimated_usage,
         )
         raise
     if recorder is not None:
@@ -867,6 +883,7 @@ def _invoke_model(
                 "metadata": {},
                 "provider_finish": _provider_finish_metadata(response),
                 "duration": monotonic() - start,
+                "model_call_observation_id": model_call_observation_id,
                 "content": _response_content(response),
                 "tool_calls": _normalized_tool_calls(
                     _tool_calls(response),
@@ -890,12 +907,18 @@ def _stream_model_call(
     on_event: Callable[[AgentStreamEvent], None],
 ) -> _StreamModelResponse:
     recorder = context.model_event_recorder
+    model_call_observation_id = _model_call_observation_id(model_call_id)
+    failed_estimated_usage = estimate_model_call_request_usage(
+        provider_messages=provider_messages
+    )
     if recorder is not None:
         recorder(
             "model_call_started",
             {
                 "provider": request.model_config.get("provider"),
                 "model": request.model_config.get("model"),
+                "model_call_observation_id": model_call_observation_id,
+                "estimated_usage": failed_estimated_usage,
             },
         )
     on_event(
@@ -940,6 +963,8 @@ def _stream_model_call(
             str(exc),
             started_at,
             reason="model_call_timeout",
+            model_call_observation_id=model_call_observation_id,
+            estimated_usage=failed_estimated_usage,
         )
         raise
     except ProviderCallCancelled as exc:
@@ -950,6 +975,8 @@ def _stream_model_call(
             started_at,
             reason="model_call_cancelled",
             metadata=provider_cancellation_uncertainty_metadata(),
+            model_call_observation_id=model_call_observation_id,
+            estimated_usage=failed_estimated_usage,
         )
         raise
     except KeyboardInterrupt as exc:
@@ -960,6 +987,8 @@ def _stream_model_call(
             started_at,
             reason="model_call_cancelled",
             metadata=provider_cancellation_uncertainty_metadata(),
+            model_call_observation_id=model_call_observation_id,
+            estimated_usage=failed_estimated_usage,
         )
         raise
     except ProviderBoundaryNotClosed:
@@ -975,6 +1004,8 @@ def _stream_model_call(
             started_at,
             reason=reason,
             metadata=metadata,
+            model_call_observation_id=model_call_observation_id,
+            estimated_usage=failed_estimated_usage,
         )
         raise
     return _StreamModelResponse(
@@ -1028,6 +1059,7 @@ def _record_stream_model_completion(
     context: RunContext,
     response: _StreamModelResponse,
     duration_seconds: float,
+    model_call_id: str,
 ) -> None:
     recorder = context.model_event_recorder
     if recorder is None:
@@ -1039,6 +1071,7 @@ def _record_stream_model_completion(
             "metadata": {},
             "provider_finish": response.provider_finish,
             "duration": duration_seconds,
+            "model_call_observation_id": _model_call_observation_id(model_call_id),
             "content": response.text,
             "tool_calls": _normalized_tool_calls(_tool_calls(response)),
             "artifact_ids": [],
@@ -1146,6 +1179,8 @@ def _record_model_failure(
     *,
     reason: str | None = None,
     metadata: dict[str, Any] | None = None,
+    model_call_observation_id: str | None = None,
+    estimated_usage: dict[str, Any] | None = None,
 ) -> None:
     if recorder is None:
         return
@@ -1159,8 +1194,26 @@ def _record_model_failure(
     }
     recorder(
         "model_call_failed",
-        {**error, "error": error, "duration": monotonic() - start},
+        {
+            **error,
+            "error": error,
+            "duration": monotonic() - start,
+            **(
+                {"model_call_observation_id": model_call_observation_id}
+                if model_call_observation_id is not None
+                else {}
+            ),
+            **(
+                {"estimated_usage": estimated_usage}
+                if estimated_usage is not None
+                else {}
+            ),
+        },
     )
+
+
+def _model_call_observation_id(model_call_id: str) -> str:
+    return f"{model_call_id}_metrics"
 
 
 def _provider_failure_classification(

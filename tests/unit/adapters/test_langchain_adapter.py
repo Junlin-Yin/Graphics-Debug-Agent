@@ -1390,6 +1390,97 @@ def test_langchain_adapter_times_out_blocking_model_call() -> None:
     assert events[-1][1]["error"]["reason"] == "model_call_timeout"
 
 
+def test_langchain_adapter_failed_model_call_events_include_metrics_observation() -> None:
+    events = []
+
+    class FailingModel:
+        def invoke(self, messages):
+            raise TimeoutError("provider timed out")
+
+    result = LangChainAgentLoopAdapter(model=FailingModel()).run(
+        _request(),
+        replace(
+            _context(),
+            model_event_recorder=lambda kind, payload: events.append((kind, payload)),
+        ),
+    )
+
+    assert result.status == "timeout"
+    started = [payload for kind, payload in events if kind == "model_call_started"][0]
+    failed = [payload for kind, payload in events if kind == "model_call_failed"][0]
+    assert started["model_call_observation_id"] == failed["model_call_observation_id"]
+    assert started["model_call_observation_id"] != "model_call_1"
+    assert started["estimated_usage"]["input_tokens"] > 0
+    assert started["estimated_usage"]["output_tokens"] == 0
+    assert started["estimated_usage"]["total_tokens"] == started["estimated_usage"][
+        "input_tokens"
+    ]
+    assert failed["estimated_usage"] == started["estimated_usage"]
+
+
+def test_langchain_adapter_metrics_observation_does_not_change_tool_loop_ids() -> None:
+    events = []
+
+    class RecordingBroker:
+        def invoke(self, session_id, run_id, tool_name, arguments, context):
+            return ToolResult(
+                status="ok",
+                output="file text",
+                error=None,
+                artifacts=[],
+                metadata={},
+                redacted_output=None,
+            )
+
+    class ToolThenFailingModel:
+        def __init__(self) -> None:
+            self.messages_by_call = []
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            self.messages_by_call.append(messages)
+            if len(self.messages_by_call) == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "provider_read_file_1",
+                                "name": "read_file",
+                                "args": {"path": "a.txt"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            raise TimeoutError("provider timed out")
+
+    model = ToolThenFailingModel()
+    result = LangChainAgentLoopAdapter(
+        model=model,
+        tool_broker=RecordingBroker(),
+    ).run(
+        _request(),
+        replace(
+            _context(),
+            model_event_recorder=lambda kind, payload: events.append((kind, payload)),
+        ),
+    )
+
+    assert result.status == "timeout"
+    assistant_message = model.messages_by_call[1][-2]
+    assert assistant_message.tool_calls[0]["id"] == "model_call_1_tool_1"
+    started = [payload for kind, payload in events if kind == "model_call_started"]
+    failed = [payload for kind, payload in events if kind == "model_call_failed"][0]
+    assert started[0]["model_call_observation_id"] == "model_call_1_metrics"
+    assert started[1]["model_call_observation_id"] == failed["model_call_observation_id"]
+    assert failed["model_call_observation_id"] == "model_call_2_metrics"
+
+
 def test_langchain_adapter_classifies_provider_connection_error_as_transient_exception() -> None:
     events = []
 
