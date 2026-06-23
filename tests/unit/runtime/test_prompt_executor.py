@@ -3160,6 +3160,24 @@ def test_prompt_executor_exhausts_transient_compression_model_failure_retry(
         result.metadata["context_optimization"]["retry"]["resulting_reason"]
         == "compression_model_failed"
     )
+    failed_events = [
+        event.payload
+        for event in events.list_for_run(run.run_id)
+        if event.kind == "model_call_failed"
+    ]
+    assert len(failed_events) == 2
+    assert {
+        event["model_call_observation_id"] for event in failed_events
+    } == {
+        "compression_model_call_1_metrics",
+        "compression_model_call_2_metrics",
+    }
+    for event in failed_events:
+        assert event["estimated_usage"]["input_tokens"] > 0
+        assert event["estimated_usage"]["output_tokens"] == 0
+        assert event["estimated_usage"]["total_tokens"] == event["estimated_usage"][
+            "input_tokens"
+        ]
     durable_rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
         run.run_id
     )

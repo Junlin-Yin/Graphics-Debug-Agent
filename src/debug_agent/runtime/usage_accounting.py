@@ -53,6 +53,15 @@ def estimate_model_call_usage(
     ).to_dict()
 
 
+def estimate_model_call_request_usage(*, provider_messages: list[object]) -> dict[str, int]:
+    input_tokens = _estimate_tokens(_stable_json(provider_messages))
+    return TokenUsage(
+        input_tokens=input_tokens,
+        output_tokens=0,
+        total_tokens=input_tokens,
+    ).to_dict()
+
+
 def summarize_model_call_window(
     observations: list[ModelCallTokenObservation],
 ) -> dict[str, Any]:

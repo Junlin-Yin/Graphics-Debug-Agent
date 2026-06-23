@@ -1046,6 +1046,30 @@ def test_one_shot_model_timeout_marks_failed_and_releases_ownership(tmp_path) ->
     assert second.exit_code == 0
 
 
+def test_one_shot_retry_exhausted_timeout_metrics_use_estimated_tokens(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = _config()
+    config["fake_timeout"] = True
+
+    result = RuntimeOrchestrator(workspace_root=workspace).run_one_shot("hello", config)
+
+    assert result.exit_code == 1
+    metrics_paths = list(
+        (workspace / ".sessions" / result.session_id / "logs").glob(
+            "run_metrics_*.json"
+        )
+    )
+    assert len(metrics_paths) == 1
+    payload = json.loads(metrics_paths[0].read_text(encoding="utf-8"))
+    assert payload["tokens"]["provider_usage_available"] is False
+    assert payload["tokens"]["token_source"] == "estimated"
+    assert payload["tokens"]["input_tokens"] > 0
+    assert payload["tokens"]["output_tokens"] == 0
+    assert payload["tokens"]["total_tokens"] == payload["tokens"]["input_tokens"]
+    assert payload["tokens"]["estimator_version"] == "deterministic-char-v1"
+
+
 def test_one_shot_active_workspace_conflict_returns_policy_exit(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

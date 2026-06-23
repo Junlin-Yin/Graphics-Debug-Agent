@@ -181,3 +181,149 @@ def test_run_metrics_observes_view_image_as_brokered_tool_call() -> None:
     }
     assert payload["tools"]["total_tool_calls"] == 1
     assert payload["tools"]["successful_tool_calls"] == 1
+
+
+def test_run_metrics_failed_model_call_uses_started_estimate() -> None:
+    collector = RunMetricsCollector(
+        session_id="sess_metrics",
+        run_id="run_metrics",
+        invocation_kind="start",
+        started_at=datetime(2026, 6, 16, 9, 10, 0, tzinfo=UTC),
+    )
+
+    collector.observe_event(
+        kind="model_call_started",
+        payload={
+            "purpose": "main",
+            "model_call_observation_id": "obs_1",
+            "estimated_usage": {
+                "input_tokens": 13,
+                "output_tokens": 0,
+                "total_tokens": 13,
+            },
+        },
+    )
+    collector.observe_event(
+        kind="model_call_failed",
+        payload={
+            "purpose": "main",
+            "model_call_observation_id": "obs_1",
+            "duration_ms": 25,
+            "error": {
+                "error_class": "model_error",
+                "reason": "model_call_timeout",
+                "message": "timeout",
+            },
+        },
+    )
+
+    payload = collector.build_payload(
+        ended_at=datetime(2026, 6, 16, 9, 10, 1, tzinfo=UTC)
+    )
+
+    assert payload["timing"]["llm_time_ms_observed"] == 25
+    assert payload["tokens"] == {
+        "provider_usage_available": False,
+        "token_source": "estimated",
+        "input_tokens": 13,
+        "output_tokens": 0,
+        "total_tokens": 13,
+        "estimator_version": "deterministic-char-v1",
+    }
+
+
+def test_run_metrics_completed_model_call_removes_pending_started_estimate() -> None:
+    collector = RunMetricsCollector(
+        session_id="sess_metrics",
+        run_id="run_metrics",
+        invocation_kind="start",
+        started_at=datetime(2026, 6, 16, 9, 10, 0, tzinfo=UTC),
+    )
+
+    collector.observe_event(
+        kind="model_call_started",
+        payload={
+            "purpose": "main",
+            "model_call_observation_id": "obs_1",
+            "estimated_usage": {
+                "input_tokens": 50,
+                "output_tokens": 0,
+                "total_tokens": 50,
+            },
+        },
+    )
+    collector.observe_event(
+        kind="model_call_completed",
+        payload={
+            "purpose": "main",
+            "model_call_observation_id": "obs_1",
+            "duration_ms": 10,
+        },
+    )
+    result = type(
+        "Result",
+        (),
+        {
+            "usage": {},
+            "metadata": {
+                "estimated_usage": {
+                    "input_tokens": 7,
+                    "output_tokens": 11,
+                    "total_tokens": 18,
+                    "estimator_version": "deterministic-char-v1",
+                }
+            },
+        },
+    )()
+    collector.observe_agent_result(result)
+
+    payload = collector.build_payload(
+        ended_at=datetime(2026, 6, 16, 9, 10, 1, tzinfo=UTC)
+    )
+
+    assert payload["tokens"]["token_source"] == "estimated"
+    assert payload["tokens"]["input_tokens"] == 7
+    assert payload["tokens"]["output_tokens"] == 11
+    assert payload["tokens"]["total_tokens"] == 18
+
+
+def test_run_metrics_multiple_failed_model_calls_accumulate_estimates() -> None:
+    collector = RunMetricsCollector(
+        session_id="sess_metrics",
+        run_id="run_metrics",
+        invocation_kind="start",
+        started_at=datetime(2026, 6, 16, 9, 10, 0, tzinfo=UTC),
+    )
+
+    for observation_id, input_tokens in (("obs_1", 13), ("obs_2", 17)):
+        collector.observe_event(
+            kind="model_call_started",
+            payload={
+                "purpose": "main",
+                "model_call_observation_id": observation_id,
+                "estimated_usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": 0,
+                    "total_tokens": input_tokens,
+                },
+            },
+        )
+        collector.observe_event(
+            kind="model_call_failed",
+            payload={
+                "purpose": "main",
+                "model_call_observation_id": observation_id,
+                "duration_ms": 5,
+            },
+        )
+
+    payload = collector.build_payload(
+        ended_at=datetime(2026, 6, 16, 9, 10, 1, tzinfo=UTC)
+    )
+
+    assert payload["timing"]["llm_time_ms_observed"] == 10
+    assert payload["tokens"]["provider_usage_available"] is False
+    assert payload["tokens"]["token_source"] == "estimated"
+    assert payload["tokens"]["input_tokens"] == 30
+    assert payload["tokens"]["output_tokens"] == 0
+    assert payload["tokens"]["total_tokens"] == 30

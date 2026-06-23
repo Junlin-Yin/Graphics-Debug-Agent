@@ -45,6 +45,9 @@ class RunMetricsCollector:
     model_calls: list[ModelCallTokenObservation] = field(default_factory=list)
     model_call_durations_ms: list[int] = field(default_factory=list)
     tool_calls: list[ToolCallObservation] = field(default_factory=list)
+    _pending_model_calls: dict[str, ModelCallTokenObservation] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         if self.invocation_kind not in METRICS_INVOCATION_KINDS:
@@ -93,10 +96,44 @@ class RunMetricsCollector:
         self.tool_calls.append(ToolCallObservation(status=status, duration_ms=duration_ms))
 
     def observe_event(self, *, kind: str, payload: dict[str, Any]) -> None:
+        if kind == "model_call_started":
+            purpose = _model_purpose(payload)
+            if purpose not in {"main", "compression"}:
+                return
+            observation_id = payload.get("model_call_observation_id")
+            if not isinstance(observation_id, str) or not observation_id:
+                return
+            estimated_usage = token_usage_from_mapping(payload.get("estimated_usage"))
+            if estimated_usage is None:
+                return
+            self._pending_model_calls[observation_id] = ModelCallTokenObservation(
+                provider_usage=None,
+                estimated_usage=estimated_usage,
+            )
+            return
         if kind == "model_call_completed":
             purpose = _model_purpose(payload)
             if purpose not in {"main", "compression"}:
                 return
+            _pop_pending_model_call(self._pending_model_calls, payload)
+            duration_ms = _duration_payload_ms(payload)
+            if duration_ms is not None:
+                self.model_call_durations_ms.append(duration_ms)
+            return
+        if kind == "model_call_failed":
+            purpose = _model_purpose(payload)
+            if purpose not in {"main", "compression"}:
+                return
+            observation = _pop_pending_model_call(self._pending_model_calls, payload)
+            if observation is None:
+                estimated_usage = token_usage_from_mapping(payload.get("estimated_usage"))
+                if estimated_usage is not None:
+                    observation = ModelCallTokenObservation(
+                        provider_usage=None,
+                        estimated_usage=estimated_usage,
+                    )
+            if observation is not None:
+                self.model_calls.append(observation)
             duration_ms = _duration_payload_ms(payload)
             if duration_ms is not None:
                 self.model_call_durations_ms.append(duration_ms)
@@ -275,3 +312,13 @@ def _duration_payload_ms(payload: dict[str, Any]) -> int | None:
     if isinstance(duration, (int, float)) and not isinstance(duration, bool):
         return max(0, round(float(duration) * 1000))
     return None
+
+
+def _pop_pending_model_call(
+    pending: dict[str, ModelCallTokenObservation],
+    payload: dict[str, Any],
+) -> ModelCallTokenObservation | None:
+    observation_id = payload.get("model_call_observation_id")
+    if not isinstance(observation_id, str) or not observation_id:
+        return None
+    return pending.pop(observation_id, None)
