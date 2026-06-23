@@ -58,7 +58,6 @@ def test_prompt_composer_always_injects_empty_todo_plan_after_active_skill_conte
                     content="Retained answer.",
                 )
             ],
-            live_messages=[],
             current_messages=[
                 ConversationMessage(
                     seq=2,

@@ -28,7 +28,6 @@ class PromptCompositionRequest:
     active_skills: list[dict[str, Any]] = field(default_factory=list)
     context_summary: str | None = None
     retained_messages: list[ConversationMessage] = field(default_factory=list)
-    live_messages: list[ConversationMessage] = field(default_factory=list)
     current_messages: list[ConversationMessage] = field(default_factory=list)
     tool_schema_bindings: list[dict[str, Any]] = field(default_factory=list)
 
@@ -147,46 +146,15 @@ class PromptComposer:
 
         historical_messages = [
             *request.retained_messages,
-            *request.live_messages,
             *request.current_messages,
         ]
-        runtime_context_messages = [
-            message
-            for message in historical_messages
-            if message.role == "runtime"
-            and _is_provider_prompt_visible_runtime_message(message)
-        ]
-        if runtime_context_messages:
-            segments.extend(
-                self._renumber(
-                    [
-                        ConversationMessage(
-                            seq=message.seq,
-                            role="user",
-                            kind=message.kind,
-                            turn_id=message.turn_id,
-                            model_call_id=message.model_call_id,
-                            tool_call_id=message.tool_call_id,
-                            content=_provider_prompt_runtime_content(
-                                kind=message.kind,
-                                content=message.content,
-                            ),
-                            artifact_refs=message.artifact_refs,
-                            metadata=message.metadata,
-                        )
-                        for message in runtime_context_messages
-                    ],
-                    start_seq=seq,
-                )
-            )
-            seq += 10 * len(runtime_context_messages)
-
         segments.extend(
             self._renumber(
                 [
-                    _provider_prompt_historical_message(message)
+                    projected
                     for message in historical_messages
-                    if message.role != "runtime"
+                    for projected in [_provider_prompt_historical_message(message)]
+                    if projected is not None
                 ],
                 start_seq=seq,
             )
@@ -334,7 +302,27 @@ def _runtime_message_reason(message: ConversationMessage) -> str | None:
     return None
 
 
-def _provider_prompt_historical_message(message: ConversationMessage) -> ConversationMessage:
+def _provider_prompt_historical_message(
+    message: ConversationMessage,
+) -> ConversationMessage | None:
+    if message.role == "runtime":
+        if not _is_provider_prompt_visible_runtime_message(message):
+            return None
+        return ConversationMessage(
+            seq=message.seq,
+            role="user",
+            kind=message.kind,
+            turn_id=message.turn_id,
+            model_call_id=message.model_call_id,
+            tool_call_id=message.tool_call_id,
+            content=_provider_prompt_runtime_content(
+                kind=message.kind,
+                content=message.content,
+            ),
+            artifact_refs=list(message.artifact_refs),
+            estimated_tokens=message.estimated_tokens,
+            metadata=dict(message.metadata),
+        )
     if message.kind != "context_summary":
         return message
     return ConversationMessage(
