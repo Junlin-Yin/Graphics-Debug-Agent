@@ -10,7 +10,12 @@ from typing import Any
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
-from debug_agent.runtime.contracts import AgentRunRequest, AgentRunResult, RunContext
+from debug_agent.runtime.contracts import (
+    AgentRunRequest,
+    AgentRunResult,
+    LEGACY_ERROR_CLASSES,
+    RunContext,
+)
 from debug_agent.runtime.model_context import (
     ConversationMessage,
     provider_role_for_message_role,
@@ -131,8 +136,9 @@ class LangChainAgentLoopAdapter:
                     messages = refreshed
             return _error_result(
                 "failed",
-                "internal_error",
+                "runtime_error",
                 "Tool call loop exceeded configured iteration limit.",
+                reason="adapter_contract_violation",
                 metadata={"failure_scope": "turn"},
                 tool_results=tool_results,
             )
@@ -272,8 +278,9 @@ class LangChainAgentLoopAdapter:
                     messages = refreshed
             return _error_result(
                 "failed",
-                "internal_error",
+                "runtime_error",
                 "Tool call loop exceeded Phase 0 iteration limit.",
+                reason="adapter_contract_violation",
                 metadata={"failure_scope": "turn"},
                 tool_results=tool_results,
             )
@@ -1819,7 +1826,14 @@ def _compression_failed_abort_result(exc: Exception) -> AgentRunResult | None:
         return None
     if not isinstance(result.error, dict):
         return None
-    if result.error.get("error_class") != "compression_failed":
+    is_legacy_compression_failure = _is_legacy_error_class(
+        result.error, "compression_failed"
+    )
+    is_normalized_compression_failure = (
+        result.error.get("error_class") == "model_error"
+        and result.error.get("reason") == "compression_failed"
+    )
+    if not is_legacy_compression_failure and not is_normalized_compression_failure:
         return None
     return result
 
@@ -1838,7 +1852,7 @@ def _approval_denied_abort_result(
         return None
     if not isinstance(error, dict):
         return None
-    is_legacy_denial = error.get("error_class") == "policy_denied"
+    is_legacy_denial = _is_legacy_error_class(error, "policy_denied")
     is_normalized_denial = (
         error.get("error_class") == "policy_error"
         and error.get("reason") in {"approval_denied", "approval_required_non_interactive"}
@@ -1869,4 +1883,11 @@ def _approval_denied_abort_result(
                 else {}
             ),
         },
+    )
+
+
+def _is_legacy_error_class(error: dict[str, Any], legacy_class: str) -> bool:
+    return (
+        legacy_class in LEGACY_ERROR_CLASSES
+        and error.get("error_class") == legacy_class
     )

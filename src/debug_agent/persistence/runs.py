@@ -245,7 +245,8 @@ class RunStore:
         current = self.get(run_id)
         if current.status != "running":
             raise StoreError(
-                error_class="internal_error",
+                error_class="persistence_error",
+                reason="persistence_transition_failed",
                 message=f"Invalid run transition from {current.status} to {status}",
             )
         now = utc_now_iso()

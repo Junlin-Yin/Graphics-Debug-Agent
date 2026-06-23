@@ -54,10 +54,11 @@ from debug_agent.runtime.settings import (
 from debug_agent.runtime.contracts import (
     APPROVAL_MODES,
     AgentRunResult,
+    LEGACY_ERROR_CLASSES,
     RunEvent,
     utc_now_iso,
 )
-from debug_agent.runtime.errors import NormalizedError
+from debug_agent.runtime.errors import ERROR_REASON_REGISTRY, NormalizedError
 from debug_agent.runtime.policy import load_main_agent_policy, policy_facts_to_snapshot
 from debug_agent.runtime.prompt_executor import (
     PromptAgentExecutor,
@@ -2184,15 +2185,29 @@ def _utc_now() -> datetime:
 
 
 def _store_error_code(exc: StoreError) -> tuple[str, str]:
+    if exc.reason and _is_registered_error_reason(exc.error_class, exc.reason):
+        return exc.error_class, exc.reason
     text = exc.message
     prefix, separator, _ = text.partition(":")
     if separator and "/" in prefix:
         error_class, reason = prefix.split("/", 1)
-        if error_class and reason:
+        if error_class and reason and _is_registered_error_reason(error_class, reason):
             return error_class, reason
     if exc.error_class == "user_error":
         return "user_error", "lookup_not_found"
-    return exc.error_class, "persistence_read_failed"
+    if exc.error_class == "policy_error":
+        return "policy_error", "path_policy_denied"
+    if exc.error_class == "config_error":
+        return "config_error", "invalid_runtime_config"
+    if exc.error_class == "runtime_error":
+        return "runtime_error", "internal_invariant_failed"
+    if exc.error_class == "skill_error":
+        return "skill_error", "skill_missing"
+    return "persistence_error", "persistence_read_failed"
+
+
+def _is_registered_error_reason(error_class: str, reason: str) -> bool:
+    return reason in ERROR_REASON_REGISTRY.get(error_class, frozenset())
 
 
 def _mark_failed_terminal(
@@ -2209,7 +2224,8 @@ def _mark_failed_terminal(
     metrics_collector: RunMetricsCollector | None = None,
 ) -> OneShotResult:
     error = agent_result.error or {
-        "error_class": "internal_error",
+        "error_class": "runtime_error",
+        "reason": "internal_invariant_failed",
         "message": "Prompt execution failed.",
         "source": "orchestrator",
         "recoverable": False,
@@ -3238,15 +3254,17 @@ def _normalize_terminal_failure_error(
 def _terminal_error_identity(error: dict[str, Any]) -> tuple[str, str, str]:
     error_class = str(error.get("error_class") or "runtime_error")
     reason = error.get("reason")
-    if error_class == "compression_failed":
+    if _is_legacy_terminal_error_class(error, "compression_failed"):
         return "model_error", "compression_failed", "turn"
-    if error_class == "context_limit_exceeded":
+    if _is_legacy_terminal_error_class(error, "context_limit_exceeded"):
         return "model_error", "context_limit_exceeded", "turn"
-    if error_class == "timeout":
+    if _is_legacy_terminal_error_class(error, "timeout"):
         return "model_error", "model_call_timeout", "provider"
-    if error_class == "internal_error":
+    if _is_legacy_terminal_error_class(error, "internal_error"):
         return "runtime_error", "internal_invariant_failed", "run"
     if error_class == "model_error":
+        if reason in {"compression_failed", "context_limit_exceeded"}:
+            return "model_error", str(reason), "turn"
         return "model_error", _valid_reason_or_default(
             "model_error", reason, "model_call_failed"
         ), "provider"
@@ -3273,6 +3291,13 @@ def _terminal_error_identity(error: dict[str, Any]) -> tuple[str, str, str]:
             "user_error", reason, "invalid_command"
         ), "run"
     return "runtime_error", "internal_invariant_failed", "run"
+
+
+def _is_legacy_terminal_error_class(error: dict[str, Any], legacy_class: str) -> bool:
+    return (
+        legacy_class in LEGACY_ERROR_CLASSES
+        and error.get("error_class") == legacy_class
+    )
 
 
 def _config_terminal_reason(error: dict[str, Any]) -> str:

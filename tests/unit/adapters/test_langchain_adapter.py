@@ -2687,7 +2687,8 @@ def test_langchain_adapter_short_circuits_same_turn_after_approval_denial() -> N
                 status="denied",
                 output=None,
                 error={
-                    "error_class": "policy_denied",
+                    "error_class": "policy_error",
+                    "reason": "approval_denied",
                     "message": "Approval denied.",
                     "source": "toolbroker",
                     "recoverable": True,
@@ -2734,10 +2735,75 @@ def test_langchain_adapter_short_circuits_same_turn_after_approval_denial() -> N
 
     assert model.calls == 1
     assert result.status == "failed"
-    assert result.error["error_class"] == "policy_denied"
+    assert result.error["error_class"] == "policy_error"
+    assert result.error["reason"] == "approval_denied"
     assert result.metadata["failure_scope"] == "turn"
     assert result.metadata["approval_denied_abort"] is True
     assert result.tool_results[0]["metadata"]["turn_aborted"] is True
+
+
+def test_langchain_adapter_compression_abort_accepts_legacy_class_as_mapper_input() -> None:
+    from debug_agent.adapters.langchain_adapter import _compression_failed_abort_result
+
+    class LegacyCompressionAbort(Exception):
+        def to_result(self):
+            return AgentRunResult(
+                status="failed",
+                assistant_output=None,
+                tool_results=[],
+                usage={},
+                error={
+                    "error_class": "compression_failed",
+                    "message": "Legacy compression failed.",
+                },
+                metadata={"failure_scope": "turn"},
+            )
+
+    class NormalizedCompressionAbort(Exception):
+        def to_result(self):
+            return AgentRunResult(
+                status="failed",
+                assistant_output=None,
+                tool_results=[],
+                usage={},
+                error={
+                    "error_class": "model_error",
+                    "reason": "compression_failed",
+                    "message": "Compression failed.",
+                },
+                metadata={"failure_scope": "turn"},
+            )
+
+    legacy = _compression_failed_abort_result(LegacyCompressionAbort())
+    normalized = _compression_failed_abort_result(NormalizedCompressionAbort())
+
+    assert legacy is not None
+    assert legacy.error["error_class"] == "compression_failed"
+    assert normalized is not None
+    assert normalized.error["error_class"] == "model_error"
+    assert normalized.error["reason"] == "compression_failed"
+
+
+def test_langchain_adapter_accepts_legacy_policy_denied_only_as_abort_mapper_input() -> None:
+    from debug_agent.adapters.langchain_adapter import _approval_denied_abort_result
+
+    result = _approval_denied_abort_result(
+        [
+            {
+                "status": "denied",
+                "error": {
+                    "error_class": "policy_denied",
+                    "message": "Approval denied.",
+                },
+                "metadata": {"turn_aborted": True},
+            }
+        ],
+        [{"id": "tool-1", "name": "read_file", "args": {"path": "notes.txt"}}],
+    )
+
+    assert result is not None
+    assert result.metadata["approval_denied_abort"] is True
+    assert result.error["error_class"] == "policy_denied"
 
 
 def test_langchain_adapter_stops_parallel_tool_calls_after_turn_abort_denial() -> None:
@@ -3160,7 +3226,8 @@ def test_langchain_adapter_stops_after_frozen_tool_call_iteration_limit() -> Non
 
     assert model.calls == 3
     assert result.status == "failed"
-    assert result.error["error_class"] == "internal_error"
+    assert result.error["error_class"] == "runtime_error"
+    assert result.error["reason"] == "adapter_contract_violation"
     assert "iteration limit" in result.error["message"]
     assert result.metadata == {"failure_scope": "turn"}
 

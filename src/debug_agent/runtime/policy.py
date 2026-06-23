@@ -155,7 +155,7 @@ class PermissionEvaluator:
             return PermissionDecision(
                 "deny",
                 "invalid_runtime_control_target",
-                "policy_denied",
+                "user_error",
                 "Invalid runtime-control target.",
             )
         if call.tool_name == "activate_skill" and call.runtime_control_already_active:
@@ -168,7 +168,7 @@ class PermissionEvaluator:
             return PermissionDecision(
                 "deny",
                 "path_denied",
-                "policy_denied",
+                "policy_error",
                 f"Path denied by policy: {denied_path.path}",
                 "denied",
             )
@@ -178,14 +178,14 @@ class PermissionEvaluator:
                 return PermissionDecision(
                     "deny",
                     "builtin_shell_denied",
-                    "policy_denied",
+                    "policy_error",
                     "Command denied by builtin shell policy.",
                 )
             if self.policy_facts.user_shell.matches_deny(normalized_shell):
                 return PermissionDecision(
                     "deny",
                     "user_shell_denied",
-                    "policy_denied",
+                    "policy_error",
                     "Command denied by user shell policy.",
                 )
             if (
@@ -195,7 +195,7 @@ class PermissionEvaluator:
                 return PermissionDecision(
                     "deny",
                     "shell_allowlist_miss",
-                    "policy_denied",
+                    "policy_error",
                     "Command does not match shell allowlist.",
                 )
 

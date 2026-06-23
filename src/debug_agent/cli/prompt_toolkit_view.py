@@ -901,7 +901,11 @@ def _tool_status_message(status: object, error: object) -> str | None:
             error_class = str(error.get("error_class") or "")
         if message == "Approval denied.":
             return "Denied by user."
-        if error_class == "policy_denied":
+        reason = str(error.get("reason") or "") if isinstance(error, dict) else ""
+        if _is_legacy_policy_denied_error_class(error) or (
+            error_class == "policy_error"
+            and reason in {"path_policy_denied", "shell_policy_denied"}
+        ):
             return "Denied by shell/path policy."
         return message or "Denied."
     if str(status) in {"error", "timeout", "cancelled"}:
@@ -911,6 +915,10 @@ def _tool_status_message(status: object, error: object) -> str | None:
                 return message
         return "Tool failed."
     return None
+
+
+def _is_legacy_policy_denied_error_class(error: object) -> bool:
+    return isinstance(error, dict) and error.get("error_class") == "policy_denied"
 
 
 def _indented_preview_lines(preview: object) -> list[str]:

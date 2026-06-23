@@ -19,6 +19,7 @@ from debug_agent.runtime.contracts import (
     AgentRunRequest,
     AgentRunResult,
     Checkpoint,
+    LEGACY_ERROR_CLASSES,
     Run,
     RunContext,
     RunEvent,
@@ -71,10 +72,10 @@ class CompressionFailedAbort(Exception):
             assistant_output=None,
             tool_results=[],
             usage={},
-            error={
-                "error_class": "compression_failed",
-                "message": self.message,
-            },
+            error=_model_error_projection(
+                "compression_failed",
+                message=self.message,
+            ),
             metadata={
                 "failure_scope": "turn",
                 "compression_failed_abort": True,
@@ -259,10 +260,10 @@ class PromptAgentExecutor:
                     assistant_output=None,
                     tool_results=[],
                     usage={},
-                    error={
-                        "error_class": "compression_failed",
-                        "message": compression_result["message"],
-                    },
+                    error=_model_error_projection(
+                        "compression_failed",
+                        message=compression_result["message"],
+                    ),
                     metadata={"failure_scope": "turn"},
                 ),
                 context_estimate=context_estimate_box["estimate"],
@@ -802,10 +803,10 @@ class PromptAgentExecutor:
                 assistant_output=None,
                 tool_results=[],
                 usage={},
-                error={
-                    "error_class": "compression_failed",
-                    "message": compression_result["message"],
-                },
+                error=_model_error_projection(
+                    "compression_failed",
+                    message=compression_result["message"],
+                ),
                 metadata={
                     "failure_scope": "turn",
                     "context_estimate": composition.estimate.to_dict(),
@@ -1343,8 +1344,9 @@ class PromptAgentExecutor:
             run_id=run.run_id,
             kind="compression_failed",
             payload={
-                "error_class": "compression_failed",
-                "reason": reason,
+                "error_class": "model_error",
+                "reason": "compression_failed",
+                "compression_reason": reason,
                 "message": message,
                 "token_estimate": token_estimate,
                 "error": _normalized_error_dict(
@@ -1352,6 +1354,7 @@ class PromptAgentExecutor:
                     "compression_failed",
                     message=message,
                     scope="turn",
+                    recoverability="turn_recoverable",
                     metadata={
                         "compression_reason": reason,
                         "token_estimate": token_estimate,
@@ -1397,7 +1400,8 @@ class PromptAgentExecutor:
             run_id=run.run_id,
             kind="context_limit_exceeded",
             payload={
-                "error_class": "context_limit_exceeded",
+                "error_class": "model_error",
+                "reason": "context_limit_exceeded",
                 "estimated_tokens": estimated_tokens,
                 "window_tokens": window_tokens,
                 "optimization_applied": applied,
@@ -1407,6 +1411,7 @@ class PromptAgentExecutor:
                     "context_limit_exceeded",
                     message=CONTEXT_LIMIT_EXCEEDED_MESSAGE,
                     scope="turn",
+                    recoverability="turn_recoverable",
                     metadata={
                         "estimated_tokens": estimated_tokens,
                         "window_tokens": window_tokens,
@@ -1420,10 +1425,10 @@ class PromptAgentExecutor:
             assistant_output=None,
             tool_results=[],
             usage={},
-            error={
-                "error_class": "context_limit_exceeded",
-                "message": CONTEXT_LIMIT_EXCEEDED_MESSAGE,
-            },
+            error=_model_error_projection(
+                "context_limit_exceeded",
+                message=CONTEXT_LIMIT_EXCEEDED_MESSAGE,
+            ),
             metadata={"failure_scope": "turn"},
         )
 
@@ -1742,6 +1747,7 @@ def _normalized_error_dict(
     *,
     message: str,
     scope: str,
+    recoverability: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return NormalizedError.create(
@@ -1749,8 +1755,19 @@ def _normalized_error_dict(
         reason,
         message=message,
         scope=scope,
+        recoverability=recoverability,
         metadata=metadata,
     ).to_dict()
+
+
+def _model_error_projection(reason: str, *, message: str) -> dict[str, Any]:
+    return NormalizedError.create(
+        "model_error",
+        reason,
+        message=message,
+        scope="turn",
+        recoverability="turn_recoverable",
+    ).to_model_visible()
 
 
 def _artifact_ids(result: AgentRunResult) -> list[str]:
@@ -2389,7 +2406,7 @@ def _is_approval_denied_abort_under_cancellation(
         or result.metadata.get("approval_denied_abort") is not True
     ):
         return False
-    if error.get("error_class") == "policy_denied":
+    if _is_legacy_error_class(error, "policy_denied"):
         return True
     return (
         error.get("error_class") == "policy_error"
@@ -2438,13 +2455,22 @@ def _is_approval_denial_tool_observation(message: dict[str, Any]) -> bool:
     error = _error_from_tool_observation_content(content)
     if not isinstance(error, dict):
         return False
-    if error.get("error_class") in {"policy_denied", "policy_error"}:
+    if _is_legacy_error_class(error, "policy_denied") or error.get(
+        "error_class"
+    ) == "policy_error":
         return error.get("reason") in {
             None,
             "approval_denied",
             "approval_required_non_interactive",
         }
     return False
+
+
+def _is_legacy_error_class(error: dict[str, Any], legacy_class: str) -> bool:
+    return (
+        legacy_class in LEGACY_ERROR_CLASSES
+        and error.get("error_class") == legacy_class
+    )
 
 
 def _error_from_tool_observation_content(

@@ -1,10 +1,14 @@
 from debug_agent.runtime.contracts import (
     Artifact,
     AgentRunResult,
+    AGENT_RUN_RESULT_STATUSES,
     Checkpoint,
+    ERROR_CLASSES,
+    LEGACY_ERROR_CLASSES,
     Run,
     RunEvent,
     Session,
+    TOOL_RESULT_STATUSES,
     ToolResult,
 )
 
@@ -152,3 +156,39 @@ def test_agent_run_result_accepts_phase_0_adapter_statuses() -> None:
         )
 
         assert result.status == status
+
+
+def test_error_classes_are_phase_3_normalized_runtime_truth() -> None:
+    assert ERROR_CLASSES == frozenset(
+        {
+            "user_error",
+            "config_error",
+            "policy_error",
+            "model_error",
+            "tool_error",
+            "skill_error",
+            "persistence_error",
+            "runtime_error",
+            "ui_error",
+            "cancelled",
+        }
+    )
+
+
+def test_legacy_error_classes_are_separate_from_runtime_truth() -> None:
+    assert LEGACY_ERROR_CLASSES == frozenset(
+        {
+            "timeout",
+            "internal_error",
+            "policy_denied",
+            "compression_failed",
+            "context_limit_exceeded",
+        }
+    )
+    assert ERROR_CLASSES.isdisjoint(LEGACY_ERROR_CLASSES)
+
+
+def test_timeout_remains_a_status_not_an_error_class() -> None:
+    assert "timeout" in TOOL_RESULT_STATUSES
+    assert "timeout" in AGENT_RUN_RESULT_STATUSES
+    assert "timeout" not in ERROR_CLASSES

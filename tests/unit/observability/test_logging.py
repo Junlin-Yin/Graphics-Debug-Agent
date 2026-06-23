@@ -113,13 +113,14 @@ def test_phase1_engine_log_helpers_render_required_fact_messages() -> None:
             "tool_name": "shell_exec",
             "result": {
                 "error": {
-                    "error_class": "policy_denied",
+                    "error_class": "policy_error",
+                    "reason": "shell_policy_denied",
                     "message": "Shell command denied by policy.",
                 }
             },
         },
     ) == (
-        "tool_call_denied tool=shell_exec error_class=policy_denied "
+        "tool_call_denied tool=shell_exec error_class=policy_error "
         "message=Shell command denied by policy."
     )
     assert context_log_message(

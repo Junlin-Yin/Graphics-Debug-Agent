@@ -100,7 +100,14 @@ ERROR_REASON_REGISTRY: dict[str, frozenset[str]] = {
             "retry_rule_invalid",
         }
     ),
-    "ui_error": frozenset({"tui_init_failed", "stream_render_failed", "prompt_input_failed"}),
+    "ui_error": frozenset(
+        {
+            "tui_init_failed",
+            "stream_render_failed",
+            "trace_render_failed",
+            "prompt_input_failed",
+        }
+    ),
     "cancelled": frozenset(
         {
             "user_cancel_running",

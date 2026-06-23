@@ -367,7 +367,8 @@ def test_run_store_rejects_invalid_status_transition(tmp_path) -> None:
     try:
         runs.mark_failed(run.run_id, "too late")
     except StoreError as exc:
-        assert exc.error_class == "internal_error"
+        assert exc.error_class == "persistence_error"
+        assert exc.reason == "persistence_transition_failed"
     else:
         raise AssertionError("terminal runs must not transition again")
     finally:
@@ -387,7 +388,8 @@ def test_session_store_rejects_invalid_status_transition(tmp_path) -> None:
     try:
         sessions.mark_failed("sess_1", "too late")
     except StoreError as exc:
-        assert exc.error_class == "internal_error"
+        assert exc.error_class == "persistence_error"
+        assert exc.reason == "persistence_transition_failed"
         assert "Invalid session transition" in exc.message
     else:
         raise AssertionError("terminal sessions must not transition again")

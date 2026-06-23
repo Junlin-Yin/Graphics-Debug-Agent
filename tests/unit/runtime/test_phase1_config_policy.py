@@ -351,7 +351,30 @@ def test_permission_evaluator_hard_denies_and_reusable_grants(tmp_path) -> None:
 
     denied = PermissionEvaluator(facts).evaluate(call, approval_mode="yolo")
     assert denied.decision == "deny"
-    assert denied.error_class == "policy_denied"
+    assert denied.error_class == "policy_error"
+    assert denied.reason == "path_denied"
+
+
+def test_permission_evaluator_runtime_control_target_validation_is_user_error(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    facts = build_builtin_policy(workspace, tmp_path / "home")
+    call = NormalizedToolCall(
+        tool_name="activate_skill",
+        category="runtime_control",
+        risk_level="runtime_control",
+        access=("runtime_control",),
+        approval_scope_signature="activate_skill|runtime_control|skill:missing",
+        runtime_control_valid=False,
+    )
+
+    denied = PermissionEvaluator(facts).evaluate(call, approval_mode="normal")
+
+    assert denied.decision == "deny"
+    assert denied.error_class == "user_error"
+    assert denied.reason == "invalid_runtime_control_target"
 
     approved_call = NormalizedToolCall(
         tool_name="write_file",

@@ -22,6 +22,7 @@ from debug_agent.runtime.model_context import TokenEstimator
 from debug_agent.runtime.orchestrator import ReplRuntime
 from debug_agent.runtime.prompt_executor import (
     PromptAgentExecutor,
+    _is_approval_denial_tool_observation,
     _normalize_model_call_failed_payload,
     _with_compression_usage,
 )
@@ -1932,7 +1933,8 @@ def test_tool_loop_followup_compression_failure_preserves_boundary(tmp_path) -> 
     )
 
     assert result.status == "failed"
-    assert result.error["error_class"] == "compression_failed"
+    assert result.error["error_class"] == "model_error"
+    assert result.error["reason"] == "compression_failed"
     assert result.metadata["conversation_writeback"] is not None
     assert [message["content"] for message in result.metadata["conversation_writeback"]] == [
         message["content"] for message in conversation
@@ -2067,7 +2069,8 @@ def test_tool_loop_followup_omission_then_compression_failure_does_not_write_bac
 
     marker = "[Earlier tool result omitted for brevity. See artifact references or trace for full details.]"
     assert result.status == "failed"
-    assert result.error["error_class"] == "compression_failed"
+    assert result.error["error_class"] == "model_error"
+    assert result.error["reason"] == "compression_failed"
     writeback_contents = [
         message["content"] for message in result.metadata["conversation_writeback"]
     ]
@@ -3298,7 +3301,8 @@ def test_prompt_executor_compression_failure_aborts_without_conversation_mutatio
     )
 
     assert result.status == "failed"
-    assert result.error["error_class"] == "compression_failed"
+    assert result.error["error_class"] == "model_error"
+    assert result.error["reason"] == "compression_failed"
     assert [message["content"] for message in result.metadata["conversation_writeback"]] == [
         message["content"] for message in conversation
     ]
@@ -3318,7 +3322,8 @@ def test_prompt_executor_compression_failure_aborts_without_conversation_mutatio
         "compression_failed",
     ]
     assert persisted[1].payload["purpose"] == "compression"
-    assert persisted[3].payload["error_class"] == "compression_failed"
+    assert persisted[3].payload["error_class"] == "model_error"
+    assert persisted[3].payload["reason"] == "compression_failed"
     assert persisted[3].payload["error"]["error_class"] == "model_error"
     assert persisted[3].payload["error"]["reason"] == "compression_failed"
     assert persisted[3].payload["error"]["scope"] == "turn"
@@ -3394,8 +3399,10 @@ def test_prompt_executor_context_limit_exceeded_aborts_without_model_call(
     )
     assert result.status == "failed"
     assert result.error == {
-        "error_class": "context_limit_exceeded",
+        "error_class": "model_error",
+        "reason": "context_limit_exceeded",
         "message": expected_message,
+        "artifact_ids": [],
     }
     assert result.metadata["failure_scope"] == "turn"
     assert result.metadata["context_estimate"]["total_tokens"] > 40
@@ -3405,7 +3412,8 @@ def test_prompt_executor_context_limit_exceeded_aborts_without_model_call(
         "context_limit_exceeded",
     ]
     assert persisted[1].payload["message"] == expected_message
-    assert persisted[1].payload["error_class"] == "context_limit_exceeded"
+    assert persisted[1].payload["error_class"] == "model_error"
+    assert persisted[1].payload["reason"] == "context_limit_exceeded"
     assert persisted[1].payload["error"]["error_class"] == "model_error"
     assert persisted[1].payload["error"]["reason"] == "context_limit_exceeded"
     assert persisted[1].payload["error"]["scope"] == "turn"
@@ -3675,8 +3683,10 @@ def test_prompt_executor_manual_compress_oldest_group_failure_preserves_boundary
     )
     assert result.status == "failed"
     assert result.error == {
-        "error_class": "compression_failed",
+        "error_class": "model_error",
+        "reason": "compression_failed",
         "message": expected_message,
+        "artifact_ids": [],
     }
     assert result.metadata["failure_scope"] == "turn"
     assert [message["content"] for message in result.metadata["conversation_writeback"]] == [
@@ -3696,6 +3706,10 @@ def test_prompt_executor_manual_compress_oldest_group_failure_preserves_boundary
         "compression_failed",
     ]
     assert persisted[0].payload["message"] == expected_message
+    assert persisted[0].payload["error_class"] == "model_error"
+    assert persisted[0].payload["reason"] == "compression_failed"
+    assert persisted[0].payload["error"]["error_class"] == "model_error"
+    assert persisted[0].payload["error"]["reason"] == "compression_failed"
     assert checkpoints.latest_for_run(run.run_id) is None
     assert runs.get(run.run_id).status == "running"
     db.close()
@@ -4317,7 +4331,8 @@ def test_repl_runtime_persists_failed_turn_tool_loop_and_failure_observation(
                 tool_results=[],
                 usage={},
                 error={
-                    "error_class": "internal_error",
+                    "error_class": "runtime_error",
+                    "reason": "adapter_contract_violation",
                     "message": "Tool call loop exceeded Phase 0 iteration limit.",
                     "source": "adapter",
                     "recoverable": True,
@@ -4415,8 +4430,8 @@ def test_repl_runtime_persists_failed_turn_tool_loop_and_failure_observation(
     failure = runtime.conversation[4]
     assert failure["role"] == "runtime"
     assert failure["content"] == {
-        "error_class": "internal_error",
-        "reason": "internal_error",
+        "error_class": "runtime_error",
+        "reason": "adapter_contract_violation",
         "message": "Tool call loop exceeded Phase 0 iteration limit.",
         "artifact_ids": [],
     }
@@ -4434,7 +4449,8 @@ def test_repl_runtime_approval_denial_uses_unified_failure_observation(
                 tool_results=[],
                 usage={},
                 error={
-                    "error_class": "policy_denied",
+                    "error_class": "policy_error",
+                    "reason": "approval_denied",
                     "message": "Approval denied.",
                     "source": "toolbroker",
                     "recoverable": True,
@@ -4481,8 +4497,8 @@ def test_repl_runtime_approval_denial_uses_unified_failure_observation(
     ]
     assert runtime.conversation[1]["role"] == "runtime"
     assert runtime.conversation[1]["content"] == {
-        "error_class": "policy_denied",
-        "reason": "policy_denied",
+        "error_class": "policy_error",
+        "reason": "approval_denied",
         "message": "Approval denied.",
         "artifact_ids": [],
     }
@@ -4491,6 +4507,49 @@ def test_repl_runtime_approval_denial_uses_unified_failure_observation(
         for message in runtime.conversation
     )
     db.close()
+
+
+def test_prompt_executor_approval_denial_compatibility_checks_error_class_only() -> None:
+    assert _is_approval_denial_tool_observation(
+        {
+            "role": "tool",
+            "kind": "tool_result",
+            "content": {
+                "error": {
+                    "error_class": "policy_denied",
+                    "message": "Legacy approval denied.",
+                }
+            },
+        }
+    )
+    assert _is_approval_denial_tool_observation(
+        {
+            "role": "tool",
+            "kind": "tool_result",
+            "content": {
+                "error": {
+                    "error_class": "policy_error",
+                    "reason": "approval_denied",
+                    "message": "Approval denied.",
+                },
+                "status": "denied",
+            },
+        }
+    )
+    assert not _is_approval_denial_tool_observation(
+        {
+            "role": "tool",
+            "kind": "tool_result",
+            "content": {
+                "error": {
+                    "error_class": "policy_error",
+                    "reason": "shell_policy_denied",
+                    "message": "Shell policy denied.",
+                },
+                "status": "timeout",
+            },
+        }
+    )
 
 
 def test_repl_runtime_tool_history_group_is_closed_and_evictable(tmp_path) -> None:

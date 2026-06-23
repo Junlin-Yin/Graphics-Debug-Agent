@@ -14,7 +14,13 @@ from uuid import uuid4
 
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.events import EventWriter
-from debug_agent.runtime.contracts import RunEvent, ToolDefinition, ToolResult, utc_now_iso
+from debug_agent.runtime.contracts import (
+    LEGACY_ERROR_CLASSES,
+    RunEvent,
+    ToolDefinition,
+    ToolResult,
+    utc_now_iso,
+)
 from debug_agent.runtime.errors import NormalizedError
 from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
 from debug_agent.runtime.policy import (
@@ -628,9 +634,9 @@ class ToolBroker:
                 normalized.runtime_control_error_message
                 or "Invalid runtime-control target.",
                 error_class=normalized.runtime_control_error_class,
-                reason="tool_schema_invalid"
-                if normalized.runtime_control_error_class == "tool_error"
-                else None,
+                reason=_runtime_control_error_reason(
+                    normalized.runtime_control_error_class
+                ),
                 metadata={"tool_name": tool_name},
             )
             self._write_event(
@@ -686,10 +692,11 @@ class ToolBroker:
                 session_id=session_id,
             )
         if decision.decision == "deny":
+            denial_error_class = decision.error_class or "policy_error"
             result = _denied_result(
                 decision.message or "Tool call denied by policy.",
-                error_class="policy_error",
-                reason=_policy_denial_reason(decision),
+                error_class=denial_error_class,
+                reason=_permission_denial_reason(decision, denial_error_class),
                 metadata=_phase3_compat_metadata(
                     {"tool_name": tool_name},
                     enabled=bool(context.get("phase3_compatible_tool_results")),
@@ -2693,6 +2700,9 @@ def _normalized_error(
 ) -> NormalizedError:
     normalized_class = error_class
     normalized_reason = reason
+    legacy_mapping = _legacy_tool_error_class_mapping(normalized_class)
+    if legacy_mapping is not None:
+        normalized_class, normalized_reason = legacy_mapping
     if normalized_class == "tool_error":
         normalized_reason = normalized_reason or "tool_execution_failed"
     elif normalized_class == "config_error":
@@ -2701,12 +2711,8 @@ def _normalized_error(
         normalized_reason = normalized_reason or "approval_denied"
     elif normalized_class == "user_error":
         normalized_reason = normalized_reason or "invalid_runtime_control_target"
-    elif normalized_class == "internal_error":
-        normalized_class = "runtime_error"
-        normalized_reason = "internal_invariant_failed"
-    elif normalized_class == "policy_denied":
-        normalized_class = "policy_error"
-        normalized_reason = "approval_denied"
+    elif normalized_class == "runtime_error":
+        normalized_reason = normalized_reason or "internal_invariant_failed"
     else:
         normalized_reason = normalized_reason or "tool_execution_failed"
         normalized_class = "tool_error"
@@ -2717,6 +2723,18 @@ def _normalized_error(
         scope=scope,
         metadata=metadata,
     )
+
+
+def _legacy_tool_error_class_mapping(
+    error_class: str,
+) -> tuple[str, str] | None:
+    if error_class not in LEGACY_ERROR_CLASSES:
+        return None
+    if error_class == "internal_error":
+        return "runtime_error", "internal_invariant_failed"
+    if error_class == "policy_denied":
+        return "policy_error", "approval_denied"
+    return None
 
 
 def _policy_denial_reason(decision: PermissionDecision) -> str:
@@ -2731,6 +2749,26 @@ def _policy_denial_reason(decision: PermissionDecision) -> str:
     if decision.reason == "approval_required_non_interactive":
         return "approval_required_non_interactive"
     return "approval_denied"
+
+
+def _permission_denial_reason(
+    decision: PermissionDecision, error_class: str
+) -> str | None:
+    if error_class == "user_error":
+        if decision.reason == "invalid_runtime_control_target":
+            return "invalid_runtime_control_target"
+        return decision.reason or "invalid_runtime_control_target"
+    if error_class == "policy_error":
+        return _policy_denial_reason(decision)
+    return None
+
+
+def _runtime_control_error_reason(error_class: str) -> str | None:
+    if error_class == "tool_error":
+        return "tool_schema_invalid"
+    if error_class == "user_error":
+        return "invalid_runtime_control_target"
+    return None
 
 
 def _approval_denial_reason(is_interactive_prompt: bool) -> str:

@@ -88,9 +88,10 @@ class ArtifactStore:
             absolute_path.relative_to(session_root)
         except ValueError as exc:
             raise StoreError(
-                error_class="policy_denied",
+                error_class="policy_error",
                 message="Artifact path must be under the session root.",
                 recoverable=True,
+                reason="path_policy_denied",
             ) from exc
         payload_sha256 = _payload_sha256(absolute_path.read_bytes())
         return self._insert(

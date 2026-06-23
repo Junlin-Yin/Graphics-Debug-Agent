@@ -216,7 +216,8 @@ def test_automatic_compression_failure_preserves_conversation(tmp_path) -> None:
     )
 
     assert result.status == "failed"
-    assert result.error["error_class"] == "compression_failed"
+    assert result.error["error_class"] == "model_error"
+    assert result.error["reason"] == "compression_failed"
     assert [message["content"] for message in result.metadata["conversation_writeback"]] == [
         message["content"] for message in conversation
     ]
@@ -369,7 +370,8 @@ def test_manual_compress_failure_preserves_repl_runtime_conversation(tmp_path) -
     result = repl_runtime.manual_compress()
 
     assert result.status == "failed"
-    assert result.error["error_class"] == "compression_failed"
+    assert result.error["error_class"] == "model_error"
+    assert result.error["reason"] == "compression_failed"
     assert result.metadata["failure_scope"] == "turn"
     assert repl_runtime.conversation == original
     assert runtime["runs"].get(runtime["run"].run_id).status == "running"

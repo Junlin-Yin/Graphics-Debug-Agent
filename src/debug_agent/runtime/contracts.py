@@ -60,13 +60,21 @@ ERROR_CLASSES = frozenset(
     {
         "user_error",
         "config_error",
-        "policy_denied",
-        "tool_error",
+        "policy_error",
         "model_error",
-        "workflow_error",
-        "internal_error",
-        "timeout",
+        "tool_error",
+        "skill_error",
+        "persistence_error",
+        "runtime_error",
+        "ui_error",
         "cancelled",
+    }
+)
+LEGACY_ERROR_CLASSES = frozenset(
+    {
+        "timeout",
+        "internal_error",
+        "policy_denied",
         "compression_failed",
         "context_limit_exceeded",
     }

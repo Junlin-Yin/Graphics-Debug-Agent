@@ -150,6 +150,34 @@ def test_runtime_control_schema_rejects_missing_and_unknown_fields(
     runtime["db"].close()
 
 
+def test_runtime_control_internal_handler_failures_are_tool_execution_errors(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path)
+    _snapshot_skill(runtime, name="alpha")
+
+    missing_run_store = _invoke(
+        runtime,
+        "activate_skill",
+        {"name": "alpha"},
+        run_store=None,
+    )
+    missing_todo_store = _invoke(
+        runtime,
+        "todo",
+        {"items": []},
+        todo_plan_store=None,
+    )
+
+    assert missing_run_store.status == "error"
+    assert missing_run_store.error["error_class"] == "tool_error"
+    assert missing_run_store.error["reason"] == "tool_execution_failed"
+    assert missing_todo_store.status == "error"
+    assert missing_todo_store.error["error_class"] == "tool_error"
+    assert missing_todo_store.error["reason"] == "tool_execution_failed"
+    runtime["db"].close()
+
+
 def test_activate_skill_requires_approval_in_normal_and_is_idempotent(tmp_path) -> None:
     runtime = _runtime(tmp_path, approval_mode="normal")
     _snapshot_skill(runtime, name="alpha")
@@ -222,7 +250,8 @@ def test_activate_skill_denies_unknown_and_corrupt_snapshot_before_approval(tmp_
 
     assert unknown.status == "error"
     assert corrupt.status == "error"
-    assert unknown.error["error_class"] == "config_error"
+    assert unknown.error["error_class"] == "user_error"
+    assert unknown.error["reason"] == "invalid_runtime_control_target"
     assert corrupt.error["error_class"] == "config_error"
     assert provider.requests == []
     runtime["db"].close()
@@ -265,7 +294,8 @@ def test_load_skill_resource_requires_active_skill_and_valid_relative_resource(t
     )
 
     assert inactive.status == "error"
-    assert inactive.error["error_class"] == "config_error"
+    assert inactive.error["error_class"] == "user_error"
+    assert inactive.error["reason"] == "invalid_runtime_control_target"
     assert loaded.status == "ok"
     assert loaded.output["content"] == "guide text"
     assert loaded.output["resource_path"] == "references/guide.txt"
@@ -357,7 +387,8 @@ def test_load_skill_resource_denies_missing_and_hash_mismatch_before_approval(tm
 
     assert missing.status == "error"
     assert corrupt.status == "error"
-    assert missing.error["error_class"] == "config_error"
+    assert missing.error["error_class"] == "user_error"
+    assert missing.error["reason"] == "invalid_runtime_control_target"
     assert corrupt.error["error_class"] == "config_error"
     assert provider.requests == []
     runtime["db"].close()

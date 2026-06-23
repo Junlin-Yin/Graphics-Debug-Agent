@@ -1025,7 +1025,8 @@ def test_streamed_user_denial_result_does_not_duplicate_tool_summary() -> None:
                 "status": "denied",
                 "target": "secrets.txt",
                 "error": {
-                    "error_class": "policy_denied",
+                    "error_class": "policy_error",
+                    "reason": "approval_denied",
                     "message": "Approval denied.",
                     "source": "toolbroker",
                     "recoverable": True,
@@ -1086,7 +1087,8 @@ def test_streamed_shell_policy_denial_result_does_not_duplicate_tool_summary() -
                 "status": "denied",
                 "target": "rm -rf target",
                 "error": {
-                    "error_class": "policy_denied",
+                    "error_class": "policy_error",
+                    "reason": "shell_policy_denied",
                     "message": "Command denied by builtin shell policy.",
                     "source": "toolbroker",
                     "recoverable": True,
@@ -1488,7 +1490,8 @@ def test_plain_repl_turn_scoped_failure_does_not_terminalize_runtime() -> None:
         _result(
             "failed",
             error={
-                "error_class": "internal_error",
+                "error_class": "runtime_error",
+                "reason": "adapter_contract_violation",
                 "message": "Tool call loop exceeded Phase 0 iteration limit.",
                 "source": "adapter",
                 "recoverable": True,
@@ -1516,7 +1519,8 @@ def test_tui_model_timeout_displays_error_and_restores_input() -> None:
         _result(
             "timeout",
             error={
-                "error_class": "timeout",
+                "error_class": "model_error",
+                "reason": "model_call_timeout",
                 "message": "Model stream timed out after 30 seconds.",
                 "source": "model",
                 "recoverable": True,
@@ -1532,6 +1536,39 @@ def test_tui_model_timeout_displays_error_and_restores_input() -> None:
     assert view.errors == ["Model stream timed out after 30 seconds."]
     assert view.input_enabled[-1] is True
     assert view.closed_summaries == []
+    assert runtime.failed_results == []
+    assert controller.exit_code == 0
+
+
+def test_tui_background_timeout_uses_normalized_ui_error_and_status_timeout() -> None:
+    from debug_agent.cli.repl_controller import ReplController
+
+    class TimeoutRuntime(FakeRuntime):
+        def run_turn(self, command, *, agent_stream_callback=None):
+            raise TimeoutError("Prompt input timed out.")
+
+    class CaptureController(ReplController):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.finished_results = []
+
+        def on_turn_finished(self, result):
+            self.finished_results.append(result)
+            super().on_turn_finished(result)
+
+    view = FakeView()
+    runtime = TimeoutRuntime()
+    controller = CaptureController(runtime=runtime, view=view)
+
+    controller.on_submit("hello")
+    controller.wait_for_active_turn(timeout=2)
+    controller.drain_completed_turns()
+
+    assert view.errors == ["Prompt input timed out."]
+    assert view.turn_statuses[-1][1] == "timeout"
+    assert controller.finished_results[0].status == "timeout"
+    assert controller.finished_results[0].error["error_class"] == "ui_error"
+    assert controller.finished_results[0].error["reason"] == "prompt_input_failed"
     assert runtime.failed_results == []
     assert controller.exit_code == 0
 
@@ -1787,7 +1824,11 @@ def test_compress_slash_turn_scoped_failure_keeps_session_open() -> None:
     runtime = FakeRuntime()
     runtime.compress_result = _result(
         "failed",
-        error={"error_class": "compression_failed", "message": expected_message},
+        error={
+            "error_class": "model_error",
+            "reason": "compression_failed",
+            "message": expected_message,
+        },
         metadata={"failure_scope": "turn"},
     )
     controller = ReplController(runtime=runtime, view=view)
@@ -2208,7 +2249,8 @@ def test_recoverable_turn_failure_keeps_session_open_and_allows_next_prompt() ->
         _result(
             "failed",
             error={
-                "error_class": "internal_error",
+                "error_class": "runtime_error",
+                "reason": "adapter_contract_violation",
                 "message": "Tool call loop exceeded Phase 0 iteration limit.",
                 "source": "adapter",
                 "recoverable": True,
@@ -2248,7 +2290,8 @@ def test_approval_denial_turn_abort_renders_neutral_status_not_error() -> None:
         _result(
             "failed",
             error={
-                "error_class": "policy_denied",
+                "error_class": "policy_error",
+                "reason": "approval_denied",
                 "message": "Approval denied.",
                 "source": "toolbroker",
                 "recoverable": True,
@@ -2506,9 +2549,10 @@ def test_final_status_maps_cancelled_and_timeout_display_statuses() -> None:
     )
     controller.on_turn_finished(
         _result(
-            "failed",
+            "timeout",
             error={
-                "error_class": "timeout",
+                "error_class": "model_error",
+                "reason": "model_call_timeout",
                 "message": "timeout",
                 "source": "model",
                 "recoverable": True,
@@ -2520,5 +2564,4 @@ def test_final_status_maps_cancelled_and_timeout_display_statuses() -> None:
     assert view.turn_statuses[-1][1] == "timeout"
     assert [result.error["error_class"] for result in runtime.failed_results] == [
         "cancelled",
-        "timeout",
     ]

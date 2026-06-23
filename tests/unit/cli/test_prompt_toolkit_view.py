@@ -462,7 +462,11 @@ def test_prompt_toolkit_view_formats_phase_1_tool_blocks_with_target_and_message
             payload={
                 "name": "write_file",
                 "status": "denied",
-                "error": {"message": "Approval denied.", "error_class": "policy_denied"},
+                "error": {
+                    "message": "Approval denied.",
+                    "error_class": "policy_error",
+                    "reason": "approval_denied",
+                },
                 "metadata": {"tool_name": "write_file", "target": "secrets.txt"},
             },
         )
@@ -475,7 +479,8 @@ def test_prompt_toolkit_view_formats_phase_1_tool_blocks_with_target_and_message
                 "status": "denied",
                 "error": {
                     "message": "Command denied by builtin shell policy.",
-                    "error_class": "policy_denied",
+                    "error_class": "policy_error",
+                    "reason": "shell_policy_denied",
                 },
                 "metadata": {"tool_name": "shell_exec", "target": "rm -rf target"},
             },

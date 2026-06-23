@@ -9,6 +9,7 @@ class StoreError(Exception):
     message: str
     source: str = "persistence"
     recoverable: bool = False
+    reason: str | None = None
 
     def __str__(self) -> str:
         return self.message

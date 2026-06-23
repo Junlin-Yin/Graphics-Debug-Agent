@@ -23,7 +23,12 @@ from debug_agent.runtime.policy import (
     build_builtin_policy,
     policy_facts_to_snapshot,
 )
-from debug_agent.tools.broker import FakeApprovalProvider, NonInteractiveApprovalProvider, ToolBroker
+from debug_agent.tools.broker import (
+    FakeApprovalProvider,
+    NonInteractiveApprovalProvider,
+    ToolBroker,
+    _normalized_error,
+)
 import debug_agent.tools.native as native_tools
 from debug_agent.tools.native import NativeHandlerResult
 from debug_agent.tools.shell import FakeShellRunner
@@ -40,6 +45,37 @@ def _rg_json_match(path: Path, line_number: int, line: str) -> str:
             },
         }
     )
+
+
+def test_broker_normalized_error_maps_legacy_classes_only_as_compatibility() -> None:
+    legacy_policy = _normalized_error(
+        error_class="policy_denied",
+        reason=None,
+        message="Legacy policy denial.",
+        scope="tool",
+        metadata={},
+    )
+    legacy_internal = _normalized_error(
+        error_class="internal_error",
+        reason=None,
+        message="Legacy internal error.",
+        scope="tool",
+        metadata={},
+    )
+    timeout_status = _normalized_error(
+        error_class="tool_error",
+        reason="tool_execution_timeout",
+        message="Timed out.",
+        scope="tool",
+        metadata={"status": "timeout"},
+    )
+
+    assert legacy_policy.error_class == "policy_error"
+    assert legacy_policy.reason == "approval_denied"
+    assert legacy_internal.error_class == "runtime_error"
+    assert legacy_internal.reason == "internal_invariant_failed"
+    assert timeout_status.error_class == "tool_error"
+    assert timeout_status.reason == "tool_execution_timeout"
 
 
 def _install_basic_rg_stub(monkeypatch) -> None:
@@ -236,16 +272,31 @@ class _DeadlineCrossingArtifactStore(ArtifactStore):
         *,
         inserted: threading.Event,
         release_commit: threading.Event,
+        cleaned_up: threading.Event,
     ) -> None:
         super().__init__(connection, sessions_root)
         self.inserted = inserted
         self.release_commit = release_commit
+        self.cleaned_up = cleaned_up
+        self.cleanup_exception: BaseException | None = None
 
     def _insert(self, **kwargs):
         artifact = super()._insert(**kwargs)
         self.inserted.set()
-        self.release_commit.wait(timeout=1)
+        self.release_commit.wait(timeout=5)
         return artifact
+
+    def _delete_accepted_artifact(self, *, artifact_id: str, relative_path: str) -> None:
+        try:
+            super()._delete_accepted_artifact(
+                artifact_id=artifact_id,
+                relative_path=relative_path,
+            )
+        except BaseException as exc:
+            self.cleanup_exception = exc
+            raise
+        finally:
+            self.cleaned_up.set()
 
 
 class _CacheObservingSlowRouter:
@@ -627,6 +678,73 @@ def test_non_interactive_approval_required_uses_specific_policy_reason(tmp_path)
     assert result.error["error_class"] == "policy_error"
     assert result.error["reason"] == "approval_required_non_interactive"
     assert result.error["message"] == "Interactive approval is unavailable."
+    runtime["db"].close()
+
+
+def test_runtime_control_invalid_activate_skill_target_is_user_error(tmp_path) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    skill_store = SimpleNamespace(get_skill=lambda **_kwargs: None)
+
+    result = _invoke(
+        runtime,
+        "activate_skill",
+        {"name": "missing"},
+        skill_snapshot_store=skill_store,
+    )
+
+    assert result.status == "error"
+    assert result.error["error_class"] == "user_error"
+    assert result.error["reason"] == "invalid_runtime_control_target"
+    runtime["db"].close()
+
+
+def test_runtime_control_invalid_load_skill_resource_target_is_user_error(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+    skill_store = SimpleNamespace(get_skill=lambda **_kwargs: None)
+
+    result = _invoke(
+        runtime,
+        "load_skill_resource",
+        {"skill_name": "missing", "path": "README.md"},
+        skill_snapshot_store=skill_store,
+        run_store=SimpleNamespace(),
+    )
+
+    assert result.status == "error"
+    assert result.error["error_class"] == "user_error"
+    assert result.error["reason"] == "invalid_runtime_control_target"
+    runtime["db"].close()
+
+
+def test_runtime_control_missing_skill_snapshot_store_is_not_user_target_error(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+
+    result = _invoke(runtime, "activate_skill", {"name": "missing"})
+
+    assert result.status == "error"
+    assert result.error["error_class"] == "config_error"
+    assert result.error["reason"] == "invalid_runtime_config"
+    runtime["db"].close()
+
+
+def test_runtime_control_missing_skill_resource_state_is_not_user_target_error(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, approval_mode="yolo")
+
+    result = _invoke(
+        runtime,
+        "load_skill_resource",
+        {"skill_name": "missing", "path": "README.md"},
+    )
+
+    assert result.status == "error"
+    assert result.error["error_class"] == "config_error"
+    assert result.error["reason"] == "invalid_runtime_config"
     runtime["db"].close()
 
 
@@ -2032,16 +2150,18 @@ def test_structured_native_field_artifact_commit_after_timeout_is_cleaned_up(
     target.write_text("small", encoding="utf-8")
     inserted = threading.Event()
     release_commit = threading.Event()
+    cleaned_up = threading.Event()
     artifact_store = _DeadlineCrossingArtifactStore(
         runtime["db"].connection,
         runtime["artifacts"].sessions_root,
         inserted=inserted,
         release_commit=release_commit,
+        cleaned_up=cleaned_up,
     )
     runtime["broker"] = ToolBroker(
         event_writer=runtime["events"],
         artifact_store=artifact_store,
-        timeout_seconds=0.01,
+        timeout_seconds=1,
         router=_NativeResultRouter(
             NativeHandlerResult(
                 status="ok",
@@ -2056,13 +2176,32 @@ def test_structured_native_field_artifact_commit_after_timeout_is_cleaned_up(
         ),
     )
 
-    result = _invoke(runtime, "read_file", {"path": "large.txt"})
-    assert inserted.wait(timeout=1)
-    release_commit.set()
-    time.sleep(0.05)
+    result_holder: dict[str, object] = {}
+
+    def invoke_tool() -> None:
+        try:
+            result_holder["result"] = _invoke(runtime, "read_file", {"path": "large.txt"})
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            result_holder["exception"] = exc
+
+    invoke_thread = threading.Thread(target=invoke_tool)
+    invoke_thread.start()
+    try:
+        assert inserted.wait(timeout=1)
+        invoke_thread.join(timeout=2)
+        assert not invoke_thread.is_alive()
+    finally:
+        release_commit.set()
+        invoke_thread.join(timeout=2)
+    if "exception" in result_holder:
+        raise result_holder["exception"]
+    result = result_holder["result"]
 
     assert result.status == "timeout"
     assert result.artifacts == []
+    assert cleaned_up.wait(timeout=2)
+    if artifact_store.cleanup_exception is not None:
+        raise artifact_store.cleanup_exception
     assert runtime["artifacts"].list_for_session(runtime["session"].session_id) == []
     artifacts_dir = runtime["artifacts"].sessions_root / "sess_1" / "artifacts"
     assert not any(artifacts_dir.iterdir())
@@ -2135,14 +2274,30 @@ def test_worker_continuing_after_timeout_cannot_advance_file_metadata_cache(
     runtime["broker"] = ToolBroker(
         event_writer=runtime["events"],
         artifact_store=runtime["artifacts"],
-        timeout_seconds=0.01,
+        timeout_seconds=0.1,
         router=_CacheRecordingAfterTimeoutRouter(entered, release),
     )
 
-    result = _invoke(runtime, "read_file", {"path": "notes.txt"})
-    assert entered.is_set()
-    release.set()
-    time.sleep(0.05)
+    result_holder: dict[str, object] = {}
+
+    def invoke_tool() -> None:
+        try:
+            result_holder["result"] = _invoke(runtime, "read_file", {"path": "notes.txt"})
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            result_holder["exception"] = exc
+
+    invoke_thread = threading.Thread(target=invoke_tool)
+    invoke_thread.start()
+    try:
+        assert entered.wait(timeout=1)
+        invoke_thread.join(timeout=1)
+        assert not invoke_thread.is_alive()
+    finally:
+        release.set()
+        invoke_thread.join(timeout=1)
+    if "exception" in result_holder:
+        raise result_holder["exception"]
+    result = result_holder["result"]
 
     assert result.status == "timeout"
     assert runtime["broker"].file_metadata_cache_snapshot() == {}

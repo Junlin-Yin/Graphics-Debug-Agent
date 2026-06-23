@@ -494,7 +494,11 @@ def test_terminalize_with_recovery_checkpoint_rolls_back_on_transition_failure(
     checkpoints = _checkpoint_store(db, artifacts)
 
     def fail_session_transition(self, **_kwargs):
-        raise StoreError(error_class="internal_error", message="injected failure")
+        raise StoreError(
+            error_class="persistence_error",
+            reason="persistence_transition_failed",
+            message="injected failure",
+        )
 
     monkeypatch.setattr(
         CheckpointStore,

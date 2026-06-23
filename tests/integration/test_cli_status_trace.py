@@ -245,7 +245,8 @@ def test_trace_command_renders_phase1_skill_approval_tool_and_compression_events
                         "arguments": {"argv": ["git", "status"]},
                         "result": {
                             "error": {
-                                "error_class": "policy_denied",
+                                "error_class": "policy_error",
+                                "reason": "shell_policy_denied",
                                 "message": "Shell command denied by policy.",
                             }
                         },

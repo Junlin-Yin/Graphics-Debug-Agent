@@ -140,7 +140,7 @@ def activate_skill(context: Any, arguments: dict[str, Any]) -> RuntimeControlHan
         return RuntimeControlHandlerResult(
             "error",
             error_message="Run store is required for skill activation.",
-            error_class="internal_error",
+            error_class="tool_error",
         )
     if not target.already_active:
         run_store.activate_skill(
@@ -214,7 +214,7 @@ def todo(context: Any, arguments: dict[str, Any]) -> RuntimeControlHandlerResult
         return RuntimeControlHandlerResult(
             "error",
             error_message="Todo Plan store is required.",
-            error_class="internal_error",
+            error_class="tool_error",
         )
     normalized_items: list[dict[str, Any]] = []
     in_progress_count = 0
@@ -305,7 +305,11 @@ def _validate_activation(context: Any, arguments: dict[str, Any]) -> RuntimeCont
         skill_name=arguments["name"],
     )
     if skill is None:
-        return RuntimeControlTarget(False, f"Unknown skill: {arguments['name']}")
+        return RuntimeControlTarget(
+            False,
+            f"Unknown skill: {arguments['name']}",
+            error_class="user_error",
+        )
     target = _validated_skill(store, skill)
     if not target.valid:
         return target
@@ -365,14 +369,22 @@ def _validate_resource(context: Any, arguments: dict[str, Any]) -> RuntimeContro
         return RuntimeControlTarget(False, "Skill runtime state is not available.")
     normalized = _normalize_resource_path(arguments["path"])
     if normalized is None:
-        return RuntimeControlTarget(False, "Invalid skill resource path.")
+        return RuntimeControlTarget(
+            False,
+            "Invalid skill resource path.",
+            error_class="user_error",
+        )
     skill = store.get_skill(
         session_id=context.session_id,
         run_id=context.run_id,
         skill_name=arguments["skill_name"],
     )
     if skill is None:
-        return RuntimeControlTarget(False, f"Unknown skill: {arguments['skill_name']}")
+        return RuntimeControlTarget(
+            False,
+            f"Unknown skill: {arguments['skill_name']}",
+            error_class="user_error",
+        )
     skill_target = _validated_skill(store, skill)
     if not skill_target.valid:
         return skill_target
@@ -383,13 +395,21 @@ def _validate_resource(context: Any, arguments: dict[str, Any]) -> RuntimeContro
         and record.get("content_hash") == skill.overall_content_hash
         for record in active
     ):
-        return RuntimeControlTarget(False, f"Skill is not active: {skill.skill_name}")
+        return RuntimeControlTarget(
+            False,
+            f"Skill is not active: {skill.skill_name}",
+            error_class="user_error",
+        )
     resource = store.get_resource(
         skill_snapshot_id=skill.skill_snapshot_id,
         resource_path=normalized,
     )
     if resource is None:
-        return RuntimeControlTarget(False, f"Unknown skill resource: {normalized}")
+        return RuntimeControlTarget(
+            False,
+            f"Unknown skill resource: {normalized}",
+            error_class="user_error",
+        )
     if not _resource_hash_valid(context, resource):
         return RuntimeControlTarget(False, f"Corrupt frozen skill resource: {normalized}")
     return RuntimeControlTarget(

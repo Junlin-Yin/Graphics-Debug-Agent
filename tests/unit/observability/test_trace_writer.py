@@ -645,7 +645,8 @@ def _persist_session_with_events(tmp_path):
                     "status": "denied",
                     "output": None,
                     "error": {
-                        "error_class": "policy_denied",
+                        "error_class": "policy_error",
+                        "reason": "shell_policy_denied",
                         "message": "Shell command denied by policy.",
                     },
                     "artifacts": [],
@@ -724,20 +725,48 @@ def _persist_session_with_events(tmp_path):
         (
             "compression_failed",
             {
-                "error_class": "compression_failed",
-                "reason": "oldest_group_too_large",
+                "error_class": "model_error",
+                "reason": "compression_failed",
                 "message": "Context compression could not fit.",
                 "token_estimate": {"total_tokens": 900},
+                "error": {
+                    "schema_version": 1,
+                    "error_class": "model_error",
+                    "reason": "compression_failed",
+                    "message": "Context compression could not fit.",
+                    "scope": "turn",
+                    "recoverability": "turn_recoverable",
+                    "metadata": {
+                        "compression_reason": "oldest_group_too_large",
+                        "token_estimate": {"total_tokens": 900},
+                    },
+                    "artifact_ids": [],
+                },
             },
         ),
         (
             "context_limit_exceeded",
             {
-                "error_class": "context_limit_exceeded",
+                "error_class": "model_error",
+                "reason": "context_limit_exceeded",
                 "estimated_tokens": 212000,
                 "window_tokens": 200000,
                 "optimization_applied": ["omission", "compression"],
                 "message": "Context window still exceeds the limit after compression. The current turn was aborted.",
+                "error": {
+                    "schema_version": 1,
+                    "error_class": "model_error",
+                    "reason": "context_limit_exceeded",
+                    "message": "Context window still exceeds the limit after compression. The current turn was aborted.",
+                    "scope": "turn",
+                    "recoverability": "turn_recoverable",
+                    "metadata": {
+                        "estimated_tokens": 212000,
+                        "window_tokens": 200000,
+                        "optimization_applied": ["omission", "compression"],
+                    },
+                    "artifact_ids": [],
+                },
             },
         ),
         (

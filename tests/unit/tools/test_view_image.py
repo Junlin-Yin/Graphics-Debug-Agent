@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import Future
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from dataclasses import replace
 import threading
 
@@ -177,6 +177,20 @@ class _OpenAITimeoutVisionClient:
         except BaseException as exc:
             future.set_exception(exc)
         return future
+
+
+class _RuntimeTimeoutVisionClient:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def analyze_async(self, **kwargs):
+        self.calls.append(kwargs)
+
+        class _Task:
+            def result(self, timeout=None):
+                raise FutureTimeoutError()
+
+        return _Task()
 
 
 def _without_async_controls(kwargs: dict) -> dict:
@@ -731,7 +745,47 @@ def test_view_image_openai_sdk_timeout_returns_timeout_result(
     )
 
     assert result.status == "timeout"
-    assert result.error["error_class"] == "timeout"
+    assert result.error["error_class"] == "tool_error"
+    assert result.error["reason"] == "tool_execution_timeout"
+    assert result.error["schema_version"] == 1
+    assert result.error["scope"] == "tool"
+    assert result.error["recoverability"] == "turn_recoverable"
+    assert result.error["metadata"]["tool_name"] == "view_image"
+    assert result.error["metadata"]["component"] == "vision_provider"
+    assert result.error["metadata"]["timeout_seconds"] == 60
+    assert result.metadata["tool_name"] == "view_image"
+    assert result.metadata["component"] == "vision_provider"
+    assert result.metadata["timeout_seconds"] == 60
+    assert vision_client.calls[0]["timeout_seconds"] == 60
+    runtime["db"].close()
+
+
+def test_view_image_runtime_timeout_returns_normalized_tool_timeout(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = _runtime(tmp_path, multimodal=_enabled_multimodal())
+    image = runtime["workspace"] / "capture.png"
+    _write_image(image)
+    monkeypatch.setenv("MOONSHOT_API_KEY", "secret")
+    monkeypatch.setenv("MOONSHOT_BASE_URL", "https://example.test/v1")
+    vision_client = _RuntimeTimeoutVisionClient()
+
+    result = _invoke_enabled(
+        runtime,
+        {"paths": ["capture.png"]},
+        vision_client=vision_client,
+    )
+
+    assert result.status == "timeout"
+    assert result.error["error_class"] == "tool_error"
+    assert result.error["reason"] == "tool_execution_timeout"
+    assert result.error["metadata"]["tool_name"] == "view_image"
+    assert result.error["metadata"]["component"] == "vision_provider"
+    assert result.error["metadata"]["timeout_seconds"] == 60
+    assert result.metadata["tool_name"] == "view_image"
+    assert result.metadata["component"] == "vision_provider"
+    assert result.metadata["timeout_seconds"] == 60
     assert vision_client.calls[0]["timeout_seconds"] == 60
     runtime["db"].close()
 

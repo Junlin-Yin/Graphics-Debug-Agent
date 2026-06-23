@@ -165,11 +165,7 @@ class ViewImageTool:
             )
             provider_response = future.result(timeout=timeout_seconds)
         except (TimeoutError, FutureTimeoutError):
-            return ViewImageResult(
-                status="timeout",
-                error_message=f"Tool timed out after {timeout_seconds:g} seconds.",
-                error_class="timeout",
-            )
+            return _timeout_result(timeout_seconds)
         except (ProviderCallCancelled, KeyboardInterrupt) as exc:
             return ViewImageResult(
                 status="cancelled",
@@ -184,11 +180,7 @@ class ViewImageTool:
             raise
         except Exception as exc:
             if _is_openai_api_timeout(exc):
-                return ViewImageResult(
-                    status="timeout",
-                    error_message=f"Tool timed out after {timeout_seconds:g} seconds.",
-                    error_class="timeout",
-                )
+                return _timeout_result(timeout_seconds)
             return ViewImageResult(
                 status="error",
                 error_message=str(exc),
@@ -323,6 +315,14 @@ def _view_image_error(result: ViewImageResult, *, source: str) -> dict[str, Any]
             scope="tool",
             metadata=dict(result.metadata or {}),
         ).to_dict()
+    if result.status == "timeout":
+        return NormalizedError.create(
+            "tool_error",
+            "tool_execution_timeout",
+            message=result.error_message or "view_image provider call timed out.",
+            scope="tool",
+            metadata=dict(result.metadata or {}),
+        ).to_dict()
     return {
         "error_class": result.error_class,
         "message": result.error_message or "view_image failed.",
@@ -334,6 +334,19 @@ def _view_image_error(result: ViewImageResult, *, source: str) -> dict[str, Any]
 def _multimodal_config(frozen_config: dict[str, Any]) -> dict[str, Any]:
     multimodal = frozen_config.get("multimodal") if isinstance(frozen_config, dict) else None
     return multimodal if isinstance(multimodal, dict) else {}
+
+
+def _timeout_result(timeout_seconds: float) -> ViewImageResult:
+    return ViewImageResult(
+        status="timeout",
+        error_message=f"Tool timed out after {timeout_seconds:g} seconds.",
+        error_class="tool_error",
+        metadata={
+            "tool_name": "view_image",
+            "component": "vision_provider",
+            "timeout_seconds": timeout_seconds,
+        },
+    )
 
 
 def _effective_query(

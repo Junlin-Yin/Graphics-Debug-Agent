@@ -4,6 +4,7 @@ import json
 import sqlite3
 from types import SimpleNamespace
 
+from debug_agent.persistence.errors import StoreError
 from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
 from debug_agent.adapters.model_factory import ModelFactoryResult
@@ -59,6 +60,71 @@ def _assert_normalized_terminal_errors(
         assert isinstance(error["metadata"], dict)
         assert isinstance(error["artifact_ids"], list)
         assert error["message"]
+
+
+def test_store_error_code_preserves_explicit_reason() -> None:
+    error = StoreError(
+        error_class="policy_error",
+        reason="path_policy_denied",
+        message="Artifact path must be under the session root.",
+    )
+
+    assert orchestrator_module._store_error_code(error) == (
+        "policy_error",
+        "path_policy_denied",
+    )
+
+
+def test_store_error_code_ignores_invalid_explicit_reason() -> None:
+    error = StoreError(
+        error_class="policy_error",
+        reason="not_registered",
+        message="Artifact path must be under the session root.",
+    )
+
+    assert orchestrator_module._store_error_code(error) == (
+        "policy_error",
+        "path_policy_denied",
+    )
+
+
+def test_terminal_failure_mapper_treats_legacy_class_only_as_compatibility() -> None:
+    legacy = orchestrator_module._normalize_terminal_failure_error(
+        {
+            "error_class": "timeout",
+            "message": "Legacy timeout.",
+            "status": "timeout",
+        },
+        result_metadata={},
+    )
+    normalized = orchestrator_module._normalize_terminal_failure_error(
+        {
+            "error_class": "model_error",
+            "reason": "model_call_timeout",
+            "message": "Runtime timeout.",
+            "status": "timeout",
+        },
+        result_metadata={},
+    )
+    context = orchestrator_module._normalize_terminal_failure_error(
+        {
+            "error_class": "model_error",
+            "reason": "context_limit_exceeded",
+            "message": "Context limit exceeded.",
+            "event_kind": "context_limit_exceeded",
+        },
+        result_metadata={},
+    )
+
+    assert legacy["error_class"] == "model_error"
+    assert legacy["reason"] == "model_call_timeout"
+    assert legacy["metadata"]["legacy_error_class"] == "timeout"
+    assert normalized["error_class"] == "model_error"
+    assert normalized["reason"] == "model_call_timeout"
+    assert "legacy_error_class" not in normalized["metadata"]
+    assert context["error_class"] == "model_error"
+    assert context["reason"] == "context_limit_exceeded"
+    assert "legacy_error_class" not in context["metadata"]
 
 
 def test_one_shot_closes_model_provider_resources(tmp_path, monkeypatch) -> None:
@@ -600,8 +666,10 @@ def test_one_shot_compression_failed_records_context_fact_before_terminal_failur
             tool_results=[],
             usage={},
             error={
-                "error_class": "compression_failed",
+                "error_class": "model_error",
+                "reason": "compression_failed",
                 "message": failure["message"],
+                "artifact_ids": [],
             },
             metadata={
                 "failure_scope": "turn",

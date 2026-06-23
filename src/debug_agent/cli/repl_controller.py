@@ -17,7 +17,8 @@ from debug_agent.cli.repl_view import (
     build_welcome_snapshot,
 )
 from debug_agent.cli.settings import BUSY_MESSAGE, STREAMING_FALLBACK_MESSAGE
-from debug_agent.runtime.contracts import AgentRunResult
+from debug_agent.runtime.contracts import AgentRunResult, LEGACY_ERROR_CLASSES
+from debug_agent.runtime.errors import NormalizedError
 from debug_agent.runtime.orchestrator import ReplRuntime, RuntimeOrchestrator
 from debug_agent.runtime.provider_execution import ProviderBoundaryNotClosed
 from debug_agent.runtime.stream_events import AgentStreamEvent
@@ -575,7 +576,13 @@ class ReplController:
         except KeyboardInterrupt as exc:
             result = _error_result("cancelled", "cancelled", str(exc))
         except TimeoutError as exc:
-            result = _error_result("timeout", "timeout", str(exc))
+            result = _error_result(
+                "timeout",
+                "ui_error",
+                str(exc),
+                reason="prompt_input_failed",
+                scope="ui",
+            )
         except Exception as exc:
             result = _error_result("failed", "model_error", str(exc))
         self._completion_queue.put(result)
@@ -995,26 +1002,47 @@ def _tool_result_preview_has_detail(preview: Any) -> bool:
     return False
 
 
-def _error_result(status: str, error_class: str, message: str) -> AgentRunResult:
+def _error_result(
+    status: str,
+    error_class: str,
+    message: str,
+    *,
+    reason: str | None = None,
+    scope: str = "turn",
+) -> AgentRunResult:
+    error: dict[str, Any]
+    if reason is not None:
+        error = NormalizedError.create(
+            error_class,
+            reason,
+            message=message,
+            scope=scope,
+        ).to_dict()
+        error["source"] = "controller"
+        error["recoverable"] = False
+    else:
+        error = {
+            "error_class": error_class,
+            "message": message,
+            "source": "controller",
+            "recoverable": False,
+        }
     return AgentRunResult(
         status=status,
         assistant_output=None,
         tool_results=[],
         usage={},
-        error={
-            "error_class": error_class,
-            "message": message,
-            "source": "controller",
-            "recoverable": False,
-        },
+        error=error,
         metadata={},
     )
 
 
 def _display_status(result: AgentRunResult) -> str:
+    if result.status == "timeout":
+        return "timeout"
     if result.status == "failed" and result.error:
         error_class = result.error.get("error_class")
-        if error_class in {"cancelled", "timeout"}:
+        if error_class == "cancelled" or _is_legacy_timeout_error_class(result.error):
             return str(error_class)
     return result.status
 
@@ -1024,6 +1052,21 @@ def _error_class(result: AgentRunResult) -> str | None:
         return None
     value = result.error.get("error_class")
     return str(value) if value else None
+
+
+def _is_legacy_timeout_error_class(error: dict[str, Any]) -> bool:
+    return _is_legacy_error_class(error, "timeout")
+
+
+def _is_legacy_policy_denied_error_class(error: dict[str, Any]) -> bool:
+    return _is_legacy_error_class(error, "policy_denied")
+
+
+def _is_legacy_error_class(error: dict[str, Any], legacy_class: str) -> bool:
+    return (
+        legacy_class in LEGACY_ERROR_CLASSES
+        and error.get("error_class") == legacy_class
+    )
 
 
 def _conversation_content_text(content: object) -> str:
@@ -1092,7 +1135,7 @@ def _is_approval_denied_abort(result: AgentRunResult) -> bool:
         _is_turn_scoped_failure(result)
         and result.metadata.get("approval_denied_abort") is True
         and (
-            _error_class(result) == "policy_denied"
+            _is_legacy_policy_denied_error_class(result.error or {})
             or (
                 _error_class(result) == "policy_error"
                 and _error_reason(result) in {

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from debug_agent.adapters.langchain_adapter import (
     _provider_message_from_segment,
     _tool_message_content,
@@ -10,6 +12,7 @@ from debug_agent.observability.logging import write_runtime_log
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.checkpoints import CheckpointStore
 from debug_agent.persistence.context_snapshots import ContextSnapshotStore
+from debug_agent.persistence.errors import StoreError
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
@@ -253,6 +256,26 @@ def test_engine_log_and_context_payload_artifacts_preserve_non_ascii_json(
     db.close()
 
 
+def test_artifact_register_existing_file_path_escape_is_policy_error(tmp_path) -> None:
+    workspace, db, session, run = _runtime(tmp_path)
+    artifacts = ArtifactStore(db.connection, db.path.parent)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+
+    with pytest.raises(StoreError) as exc_info:
+        artifacts.register_existing_file(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            path=outside,
+            artifact_type="text",
+            metadata={},
+        )
+
+    assert exc_info.value.error_class == "policy_error"
+    assert exc_info.value.reason == "path_policy_denied"
+    db.close()
+
+
 def test_model_visible_runtime_json_preserves_non_ascii_text() -> None:
     summary = ContextManager().canonical_summary_json(
         {
@@ -284,7 +307,7 @@ def test_model_visible_runtime_json_preserves_non_ascii_text() -> None:
             model_call_id=None,
             tool_call_id=None,
             content={
-                "error_class": "policy_denied",
+                "error_class": "policy_error",
                 "reason": "approval_denied",
                 "message": UNICODE_TEXT,
                 "artifact_ids": [],
