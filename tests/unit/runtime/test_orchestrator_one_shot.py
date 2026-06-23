@@ -951,15 +951,17 @@ def test_one_shot_model_timeout_marks_failed_and_releases_ownership(tmp_path) ->
         checkpoint_kind, checkpoint_state = conn.execute(
             "SELECT kind, state_json FROM checkpoints ORDER BY rowid DESC LIMIT 1"
         ).fetchone()
-        failed_error_class = conn.execute(
+        failed_error_class, failed_reason = conn.execute(
             """
-            SELECT json_extract(payload_json, '$.error_class')
+            SELECT
+                json_extract(payload_json, '$.error_class'),
+                json_extract(payload_json, '$.error.reason')
             FROM run_events
             WHERE kind = 'session_failed'
             ORDER BY rowid DESC
             LIMIT 1
             """
-        ).fetchone()[0]
+        ).fetchone()
 
     assert (session_status, active_run_id, run_status) == ("failed", None, "failed")
     assert session_error == "fake model timeout"
@@ -967,7 +969,8 @@ def test_one_shot_model_timeout_marks_failed_and_releases_ownership(tmp_path) ->
     checkpoint_payload = json.loads(checkpoint_state)
     assert checkpoint_kind == "terminal_recovery"
     assert checkpoint_payload["terminal_error"]["message"] == "fake model timeout"
-    assert failed_error_class == "timeout"
+    assert failed_error_class == "model_error"
+    assert failed_reason == "model_call_timeout"
 
     second = RuntimeOrchestrator(workspace_root=workspace).run_one_shot(
         "hello", _config()

@@ -1335,7 +1335,8 @@ def test_langchain_adapter_maps_model_failure_timeout_and_cancellation() -> None
     assert failure.status == "failed"
     assert failure.error["error_class"] == "model_error"
     assert timeout.status == "timeout"
-    assert timeout.error["error_class"] == "timeout"
+    assert timeout.error["error_class"] == "model_error"
+    assert timeout.error["reason"] == "model_call_timeout"
     assert cancelled.status == "cancelled"
     assert cancelled.error["error_class"] == "cancelled"
 
@@ -1376,13 +1377,17 @@ def test_langchain_adapter_times_out_blocking_model_call() -> None:
     duration = time.monotonic() - started
 
     assert result.status == "timeout"
-    assert result.error["error_class"] == "timeout"
     assert duration < 0.15
     assert [kind for kind, _payload in events] == [
         "model_call_started",
         "model_call_failed",
     ]
-    assert events[-1][1]["error_class"] == "timeout"
+    assert result.error["error_class"] == "model_error"
+    assert result.error["reason"] == "model_call_timeout"
+    assert events[-1][1]["error_class"] == "model_error"
+    assert events[-1][1]["reason"] == "model_call_timeout"
+    assert events[-1][1]["error"]["error_class"] == "model_error"
+    assert events[-1][1]["error"]["reason"] == "model_call_timeout"
 
 
 def test_langchain_adapter_classifies_provider_connection_error_as_transient_exception() -> None:
@@ -1608,13 +1613,17 @@ def test_langchain_adapter_times_out_blocking_stream_call() -> None:
     duration = time.monotonic() - started
 
     assert result.status == "timeout"
-    assert result.error["error_class"] == "timeout"
+    assert result.error["error_class"] == "model_error"
+    assert result.error["reason"] == "model_call_timeout"
     assert duration < 0.15
     assert [kind for kind, _payload in events] == [
         "model_call_started",
         "model_call_failed",
     ]
-    assert events[-1][1]["error_class"] == "timeout"
+    assert events[-1][1]["error_class"] == "model_error"
+    assert events[-1][1]["reason"] == "model_call_timeout"
+    assert events[-1][1]["error"]["error_class"] == "model_error"
+    assert events[-1][1]["error"]["reason"] == "model_call_timeout"
     assert [event.kind for event in stream_events] == ["stream_model_call_started"]
 
 

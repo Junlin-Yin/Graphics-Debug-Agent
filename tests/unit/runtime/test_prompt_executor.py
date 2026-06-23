@@ -300,6 +300,76 @@ def test_prompt_executor_retries_provider_timeout_before_accepting_result(
     db.close()
 
 
+def test_prompt_executor_retries_model_call_timeout_before_accepting_result(
+    tmp_path,
+) -> None:
+    class RetryableAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, request, context):
+            self.calls += 1
+            if self.calls == 1:
+                return AgentRunResult(
+                    status="timeout",
+                    assistant_output=None,
+                    tool_results=[],
+                    usage={},
+                    error={
+                        "error_class": "model_error",
+                        "reason": "model_call_timeout",
+                        "message": "runtime call budget expired",
+                    },
+                    metadata={},
+                )
+            return AgentRunResult(
+                status="completed",
+                assistant_output="retried after timeout",
+                tool_results=[],
+                usage={},
+                error=None,
+                metadata={},
+            )
+
+    (
+        workspace,
+        db,
+        _sessions,
+        _runs,
+        _events,
+        _checkpoints,
+        artifacts,
+        session,
+        run,
+        executor,
+    ) = _runtime(tmp_path, FakeChatModel(response="unused"))
+    adapter = RetryableAdapter()
+    executor = type(executor)(
+        **{**executor.__dict__, "adapter": adapter}
+    )
+
+    result = executor.run_turn(
+        session=session,
+        run=run,
+        user_input="hello",
+        workspace_root=str(workspace),
+    )
+    rows = ConversationStore(db.connection, artifact_store=artifacts).list_messages(
+        run.run_id
+    )
+
+    assert adapter.calls == 2
+    assert result.status == "completed"
+    assert result.assistant_output == "retried after timeout"
+    assert [(row.role, row.kind, row.content) for row in rows] == [
+        ("user", "user_input", {"content": "hello"}),
+        ("assistant", "assistant_output", {"content": "retried after timeout"}),
+    ]
+    assert result.metadata["retry"]["attempts"][0]["strategy"] == "repeat_call"
+    assert result.metadata["retry"]["attempts"][0]["reason"] == "model_call_timeout"
+    db.close()
+
+
 def test_prompt_executor_retries_transient_provider_exception_before_accepting_result(
     tmp_path,
 ) -> None:

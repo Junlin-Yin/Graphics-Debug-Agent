@@ -139,9 +139,10 @@ class LangChainAgentLoopAdapter:
         except TimeoutError as exc:
             return _error_result(
                 "timeout",
-                "timeout",
+                "model_error",
                 str(exc),
                 source="model",
+                reason="model_call_timeout",
                 tool_results=tool_results,
             )
         except ProviderCallCancelled as exc:
@@ -281,9 +282,10 @@ class LangChainAgentLoopAdapter:
         except TimeoutError as exc:
             return _error_result(
                 "timeout",
-                "timeout",
+                "model_error",
                 str(exc),
                 source="model",
+                reason="model_call_timeout",
                 tool_results=tool_results,
             )
         except ProviderCallCancelled as exc:
@@ -808,7 +810,13 @@ def _invoke_model(
     try:
         response = _invoke_with_timeout(model, messages, request, context)
     except TimeoutError as exc:
-        _record_model_failure(recorder, "timeout", str(exc), start)
+        _record_model_failure(
+            recorder,
+            "model_error",
+            str(exc),
+            start,
+            reason="model_call_timeout",
+        )
         raise
     except ProviderCallCancelled as exc:
         _record_model_failure(
@@ -919,7 +927,13 @@ def _stream_model_call(
             if chunk_finish:
                 provider_finish = chunk_finish
     except TimeoutError as exc:
-        _record_model_failure(recorder, "timeout", str(exc), started_at)
+        _record_model_failure(
+            recorder,
+            "model_error",
+            str(exc),
+            started_at,
+            reason="model_call_timeout",
+        )
         raise
     except ProviderCallCancelled as exc:
         _record_model_failure(

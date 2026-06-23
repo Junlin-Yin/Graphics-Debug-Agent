@@ -2557,7 +2557,7 @@ def _with_context_metadata(
 def _retry_source(
     result: AgentRunResult,
 ) -> tuple[str, str, dict[str, Any], RetryBoundaryFacts] | None:
-    if result.status == "failed" and isinstance(result.error, dict):
+    if result.status in {"failed", "timeout"} and isinstance(result.error, dict):
         error_class = result.error.get("error_class")
         reason = result.error.get("reason") or error_class
         if isinstance(error_class, str) and isinstance(reason, str):
