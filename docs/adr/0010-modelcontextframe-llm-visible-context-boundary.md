@@ -51,6 +51,52 @@ Ordinary task `ModelContextFrame` includes:
 - current user input when applicable.
 - `tool_schema_bindings` describing the frozen model-visible tool set.
 
+```mermaid
+flowchart TB
+    FRAME[ModelContextFrame\nruntime-owned adapter-call frame]
+
+    SRC_A["Runtime invariants"]
+    SRC_B["Agent config / default prompt"]
+    SRC_C1["PromptComposer stable skill formatter"]
+    SRC_C2["SkillSnapshotStore\navailable_skill_headers"]
+    SRC_D["Run active skill refs +\nfrozen skill snapshots/resources"]
+    SRC_E["TodoPlanStore"]
+    SRC_F["Durable compression summary projection"]
+    SRC_G["Optimized durable conversation projection"]
+    SRC_H["Current user input or\ntool-loop messages"]
+
+    subgraph STACK[message_segments ordered by seq]
+        direction TB
+        A["runtime_safety_prefix\n[system]\nnon-negotiable runtime constraints; ToolBroker owns authorization"]
+        B["main_agent_system_prompt\n[system]\nmain-agent identity, behavior contract, and execution discipline"]
+        C1["stable_skill_formatter_header\n[system]\nstable prompt-skill formatting guidance"]
+        C2["available_skill_headers\n[system]\navailable frozen skill headers visible to the model"]
+        D["runtime_active_skill_context\n[system]\nfrozen instructions for skills activated in this run"]
+        E["runtime_todo_plan\n[system]\nruntime-owned todo / plan state exposed as context"]
+        F["context_summary optional\n[user]\ndurable runtime summary projection from compression, when present"]
+        G["retained/projected durable conversation\n[user], [assistant], [tool], projected [runtime]\naccepted facts kept in projection order after omission/compression"]
+        H["current user input / tool-loop messages\n[user], [assistant], [tool]\ncurrent request and in-turn tool continuation messages"]
+    end
+
+    SRC_TOOLS["Visible ToolDefinition records"]
+    TOOLS["tool_schema_bindings\ncallable tool schemas visible to the provider; not permission grants"]
+
+    FRAME --> A
+    A --> B --> C1 --> C2 --> D --> E --> F --> G --> H
+    FRAME --> TOOLS
+
+    SRC_A -.-> A
+    SRC_B -.-> B
+    SRC_C1 -.-> C1
+    SRC_C2 -.-> C2
+    SRC_D -.-> D
+    SRC_E -.-> E
+    SRC_F -.-> F
+    SRC_G -.-> G
+    SRC_H -.-> H
+    SRC_TOOLS -.-> TOOLS
+```
+
 Tool schema bindings are not conversation messages and must not be serialized
 into the stable system prompt. They remain provider-native tool bindings at
 adapter call time, such as LangChain `bind_tools(...)`, while still being part

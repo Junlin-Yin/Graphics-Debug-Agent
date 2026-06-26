@@ -1,34 +1,35 @@
 # RenderDoc-Debug-Agent
 
-RenderDoc-Debug-Agent is a local agent runtime for RenderDoc-assisted GPU frame
+RenderDoc-Debug-Agent is a local long-running agent runtime for GPU frame
 debugging.
 
-It helps drive controlled `rdc` command sequences, inspect exported render
-targets and textures, preserve debugging traces, and resume long-running local
-debugging sessions. The project focuses on RenderDoc frame analysis, not shader
-source-level debugging or automatic shader patch generation.
+**Tech Stack**: Python | LangChain | Agent Skill | Tool Calling | Multimodal Vision | SQLite
 
 ## Overview
 
-RenderDoc-Debug-Agent is built for local debugging tasks where an agent needs to
-use real tools over a real workspace while keeping execution auditable and
-recoverable.
+This project targets RenderDoc GPU frame debugging workflows. Given a RenderDoc
+capture sample with rendering anomalies, the runtime combines a RenderDoc prompt
+skill, brokered command-line tool calls, exported render target/texture
+artifacts, and multimodal image observation to locate likely root causes and
+produce structured debugging reports.
 
-The runtime provides:
+The runtime is designed for real local tools and filesystems, long-running and
+failure-prone debugging sessions, recoverable state, context compression, and a
+single safety boundary for shell, file, runtime-control, and vision tools.
 
-- session and run lifecycle management;
-- controlled model-visible tools through a brokered execution boundary;
-- prompt skill activation and frozen skill resource loading;
-- local shell execution through structured argv, path policy, shell policy,
-  approval, timeout, artifact handling, and audit;
-- image inspection through a brokered `view_image` tool;
-- durable conversation, trace rendering, run metrics, and explicit resume.
+### REPL TUI
+
+![debug-agent REPL TUI session view](docs/assets/repl-tui-screenshot-1.png)
+
+![debug-agent REPL TUI tool execution view](docs/assets/repl-tui-screenshot-2.png)
 
 ## Architecture
 
 The runtime is organized around one rule: debug-agent owns runtime state and
 tool execution. The model provider is called through an adapter, and every
-model-visible tool call crosses the brokered safety boundary.
+model-visible tool call crosses the brokered safety boundary. For detailed turn
+flow and context-frame rationale, see
+[`docs/adr/overview.md`](docs/adr/overview.md).
 
 ```mermaid
 flowchart TD
@@ -67,184 +68,32 @@ flowchart TD
 each agent turn. `AgentLoopAdapter` integrates the model provider, but it does
 not own sessions, checkpoints, tool policy, artifacts, or recovery state.
 
-Within one turn, debug-agent repeatedly rebuilds model-visible context from
-runtime facts. Tool results can refresh the frame before the next model call,
-while accepted outputs and failures are written back as durable conversation
-facts.
+## Features
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant Runtime as RuntimeOrchestrator
-    participant Executor as PromptAgentExecutor
-    participant Context as Prompt Context
-    participant Adapter as AgentLoopAdapter
-    participant Broker as ToolBroker
-    participant Store as Persistence Truth
-    participant Obs as Observability
+- **Prompt Skill Runtime**: discover, freeze, activate, and inject local prompt
+  skills while loading resource files only through brokered
+  `load_skill_resource`.
+- **Runtime-Owned Context And Compression**: assemble model-visible context
+  through `ModelContextFrame`, estimate token budgets, omit old tool results,
+  and support automatic compression plus manual `/compress`.
+- **Todo Plan Continuity**: preserve a runtime-owned plan for long debugging
+  tasks instead of relying on natural-language chat history.
+- **Brokered Tool Calling**: route native file tools and structured
+  `shell_exec` through `ToolBroker` for schema validation, path/shell policy,
+  approval, timeout, artifact handling, result normalization, and audit.
+- **Multimodal Vision**: inspect local PNG/JPEG outputs through brokered
+  `view_image` when multimodal configuration is enabled.
+- **Durable Recovery And Session Control**: persist accepted conversation
+  facts, write terminal recovery checkpoints, support explicit resume,
+  cancellation, normalized failures, and narrow runtime retry/continuation.
+- **Observability And Evaluation**: render `trace.md`, write `events.jsonl`,
+  and emit non-authoritative `run_metrics_*.json` timing, token, and tool
+  metrics.
 
-    User->>Runtime: prompt or REPL input
-    Runtime->>Store: ensure or load active session/run
-    Runtime->>Executor: run_turn
-    Executor->>Store: append durable user input
-    Executor->>Context: compose ModelContextFrame
-    Context->>Store: read skill snapshots and Todo Plan injections
-    Context-->>Executor: frame + token estimate
-    opt context optimization needed
-        Executor->>Context: omit old tool results or compress history
-        Executor->>Context: recompose optimized ModelContextFrame
-        Context-->>Executor: optimized frame + token estimate
-    end
-    Executor->>Adapter: model call with frame
-    loop model-requested tool continuation
-        Adapter->>Broker: invoke requested tools
-        Broker->>Store: audit events and artifact metadata
-        Broker-->>Adapter: normalized tool results
-        Adapter->>Executor: refresh_model_context_frame(tool-loop messages)
-        Executor->>Context: compose follow-up ModelContextFrame
-        Context-->>Adapter: refreshed provider messages
-    end
-    Adapter-->>Executor: final AgentRunResult
-    Executor->>Store: append assistant, tool, failure, or cancellation facts
-    opt prompt session terminalizes
-        Runtime->>Store: write terminal recovery checkpoint
-        Runtime->>Obs: refresh terminal trace
-        Obs->>Store: read durable conversation and artifacts
-        Runtime->>Obs: write run metrics from invocation observations
-    end
-```
+Current boundaries:
 
-This flow is intentionally recovery-oriented. The runtime persists accepted
-facts, not partial provider streams or hidden reasoning. Resume uses durable
-conversation plus terminal recovery checkpoints rather than replaying in-flight
-model or tool state.
-
-`ModelContextFrame` is the runtime-owned LLM-visible request frame sent to the
-model adapter. It is assembled from runtime-owned sources on each model call.
-The adapter materializes provider-legal messages and provider-native tool
-bindings from the frame; the provider does not receive raw database rows,
-unbounded chat history, or the frame object verbatim.
-
-```mermaid
-flowchart TB
-    FRAME[ModelContextFrame\nruntime-owned adapter-call frame]
-
-    SRC_A["Runtime invariants"]
-    SRC_B["Agent config / default prompt"]
-    SRC_C1["PromptComposer stable skill formatter"]
-    SRC_C2["SkillSnapshotStore\navailable_skill_headers"]
-    SRC_D["Run active skill refs +\nfrozen skill snapshots/resources"]
-    SRC_E["TodoPlanStore"]
-    SRC_F["Durable compression summary projection"]
-    SRC_G["Optimized durable conversation projection"]
-    SRC_H["Current user input or\ntool-loop messages"]
-
-    subgraph STACK[message_segments ordered by seq]
-        direction TB
-        A["runtime_safety_prefix\n[system]\nnon-negotiable runtime constraints; ToolBroker owns authorization"]
-        B["main_agent_system_prompt\n[system]\nmain-agent identity, behavior contract, and execution discipline"]
-        C1["stable_skill_formatter_header\n[system]\nstable prompt-skill formatting guidance"]
-        C2["available_skill_headers\n[system]\navailable frozen skill headers visible to the model"]
-        D["runtime_active_skill_context\n[system]\nfrozen instructions for skills activated in this run"]
-        E["runtime_todo_plan\n[system]\nruntime-owned todo / plan state exposed as context"]
-        F["context_summary optional\n[user]\ndurable runtime summary projection from compression, when present"]
-        G["retained/projected durable conversation\n[user], [assistant], [tool], projected [runtime]\naccepted facts kept in projection order after omission/compression"]
-        H["current user input / tool-loop messages\n[user], [assistant], [tool]\ncurrent request and in-turn tool continuation messages"]
-    end
-
-    SRC_TOOLS["Visible ToolDefinition records"]
-    TOOLS["tool_schema_bindings\ncallable tool schemas visible to the provider; not permission grants"]
-
-    FRAME --> A
-    A --> B --> C1 --> C2 --> D --> E --> F --> G --> H
-    FRAME --> TOOLS
-
-    SRC_A -.-> A
-    SRC_B -.-> B
-    SRC_C1 -.-> C1
-    SRC_C2 -.-> C2
-    SRC_D -.-> D
-    SRC_E -.-> E
-    SRC_F -.-> F
-    SRC_G -.-> G
-    SRC_H -.-> H
-    SRC_TOOLS -.-> TOOLS
-```
-
-## Core Features
-
-### Agent Runtime
-
-- **Interactive and one-shot execution**: run `debug-agent` as a REPL or execute
-  one prompt with `debug-agent -p`.
-- **Prompt skills**: discover, freeze, activate, and load resources from local
-  prompt skills without giving the model raw filesystem access to skill source
-  directories.
-- **Runtime-owned context**: build model-visible context through
-  `ModelContextFrame`, with token-budget estimation, old tool-result omission,
-  automatic context compression, and manual `/compress`.
-- **Todo Plan continuity**: keep a runtime-owned plan for long multi-step
-  debugging tasks, independent of natural-language conversation history.
-- **Main-agent thinking mode**: optionally request provider thinking for main
-  agent calls while discarding thinking blocks from durable, visible, and replay
-  paths.
-
-### Tooling And Safety
-
-- **Brokered tools**: route all model-visible tool calls through `ToolBroker`
-  for schema validation, policy checks, approval, execution, artifact handling,
-  result normalization, and audit.
-- **Controlled shell execution**: run commands as structured argv through
-  `shell_exec`, with `shell=False`, path policy, shell policy, timeout, and
-  approval.
-- **Native file tools**: expose brokered `find_file`, `read_file`, `list_dir`,
-  `search_text`, `write_file`, and `edit_file` with structured results,
-  pagination, path policy, and stale-write protection for file writes.
-- **Image inspection**: inspect local PNG/JPEG outputs through `view_image`
-  when multimodal configuration is enabled.
-- **Approval and policy boundary**: combine trusted/denied path roots,
-  shell-command allow/deny rules, approval modes, and audit records before any
-  model-requested side effect is executed.
-
-### Continuity And Recovery
-
-- **Durable conversation**: persist accepted user, assistant, tool, failure, and
-  cancellation facts as runtime-owned conversation truth.
-- **Normalized failure handling**: use centralized `error_class` and `reason`
-  symbols for model, tool, config, policy, persistence, runtime, and
-  cancellation failures.
-- **Narrow retry and continuation**: support opt-in runtime-owned transient
-  retry and `output_token_limit_reached` continuation without generic step
-  retry, tool replay, or token-level resume.
-- **Session control**: support running-turn cancellation, best-effort provider
-  and shell cancellation, idle terminalization, explicit resume, and
-  user-confirmed stale owner fail-close.
-- **Terminal recovery checkpoints**: resume only from eligible terminal prompt
-  sessions using durable conversation facts and checkpoint-frozen runtime state.
-
-### Observability And Evaluation
-
-- **Trace rendering**: write human-readable conversation traces under
-  `.sessions/<session_id>/logs/trace.md`.
-- **Event stream**: write non-authoritative runtime diagnostics and run events
-  to `.sessions/<session_id>/logs/events.jsonl`.
-- **Run metrics**: write non-authoritative per-invocation timing, token, and
-  tool stability metrics for review and offline evaluation.
-
-### RenderDoc Readiness
-
-- **Scripted RenderDoc access**: support short, structured `rdc` command
-  sequences through brokered `shell_exec`.
-- **Visual frame inspection**: inspect exported render targets and textures
-  through brokered `view_image`.
-- **Package deployment smoke**: support installation as a console script through
-  `uv tool install`, then run from a normal workspace with `debug-agent`.
-
-### Current Boundaries
-
-- RenderDoc frame analysis is supported; shader source-level debugging is not.
-- The runtime can produce structured diagnostic reports, but it does not
-  generate or validate shader source patches.
+- RenderDoc frame analysis is supported; shader source-level debugging and
+  automatic shader patch generation are not.
 - The project is a local debugging runtime, not a general-purpose agent
   platform.
 - RenderDoc and `rdc` procedure choices belong to prompt skills and user tasks,
@@ -259,10 +108,12 @@ flowchart TB
 - Windows or Linux for the real local RenderDoc workflow. This is because the
   current `rdc-cli` local capture/replay path supports Windows and Linux; macOS
   is limited to Split client workflows in `rdc-cli`.
-- RenderDoc and `rdc` are required for real RenderDoc capture analysis. They are
-  not required for ordinary unit tests or fake readiness tests.
+- [RenderDoc](https://github.com/baldurk/renderdoc) and
+  [`rdc-cli`](https://github.com/BANANASJIM/rdc-cli) are required for real
+  RenderDoc capture analysis. They are not required for ordinary unit tests or
+  fake readiness tests.
 
-### Install The CLI
+### Install
 
 Install from a local checkout:
 
@@ -287,27 +138,16 @@ Minimal real-provider configuration:
 
 ```toml
 [defaults]
-# Main model provider. The current real provider path is Anthropic-compatible.
 provider = "anthropic"
-
-# Main model name passed to the provider adapter.
 model = "kimi-k2.5"
-
-# Sampling temperature for main model calls.
 temperature = 0.2
-
-# Maximum output tokens for main model calls.
 max_tokens = 8192
-
-# Main model request timeout in seconds.
 timeout_seconds = 120
 
 [auth.anthropic]
-# Environment variable that stores the provider API key.
 api_key_env = "ANTHROPIC_API_KEY"
 
 [providers.anthropic]
-# Environment variable that stores the Anthropic-compatible base URL.
 base_url_env = "ANTHROPIC_BASE_URL"
 ```
 
@@ -341,42 +181,43 @@ Minimal policy configuration:
 
 ```toml
 [[path_policies]]
-# Additional trusted roots. The current workspace root is trusted by default.
 scope = "trust"
 paths = ["."]
 
 [[path_policies]]
-# Additional hard-denied paths. Denies cannot be overridden by approval mode.
 scope = "deny"
 paths = ["secrets/", ".env"]
 
 [shell_policy]
-# Empty allow means no user allowlist restriction after builtin denies, path
-# policy, approval, timeout, artifact handling, and audit.
 allow = []
-
-# Deny direct git access from model-initiated shell commands.
 deny = [["git"]]
 ```
 
 For a fully annotated policy template, see
 [`docs/templates/agent.toml`](docs/templates/agent.toml).
 
-### Install RenderDoc and `rdc`
+In the REPL, enter `/tools` to inspect all currently available tools and the
+active path policy and shell policy configuration.
 
-RenderDoc and `rdc` are required for real RenderDoc capture analysis. They are
-not required for ordinary unit tests or fake readiness tests.
+### Configure Prompt Skills
 
-For local RenderDoc replay, use Windows or Linux. macOS is not a current target
-for this project's real local RenderDoc workflow because `rdc-cli` documents
-macOS as Split client only.
+Prompt skills are discovered from direct child directories under these roots:
 
-This project builds on the surrounding RenderDoc agent tooling ecosystem:
+- Project skills: `<workspace_root>/.debug-agent/skills/`
+- Global user skills: `~/.debug-agent/skills/`
 
-- [`renderdoc-skill`](https://github.com/rudybear/renderdoc-skill): a RenderDoc
-  GPU frame debugging skill.
-- [`rdc-cli`](https://github.com/BANANASJIM/rdc-cli): a scriptable CLI for
-  RenderDoc captures, terminal workflows, CI pipelines, and AI agents.
+Each skill directory must contain a `SKILL.md`. Project skills override
+same-name global skills as whole skills. Skill source is snapshotted and frozen
+when a session starts, so editing a skill file does not affect an already
+running session.
+
+In an interactive REPL, use `/skills` to inspect discovered and active skills.
+In one-shot or REPL prompts, ask the agent to use the relevant skill, for
+example:
+
+```bash
+debug-agent --approval-mode semi-auto -p "Use the renderdoc-gpu-debug skill to inspect this frame capture."
+```
 
 ### Run the Agent
 
@@ -426,31 +267,6 @@ uv run pytest -v
 Use the full test command before changing runtime behavior. For quick local
 checks, run the narrower unit or integration suite first.
 
-## Design Highlights
-
-- **Runtime-owned truth**: sessions, runs, durable conversation, checkpoints,
-  artifacts, Todo Plan state, and tool audit facts are runtime contracts.
-- **Runtime-owned context**: model-visible context is assembled from structured
-  runtime facts, with compression and Todo Plan injection handled outside the
-  model's natural-language memory.
-- **ToolBroker boundary**: every model-visible tool call passes through one
-  execution envelope for schema validation, policy, approval, timeout, artifact
-  handling, result normalization, and audit.
-- **Normalized failure semantics**: failure handling, retry decisions,
-  terminalization, and resume eligibility are driven by centralized
-  `error_class` and `reason` symbols.
-- **Recovery over replay**: resume restores eligible terminal prompt sessions
-  from durable conversation facts and terminal recovery checkpoints; it does not
-  replay accepted model calls, token streams, or mid-flight tool state.
-- **Prompt skill separation**: domain procedure lives in prompt skills; runtime
-  core provides the platform boundary and does not hard-code RenderDoc, `rdc`,
-  shader, or report-schema business state machines.
-- **Adapter isolation**: LangChain is used behind `AgentLoopAdapter`, so agent
-  framework behavior does not redefine runtime state or policy.
-- **Non-authoritative UI and metrics**: streaming UI, `trace.md`, and
-  `events.jsonl`, and `run_metrics_*.json` are observation and review surfaces,
-  not recovery truth.
-
 ## Evaluation
 
 The project uses a lightweight evaluation framework for RenderDoc frame
@@ -458,58 +274,44 @@ analysis. It measures whether the agent can complete analysis, produce a
 schema-valid `debug_report.json`, locate likely issue positions, and report
 runtime cost.
 
-The current evaluation focuses on RenderDoc frame analysis. It does not claim
-shader source localization, automatic patch generation, or regression
-validation.
+The results below were measured on an internal evaluation dataset with 56
+samples.
 
-### Business Metrics
-
-| Metric | Meaning | Current Result |
+| Metric | Ours (debug-agent + kimi-k2.5) | Comparison ([codely](https://codely.tuanjie.cn/) + opus4.8) |
 | --- | --- | --- |
-| Analysis completion rate | Runs that produce `debug_report.json` | TBD |
-| Debug report schema valid rate | Completed reports that pass JSON schema validation | TBD |
-| Issue location Top-1 hit rate | Highest-confidence candidate matches ground truth `eid + stage` | TBD |
-| Issue location Top-3 hit rate | Any of the top 3 candidates matches ground truth `eid + stage` | TBD |
-
-### Technical Metrics
-
-| Metric | Meaning | Current Result |
-| --- | --- | --- |
-| Token per valid report | Average total tokens for schema-valid reports | TBD |
-| Time per valid report | Average wall time for schema-valid reports | TBD |
-| Tool failure rate | Failed tool calls divided by total tool calls | TBD |
-
-An offline aggregation script can read `logs/<run>/results.csv` and write
-`logs/<run>/eval.csv` for run-level summaries.
+| Samples | 56 | 56 |
+| Analysis completion rate | 100% | 100% |
+| Debug report schema valid rate | 100% | 100% |
+| Issue location Top-1 hit rate | 60.7% (34/56) | 69.6% (39/56) |
+| Issue location Top-3 hit rate | 80.4% (45/56) | 82.1% (46/56) |
+| Average time per valid report | 476s (7m56s) | 944s (15m44s) |
+| Average tokens per valid report | 2.1M | 2.7M |
+| Average tool calls per valid report | 90.1 | 86.8 |
 
 ## Project Structure
 
 ```text
-src/debug_agent/
-  adapters/        Model and vision provider adapters.
-  cli/             CLI entrypoint, REPL, TUI, and user-facing commands.
-  observability/   Trace rendering and review-oriented outputs.
-  persistence/     SQLite stores, checkpoints, artifacts, and schema gates.
-  runtime/         Orchestration, config, policy, prompt execution, resume.
-  tools/           ToolBroker, native tools, shell execution, view_image.
-
-docs/
-  project-contract.md
-  adr/
-  phase-*/
-  templates/
-
-tests/
-  unit/
-  integration/
+.
+├── src/
+│   └── debug_agent/
+│       ├── adapters/        Model and vision provider adapters.
+│       ├── cli/             CLI entrypoint, REPL, TUI, and user-facing commands.
+│       ├── observability/   Trace rendering and review-oriented outputs.
+│       ├── persistence/     SQLite stores, checkpoints, artifacts, and schema gates.
+│       ├── runtime/         Orchestration, config, policy, prompt execution, resume.
+│       └── tools/           ToolBroker, native tools, shell execution, view_image.
+├── docs/
+│   ├── project-contract.md  Product behavior, architecture, and contract truth.
+│   ├── adr/                 Accepted architecture decision records.
+│   ├── phase-*/             Phase scope, specs, tests, operations, and plans.
+│   └── templates/           Annotated config and policy templates.
+└── tests/
+    ├── unit/                Focused module and contract tests.
+    └── integration/         Runtime flow, tool, readiness, and smoke tests.
 ```
 
-### Current Scale
-
-At the time of this README:
-
-- `src/`: 58 Python files, about 25k non-empty non-comment lines.
-- `tests/`: 68 Python test files, 819 test cases.
+Current scale: `src/` has 58 Python files and about 25k non-empty non-comment
+lines; `tests/` has 68 Python test files and 819 test cases.
 
 ## Further Reading
 

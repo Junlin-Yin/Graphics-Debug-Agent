@@ -32,6 +32,54 @@
 - ToolBroker 是所有模型可见工具的强制执行边界。native tool、shell/git、runtime control、Plan tools、`view_image`、foreground subagent `task` 和后续 MCP tool 都不能绕过审批、路径策略、shell 策略、timeout 和 audit。
 - Runtime error handling 使用集中定义的 normalized error taxonomy。窄 runtime retry 只处理明确 opt-in 的 transient runtime-owned failure 和 `output_token_limit_reached` continuation，不引入 generic step retry、tool replay、token-level resume 或已接受 model-call result replay。
 
+## Runtime Flow And Context Boundary
+
+一个 prompt turn 的执行流围绕 runtime truth 重建上下文、调用模型、执行 brokered tools，并把 accepted facts 写回 durable conversation。Tool result 可以刷新下一次模型调用的 request frame；partial provider streams、hidden reasoning 和 mid-flight tool state 不进入恢复真值。
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Runtime as RuntimeOrchestrator
+    participant Executor as PromptAgentExecutor
+    participant Context as Prompt Context
+    participant Adapter as AgentLoopAdapter
+    participant Broker as ToolBroker
+    participant Store as Persistence Truth
+    participant Obs as Observability
+
+    User->>Runtime: prompt or REPL input
+    Runtime->>Store: ensure or load active session/run
+    Runtime->>Executor: run_turn
+    Executor->>Store: append durable user input
+    Executor->>Context: compose ModelContextFrame
+    Context->>Store: read skill snapshots and Todo Plan injections
+    Context-->>Executor: frame + token estimate
+    opt context optimization needed
+        Executor->>Context: omit old tool results or compress history
+        Executor->>Context: recompose optimized ModelContextFrame
+        Context-->>Executor: optimized frame + token estimate
+    end
+    Executor->>Adapter: model call with frame
+    loop model-requested tool continuation
+        Adapter->>Broker: invoke requested tools
+        Broker->>Store: audit events and artifact metadata
+        Broker-->>Adapter: normalized tool results
+        Adapter->>Executor: refresh_model_context_frame(tool-loop messages)
+        Executor->>Context: compose follow-up ModelContextFrame
+        Context-->>Adapter: refreshed provider messages
+    end
+    Adapter-->>Executor: final AgentRunResult
+    Executor->>Store: append assistant, tool, failure, or cancellation facts
+    opt prompt session terminalizes
+        Runtime->>Store: write terminal recovery checkpoint
+        Runtime->>Obs: refresh terminal trace
+        Obs->>Store: read durable conversation and artifacts
+        Runtime->>Obs: write run metrics from invocation observations
+    end
+```
+
+`ModelContextFrame` 是 runtime-owned LLM-visible request frame。它由 runtime invariants、frozen config/default prompt、available skill headers、active skill snapshots/resources、Todo Plan、compression summary、projected durable conversation 和当前 turn/tool-loop messages 组装而成；adapter 只把它 materialize 成 provider-legal messages 和 provider-native tool bindings。Provider 不接收 raw database rows、unbounded chat history 或 frame object 本身。详细边界见 [ADR 0010](0010-modelcontextframe-llm-visible-context-boundary.md)，上下文压缩 continuity 见 [ADR 0011](0011-layered-context-compression-continuity.md)。
+
 ## Prompt-Skill Mainline
 
 当前主线选择 prompt skill + Todo Plan + foreground named subagent，而不是把 Workflow Runtime 作为默认执行层。
