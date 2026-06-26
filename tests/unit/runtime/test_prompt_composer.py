@@ -92,7 +92,6 @@ def test_prompt_composer_orders_frame_segments_and_available_skill_headers(tmp_p
                     content="Retained answer.",
                 )
             ],
-            live_messages=[],
             current_messages=[
                 ConversationMessage(
                     seq=200,
@@ -195,7 +194,6 @@ def test_prompt_composer_excludes_audit_only_runtime_cancellation_facts(
                     },
                 ),
             ],
-            live_messages=[],
             current_messages=[
                 ConversationMessage(
                     seq=200,
@@ -245,7 +243,6 @@ def test_prompt_composer_projects_runtime_context_summary_as_wrapped_user_contex
                     content="Durable continuity summary.",
                 )
             ],
-            live_messages=[],
             current_messages=[],
             tool_schema_bindings=[],
         )
@@ -296,7 +293,6 @@ def test_prompt_composer_projects_runtime_failure_fact_as_wrapped_user_context(
                     },
                 )
             ],
-            live_messages=[],
             current_messages=[],
             tool_schema_bindings=[],
         )
@@ -315,6 +311,95 @@ def test_prompt_composer_projects_runtime_failure_fact_as_wrapped_user_context(
         "The following previous runtime failure may be relevant for continuation.",
     ]
     assert "The previous response had malformed tool args." in content
+    db.close()
+
+
+def test_prompt_composer_preserves_runtime_fact_position_within_history(
+    tmp_path,
+) -> None:
+    db, session, run, _runs, store = _runtime_with_skill(tmp_path)
+    composer = PromptComposer(
+        skill_snapshot_store=store,
+        todo_plan_store=TodoPlanStore(db.connection),
+    )
+
+    result = composer.compose(
+        PromptCompositionRequest(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            stable_system_content="Main prompt.",
+            retained_messages=[
+                ConversationMessage(
+                    seq=100,
+                    role="user",
+                    kind="turn_1_user_input",
+                    turn_id="turn-1",
+                    model_call_id=None,
+                    tool_call_id=None,
+                    content="First question.",
+                ),
+                ConversationMessage(
+                    seq=110,
+                    role="assistant",
+                    kind="turn_1_assistant_output",
+                    turn_id="turn-1",
+                    model_call_id="model-call-1",
+                    tool_call_id=None,
+                    content="First answer.",
+                ),
+                ConversationMessage(
+                    seq=120,
+                    role="runtime",
+                    kind="failure_fact",
+                    turn_id="turn-2",
+                    model_call_id=None,
+                    tool_call_id=None,
+                    content={
+                        "error_class": "model_error",
+                        "reason": "invalid_tool_call",
+                        "message": "Turn 2 failed after turn 1.",
+                        "artifact_ids": [],
+                    },
+                ),
+                ConversationMessage(
+                    seq=130,
+                    role="user",
+                    kind="turn_3_user_input",
+                    turn_id="turn-3",
+                    model_call_id=None,
+                    tool_call_id=None,
+                    content="Third question.",
+                ),
+            ],
+            current_messages=[],
+            tool_schema_bindings=[],
+        )
+    )
+
+    history_kinds = [
+        segment.kind
+        for segment in result.frame.ordered_message_segments()
+        if segment.kind
+        in {
+            "turn_1_user_input",
+            "turn_1_assistant_output",
+            "failure_fact",
+            "turn_3_user_input",
+        }
+    ]
+    assert history_kinds == [
+        "turn_1_user_input",
+        "turn_1_assistant_output",
+        "failure_fact",
+        "turn_3_user_input",
+    ]
+    failure_segment = next(
+        segment
+        for segment in result.frame.ordered_message_segments()
+        if segment.kind == "failure_fact"
+    )
+    assert failure_segment.role == "user"
+    assert "Turn 2 failed after turn 1." in str(failure_segment.content)
     db.close()
 
 
@@ -344,7 +429,6 @@ def test_active_skill_context_segment_shape_and_metadata(tmp_path) -> None:
             active_skills=active_run.active_skills,
             context_summary=None,
             retained_messages=[],
-            live_messages=[],
             current_messages=[],
             tool_schema_bindings=[],
         )
@@ -434,7 +518,6 @@ def test_active_skill_context_is_not_durable_and_resource_outputs_stay_ordinary(
             active_skills=active_run.active_skills,
             context_summary=None,
             retained_messages=durable_conversation,
-            live_messages=[],
             current_messages=[],
             tool_schema_bindings=[],
         )
@@ -504,7 +587,6 @@ def test_prompt_composer_estimate_uses_composed_frame_not_raw_conversation(tmp_p
             active_skills=active_run.active_skills,
             context_summary=None,
             retained_messages=raw_conversation,
-            live_messages=[],
             current_messages=[],
             tool_schema_bindings=[{"name": "activate_skill"}],
         )

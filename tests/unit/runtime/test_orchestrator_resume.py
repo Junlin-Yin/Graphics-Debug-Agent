@@ -278,6 +278,170 @@ def test_start_resumed_repl_restores_context_summary_as_plain_text(
         resumed.runtime.close()
 
 
+def test_start_resumed_repl_preserves_provider_visible_runtime_fact_order(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    captured_messages: list[object] = []
+
+    class CapturingModel:
+        def bind_tools(self, _tools):
+            return self
+
+        def invoke(self, messages):
+            captured_messages[:] = list(messages)
+            return type(
+                "Response",
+                (),
+                {"content": "post resume answer", "tool_calls": [], "usage": {}},
+            )()
+
+    class CapturingModelFactory:
+        def create(self, _config):
+            return ModelFactoryResult(model=CapturingModel(), error=None)
+
+    monkeypatch.setattr(orchestrator_module, "ModelFactory", CapturingModelFactory)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    started = RuntimeOrchestrator(workspace_root=workspace).start_repl(
+        _config("post resume answer")
+    )
+    assert started.runtime is not None
+    runtime = started.runtime
+    try:
+        store = ConversationStore(runtime.db.connection)
+        row_payloads = [
+            ConversationAppend(
+                turn_id="turn-1",
+                message_group_id="turn-1:user",
+                model_call_id=None,
+                group_position=0,
+                group_row_count=1,
+                role="user",
+                kind="user_input",
+                content={"content": "before failure"},
+                metadata={},
+            ),
+            ConversationAppend(
+                turn_id="turn-1",
+                message_group_id="turn-1:assistant",
+                model_call_id="turn-1:assistant",
+                group_position=0,
+                group_row_count=1,
+                role="assistant",
+                kind="assistant_output",
+                content={"content": "answer before failure"},
+                metadata={},
+            ),
+            ConversationAppend(
+                turn_id="turn-2",
+                message_group_id="turn-2:runtime:failure_fact",
+                model_call_id=None,
+                group_position=0,
+                group_row_count=1,
+                role="runtime",
+                kind="failure_fact",
+                content={
+                    "error_class": "model_error",
+                    "reason": "invalid_tool_call",
+                    "message": "failure after answer",
+                    "artifact_ids": [],
+                },
+                metadata={
+                    "error_class": "model_error",
+                    "reason": "invalid_tool_call",
+                },
+            ),
+            ConversationAppend(
+                turn_id="turn-3",
+                message_group_id="turn-3:user",
+                model_call_id=None,
+                group_position=0,
+                group_row_count=1,
+                role="user",
+                kind="user_input",
+                content={"content": "after failure"},
+                metadata={},
+            ),
+        ]
+        rows = [
+            row
+            for payload in row_payloads
+            for row in store.append_closed_group(
+                session_id=runtime.session_id,
+                run_id=runtime.run_id,
+                messages=[payload],
+            )
+        ]
+        runtime.conversation = [
+            {
+                "seq": index,
+                "role": row.role,
+                "kind": row.kind,
+                "turn_id": row.turn_id,
+                "model_call_id": row.model_call_id,
+                "tool_call_id": row.tool_call_id,
+                "content": row.content["content"]
+                if row.role in {"user", "assistant"}
+                and isinstance(row.content, dict)
+                and set(row.content) == {"content"}
+                else row.content,
+                "artifact_refs": [],
+                "metadata": dict(row.metadata),
+                "durable_message_index": row.message_index,
+            }
+            for index, row in enumerate(rows, start=1)
+        ]
+        runtime.cancel_idle()
+    finally:
+        runtime.close()
+
+    resumed = RuntimeOrchestrator(workspace_root=workspace).start_resumed_repl(
+        runtime.session_id
+    )
+
+    assert resumed.runtime is not None
+    try:
+        result = resumed.runtime.run_turn("continue")
+
+        assert result.status == "completed"
+        provider_contents = [
+            str(message.get("content", ""))
+            for message in captured_messages
+            if isinstance(message, dict)
+        ]
+        matched = [
+            content
+            for content in provider_contents
+            if any(
+                marker in content
+                for marker in {
+                    "before failure",
+                    "answer before failure",
+                    "failure after answer",
+                    "after failure",
+                    "continue",
+                }
+            )
+        ]
+        assert matched == [
+            "before failure",
+            "answer before failure",
+            (
+                "[Runtime failure observation]\n"
+                "The following previous runtime failure may be relevant for continuation.\n"
+                "Use it to continue or repair the task; do not repeat this block verbatim.\n"
+                "\n"
+                '{"artifact_ids":[],"error_class":"model_error",'
+                '"message":"failure after answer","reason":"invalid_tool_call"}'
+            ),
+            "after failure",
+            "continue",
+        ]
+    finally:
+        resumed.runtime.close()
+
+
 def test_resumed_repl_with_runtime_cancellation_fact_runs_next_prompt(
     tmp_path,
     monkeypatch,

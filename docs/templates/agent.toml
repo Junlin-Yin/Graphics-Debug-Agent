@@ -1,0 +1,84 @@
+# Full debug-agent main-agent policy template.
+#
+# Location:
+#   ~/.debug-agent/agent.toml
+#
+# This file declares model-visible tool policy. Runtime configuration such as
+# model selection, context budgets, timeouts, multimodal settings, and thinking
+# belongs in ~/.debug-agent/config.toml.
+#
+# Policy is parsed at session startup and frozen into the session config
+# snapshot. Resume uses the frozen policy facts, not the current mutable file.
+
+# Path policy applies to model-visible tools mediated by ToolBroker.
+# It does not govern runtime-owned persistence or artifact store internals.
+#
+# Allowed scopes:
+#   trust - add trusted roots that may be auto-allowed depending on approval mode
+#   deny  - hard-deny paths before approval is requested
+#
+# The current workspace root is trusted by default. Trust entries add trusted
+# roots; they do not narrow or replace the workspace root trust.
+#
+# Relative paths resolve against the invocation workspace root. Paths ending in
+# "/" or "\\" are subtree matches. Other entries are exact canonical matches.
+
+[[path_policies]]
+# Example: trust an additional local tools directory.
+scope = "trust"
+paths = ["../shared-debug-tools/"]
+
+[[path_policies]]
+# Example: deny secrets and environment files.
+# Deny entries are blacklist vetoes. They apply in every approval mode,
+# including yolo, and cannot be overridden by interactive approval.
+scope = "deny"
+paths = ["secrets/", ".env"]
+
+# Built-in path denies are always active and cannot be overridden here:
+#   .git/
+#   node_modules/
+#   build/
+#   dist/
+#   .venv/
+#   __pycache__/
+#   .pytest_cache/
+#   .sessions/
+#   ~/.debug-agent/skills/
+#   <workspace_root>/.debug-agent/skills/
+
+[shell_policy]
+# Shell policy uses argv-prefix matching, not regular expressions.
+# Matching is performed on structured argv after runtime normalization.
+#
+# Empty allow means there is no user allowlist restriction after builtin deny,
+# user deny, path policy, approval mode, timeout, artifact handling, and audit.
+# Non-empty allow means only matching argv prefixes are allowed.
+allow = [
+  ["uv"],
+  ["python", "-m", "pytest"],
+  ["rdc"],
+]
+
+# Deny rules take precedence over allow rules.
+# This example denies direct model-initiated git access.
+deny = [
+  ["git"],
+]
+
+# Built-in shell denies are always active and cannot be overridden here:
+#   sudo
+#   su
+#   doas
+#   rm with recursive options such as -r, -R, -rf, or --recursive
+#   raw shell trampolines:
+#     sh -c
+#     bash -c
+#     zsh -c
+#     cmd /c
+#     powershell -Command
+#     pwsh -Command
+#
+# Shell execution is not a sandbox. Commands still run locally after passing
+# schema validation, shell policy, path policy, approval, timeout, artifact
+# handling, and audit.
