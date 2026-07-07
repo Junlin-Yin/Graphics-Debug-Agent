@@ -1102,24 +1102,41 @@ def test_artifact_ids_or_runtime_references_do_not_bypass_sessions_deny(tmp_path
         session_id="sess_1",
         run_id="run_1",
         filename="secret.txt",
-        content="secret",
+        content="first\nsecond\n",
         metadata={},
         artifact_id="art_secret",
     )
-    (runtime["workspace"] / ".sessions" / "sess_1" / "artifacts").mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-    runtime_reference = ".sessions/sess_1/artifacts/secret.txt"
-    (runtime["workspace"] / runtime_reference).write_text("secret", encoding="utf-8")
+    arbitrary_reference = ".sessions/sess_1/artifacts/not_accepted.txt"
+    (runtime["workspace"] / arbitrary_reference).write_text("secret", encoding="utf-8")
+    accepted_artifact_path = f".sessions/{artifact.relative_path}"
+    absolute_artifact_path = str((runtime["workspace"] / accepted_artifact_path).resolve())
 
     by_id = _invoke(runtime, "read_file", {"path": "art_secret"})
     by_artifact_store_path = _invoke(runtime, "read_file", {"path": artifact.relative_path})
-    by_runtime_reference = _invoke(runtime, "read_file", {"path": runtime_reference})
+    by_absolute_artifact_path = _invoke(
+        runtime,
+        "read_file",
+        {"path": absolute_artifact_path},
+    )
+    by_arbitrary_runtime_reference = _invoke(
+        runtime,
+        "read_file",
+        {"path": arbitrary_reference},
+    )
+    by_accepted_artifact_path = _invoke(
+        runtime,
+        "read_file",
+        {"path": accepted_artifact_path, "limit": 1},
+    )
 
     assert by_id.status == "error"
     assert by_artifact_store_path.status == "error"
-    assert by_runtime_reference.status == "denied"
+    assert by_absolute_artifact_path.status == "denied"
+    assert by_arbitrary_runtime_reference.status == "denied"
+    assert by_accepted_artifact_path.status == "ok"
+    assert by_accepted_artifact_path.output["content"] in {"first\n", "first\r\n"}
+    assert by_accepted_artifact_path.output["truncated"] is True
+    assert by_accepted_artifact_path.output["next_offset"] == 1
     runtime["db"].close()
 
 
@@ -1972,6 +1989,9 @@ def test_structured_native_large_field_is_artifacted_without_row_fallback(tmp_pa
     assert result.output["bytes"] == len(content.encode("utf-8"))
     assert len(result.artifacts) == 1
     assert result.output["content"]["artifact_id"] == result.artifacts[0]
+    assert result.output["content"]["artifact_path"] == (
+        f".sessions/{result.output['content']['relative_path']}"
+    )
     assert result.output["content"]["relative_path"].startswith("sess_1/artifacts/")
     assert result.output["content"]["sha256"].startswith("sha256:")
     assert runtime["artifacts"].resolve_path(result.artifacts[0]).read_text(

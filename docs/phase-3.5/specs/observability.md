@@ -423,17 +423,20 @@ Tool argument redaction rules:
 Artifact-backed content rules:
 
 - do not read artifact content to generate a preview or verify body checksums.
-- display only `artifact_id`, relative artifact path, and any already-inline
-  preview/reference metadata. The relative path comes from the durable artifact
-  reference object's `relative_path` when present, or from the matching
-  ArtifactStore record during validation.
+- display only `artifact_id`, model-visible `artifact_path` when present,
+  relative artifact path, and any already-inline preview/reference metadata. The
+  relative path comes from the durable artifact reference object's
+  `relative_path` when present, or from the matching ArtifactStore record during
+  validation. `artifact_path` is presentation and model-visible follow-up
+  guidance only; trace must not use it as runtime truth.
 - validate Phase 3.5 field-level artifact reference objects inside inline
   `tool_result.content_json.content` using the same ArtifactStore record checks
   as artifact-backed rows. Each referenced `artifact_id` must have a matching
   durable ArtifactStore record, a matching session/run scope, a matching
-  `relative_path`, and an existing referenced file. The durable
-  `tool_result.artifact_ids` list must include every inline field-level artifact
-  reference and must not contain unrelated ids.
+  `relative_path` when present, a matching `artifact_path` when present, and an
+  existing referenced file. The durable `tool_result.artifact_ids` list must
+  include every inline field-level artifact reference and must not contain
+  unrelated ids.
 - if the durable `tool_result` already stores a redacted inline preview, trace
   may display that inline preview.
 - do not read an unredacted artifact to generate or enrich the trace.

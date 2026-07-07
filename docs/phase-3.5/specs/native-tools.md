@@ -140,6 +140,16 @@ override these denies. The skill-source denies apply only to the configured
 global and project skill source roots; unrelated directories named `skills` are
 not denied solely by name.
 
+The only Phase 3.5 exception for `.sessions/` is a runtime-issued,
+model-visible artifact path. When a successful tool result exposes an
+`artifact_path` for an accepted ArtifactStore record, `read_file` may read that
+exact artifact file through its ordinary pagination contract. This exception
+does not allow listing, searching, writing, editing, executing, glob expansion,
+directory traversal, or reading arbitrary `.sessions/` paths. It also does not
+allow the model to treat `artifact_id` as a filesystem path. Runtime must
+validate the supplied path against the accepted ArtifactStore record before
+applying the exception.
+
 ### Pagination
 
 Pagination fields:
@@ -323,6 +333,7 @@ Large-output artifacting rules:
   ```json
   {
     "artifact_id": "art_...",
+    "artifact_path": ".sessions/sess_.../artifacts/art_....txt",
     "relative_path": "sess_.../artifacts/art_....txt",
     "preview": "bounded inline preview",
     "truncated": true,
@@ -335,6 +346,14 @@ Large-output artifacting rules:
   It must match the durable `ArtifactStore` record for `artifact_id`. The
   artifact store remains authoritative for artifact path, checksum, and metadata
   validation.
+- `artifact_path` is the model-visible filesystem path that may be passed to
+  `read_file` when the model needs the externalized text content. It must point
+  to the same accepted artifact as `artifact_id` and `relative_path`, and it
+  must be readable only through the runtime-issued artifact-path exception
+  defined above. Runtime may omit `artifact_path` for artifacts that are not
+  intended to be model-readable, including audit-only diagnostics, redacted
+  internal payloads, non-text assets, or artifacts whose content should be
+  referenced but not exposed through `read_file`.
 - Phase 3.5 uses this checksum string convention: file-content SHA fields such as
   `sha256`, `sha256_before`, `sha256_after`, `content_sha256`, and trace
   redaction hashes are lowercase raw hex without a `sha256:` prefix; artifact and
@@ -351,6 +370,12 @@ Large-output artifacting rules:
   artifact files are cleaned up best-effort; any leftover temporary file is not
   runtime truth and must not be referenced by status, trace, resume, checkpoint
   validation, or recovery.
+- When a successful tool result exposes an artifact reference object in
+  model-visible content, `ToolResult.artifacts` and durable
+  `tool_result.artifact_ids` must include that artifact id exactly once. This
+  applies equally to native field-level artifacting, runtime-control tools such
+  as `load_skill_resource`, and any other successful tool result that exposes a
+  model-visible artifact reference.
 - `preview` is optional when the large value is not safe or cheap to preview. If
   present, it must be bounded and derived before or during artifact registration,
   not by later reading arbitrary artifact paths.
@@ -1463,20 +1488,22 @@ The tools in this section are model-visible Phase 3.5 tools, but they are not
 native-tool enhancement targets.
 
 Phase 3.5 does not update or tighten their model-visible schemas, target
-validation, behavior semantics, approval exceptions, runtime truth, persistence,
-checkpoint facts, or tool-specific logical result objects. Their authoritative
-behavior remains the Phase 1 skill/runtime-control contracts, Phase 2 Todo Plan
-contracts, and Phase 3 normalized error contracts.
+validation, behavior semantics, approval exceptions, runtime truth,
+persistence, or checkpoint facts. Their authoritative behavior remains the Phase
+1 skill/runtime-control contracts, Phase 2 Todo Plan contracts, Phase 3
+normalized error contracts, and the shared Phase 3.5 ToolResult artifact
+reference contract.
 
 Phase 3 normalized ToolResult status and error projection supersede earlier
 Phase 1/2 example status/error wording for malformed tool input and local
 semantic validation. This is not a Phase 3.5 behavior expansion for these tools;
 it is the Phase 3 normalized ToolBroker boundary applied consistently.
 
-Their `ToolResult` envelope, `ToolResult.status`, and normalized model-visible
-error projection still follow the Phase 3/3.5 ToolBroker boundary contract
-defined above. Schema validation failures, local semantic validation failures,
-invalid frozen target/config failures, and persistence failures use
+Their `ToolResult` envelope, `ToolResult.status`, normalized model-visible error
+projection, and model-visible artifact references still follow the Phase 3/3.5
+ToolBroker boundary contract defined above. Schema validation failures, local
+semantic validation failures, invalid frozen target/config failures, and
+persistence failures use
 `status="error"` with the appropriate normalized error projection. Path policy,
 shell policy, or interactive approval denials use `status="denied"` when such a
 denial path applies. The Phase 2 `todo` audit-only approval exception remains

@@ -62,7 +62,7 @@ Allowed Phase 4 modification boundaries:
 - `src/debug_agent/runtime/`: config parsing, frozen config defaults/backfill helpers, orchestrator startup ordering, resume frozen-config consumption, per-invocation metrics collector lifecycle, token accounting surfaces.
 - `src/debug_agent/runtime/settings.py` and prompt composition helpers: built-in default system prompt replacement, phase-neutral prompt constant naming, and active skill resource loading guidance.
 - `src/debug_agent/adapters/`: Anthropic/Kimi-compatible main-agent request projection, provider response normalization, usage extraction, thinking-block stripping before runtime acceptance.
-- `src/debug_agent/tools/`: only compatibility tests or narrow wiring needed to prove `view_image` remains thinking-disabled and fake `rdc` readiness still uses existing brokered `shell_exec`/`view_image` contracts; Phase 4 may clarify the existing `load_skill_resource` model-visible description without adding a new tool or changing its brokered contract.
+- `src/debug_agent/tools/`: only compatibility tests or narrow wiring needed to prove `view_image` remains thinking-disabled and fake `rdc` readiness still uses existing brokered `shell_exec`/`view_image` contracts; Phase 4 may clarify the existing `load_skill_resource` model-visible description and expose model-readable artifact paths for large resource results without adding a new tool, changing tool schemas, or changing risk/access categories.
 - `src/debug_agent/cli/`: user-facing schema compatibility messages, best-effort metrics write warnings, package smoke entrypoint preservation.
 - `src/debug_agent/observability/`: metrics writer module or helper, terminalization integration near existing terminal trace refresh, non-authoritative warning/reporting behavior.
 - `tests/unit/` and `tests/integration/`: Phase 4 coverage required by `docs/phase-4/tests.md`, including test-only fake `rdc` fixture/helper.
@@ -102,7 +102,7 @@ Compatibility that must be preserved:
 - Token totals in metrics and REPL/TUI surfaces are cumulative over the counted model-call window, not last-known provider values.
 - All RenderDoc readiness command execution uses existing brokered `shell_exec` and `view_image` paths.
 - The default main-agent system prompt is generic runtime harness guidance. It must not encode RenderDoc, shader, `rdc`, report-schema, or case-specific workflow semantics.
-- Active skill resource paths are model-visible indexes only; needed resource content is loaded through `load_skill_resource`.
+- Active skill resource paths are model-visible indexes only; needed resource content is loaded through `load_skill_resource`, and large resource content may require a follow-up paginated `read_file` call against the returned `artifact_path`.
 - Manual smoke records are acceptance evidence, not contract or runtime truth.
 
 ## Dependency Graph
@@ -394,13 +394,13 @@ The milestones below are ordered by dependency. Each milestone is an incremental
 
 **Deliverables:** phase-neutral `SYSTEM_PROMPT` constant; updated built-in `system_prompt` default that exactly matches the `SYSTEM_PROMPT` text in `docs/phase-4/architecture.md`; preserved configured `system_prompt` override behavior; active skill context guidance that exactly matches the `available_resources` index guidance text in `docs/phase-4/architecture.md`; clarified `load_skill_resource` tool description that exactly matches the tool description text in `docs/phase-4/architecture.md`; `DEFAULT_VIEW_IMAGE_QUERY` text that exactly matches the query text in `docs/phase-4/architecture.md`; tests covering prompt content, constant naming, custom override behavior, active context guidance, tool description, default view-image query content, and omitted-query provider instruction behavior.
 
-**Modified boundaries:** `runtime/settings.py`, `runtime/config.py`, `runtime/orchestrator.py`, `runtime/prompt_composer.py`, `tools/runtime_control.py`, `tools/settings.py`, view-image unit tests, tests under `tests/unit/`, and this Phase 4 documentation set. No persistence schema, runtime truth, new model-visible tools, tool result contract, view-image schema change, provider instruction wrapper change, redaction behavior change, or RenderDoc-specific runtime behavior changes are allowed.
+**Modified boundaries:** `runtime/settings.py`, `runtime/config.py`, `runtime/orchestrator.py`, `runtime/prompt_composer.py`, `tools/runtime_control.py`, `tools/settings.py`, view-image unit tests, tests under `tests/unit/`, and this Phase 4 documentation set. No persistence schema, new model-visible tools, tool result statuses, view-image schema change, provider instruction wrapper change, redaction behavior change, or RenderDoc-specific runtime behavior changes are allowed. The only allowed tool-result contract clarification in this milestone is model-visible artifact reference consistency and `artifact_path` guidance for already accepted artifact-backed results.
 
 **Invariants:** the default prompt remains domain-neutral; user/configured `system_prompt` still overrides the built-in default; runtime safety prefix remains separately provider-visible; active skill `SKILL.md` content remains injected through `runtime_active_skill_context`; resource files are not injected automatically; `load_skill_resource` remains brokered, audit-only for valid active resources, and limited to frozen active skill resources; default `view_image` query remains generic visual debugging guidance, custom assistant-supplied `view_image.query` still overrides the default for that tool call, and the default query must not mention RenderDoc, `rdc`, shaders, report schemas, or case-specific workflow.
 
 **Verification steps:** run focused unit tests for runtime settings/config, prompt composition, runtime-control tool definitions, view-image default query behavior, and prompt executor imports; then run `uv run pytest tests/unit -v`.
 
-**Freeze/review checkpoint:** do not expand this milestone into generic prompt framework redesign, RenderDoc workflow instructions, new tool behavior, schema changes, or Phase 0 documentation rewrites.
+**Freeze/review checkpoint:** do not expand this milestone into generic prompt framework redesign, RenderDoc workflow instructions, new model-visible tools, schema changes, or Phase 0 documentation rewrites.
 
 **Implementation source constraint:** implement this milestone only from
 `docs/project-contract.md`, `docs/phase-4/*`, and accepted ADRs. Do not consult
@@ -419,6 +419,6 @@ model-visible strings for this milestone are the strings embedded in
 - [x] Replace the built-in default prompt text with the exact `SYSTEM_PROMPT` text from `architecture.md`.
 - [x] Update runtime imports and fallback paths to use `SYSTEM_PROMPT`.
 - [x] Add the exact model-visible resource-index guidance from `architecture.md` to active skill context near `available_resources`.
-- [x] Replace the `load_skill_resource` model-visible tool description with the exact text from `architecture.md` without changing its schema, risk, access, or handler behavior.
+- [x] Replace the `load_skill_resource` model-visible tool description with the exact text from `architecture.md` without changing its schema, risk, access, or target-validation behavior.
 - [x] Replace `DEFAULT_VIEW_IMAGE_QUERY` with the exact text from `architecture.md` without changing the `view_image` schema, provider instruction wrapper, redaction behavior, or custom-query override behavior.
 - [x] Run canonical verification for the changed surface.

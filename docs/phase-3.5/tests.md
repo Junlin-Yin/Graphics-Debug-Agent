@@ -157,12 +157,16 @@ Phase 3.5 acceptance requires:
   runtime-control tools under their earlier-phase availability rules.
 - Phase 3.5 does not expand or tighten `activate_skill`,
   `load_skill_resource`, or `todo` schemas, target validation, behavior,
-  persistence, checkpoint facts, or tool-specific logical result objects.
+  persistence, or checkpoint facts.
 - Phase 3.5 runtime-control tool `ToolResult` envelopes, statuses, and
   normalized error projections follow the Phase 3/3.5 ToolBroker boundary:
   schema, local semantic, invalid target/config, and persistence failures use
   `status="error"`; policy or interactive approval denials use
   `status="denied"` when applicable.
+- Phase 3.5 runtime-control tool model-visible artifact references follow the
+  shared ToolResult artifact contract, including `artifact_ids` consistency and
+  `artifact_path` when a model-readable accepted artifact is intentionally
+  exposed.
 - terminalization generates `.sessions/<session_id>/logs/trace.md`.
 - run-event observations and runtime diagnostics are written to
   `.sessions/<session_id>/logs/events.jsonl`.
@@ -758,14 +762,15 @@ Phase 3.5 acceptance requires:
 - text previews apply limits to original text.
 - preview truncation does not modify durable conversation content.
 - artifact-backed results do not read artifact content while rendering trace.
-- artifact-backed results display only `artifact_id`, relative artifact path, and
-  any already-inline preview/reference metadata.
+- artifact-backed results display only `artifact_id`, model-visible
+  `artifact_path` when present, relative artifact path, and any already-inline
+  preview/reference metadata.
 - artifact-backed results do not display checksum or additional verification
   hints.
 - inline Phase 3.5 field-level artifact references inside
   `tool_result.content_json.content` validate against ArtifactStore records,
-  existing artifact files, session/run scope, `relative_path`, and
-  `tool_result.artifact_ids`.
+  existing artifact files, session/run scope, `relative_path` when present,
+  `artifact_path` when present, and `tool_result.artifact_ids`.
 - a durable redacted inline preview may be displayed without reading the
   unredacted artifact.
 

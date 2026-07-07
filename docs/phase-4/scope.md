@@ -46,12 +46,16 @@ readiness path with a fake `rdc` scenario; the externally adapted
   the user prompt and active prompt skills.
 - make active skill resource lists explicit model-visible indexes: listing a
   resource path is not loaded content, and the model must call
-  `load_skill_resource` before relying on a listed resource's contents. The
-  exact active skill context guidance text is defined in `architecture.md`.
+  `load_skill_resource` before relying on a listed resource's contents. Large
+  resources may return a model-readable artifact reference, in which case the
+  model must use `read_file` with the returned `artifact_path` and pagination to
+  inspect the needed content. The exact active skill context guidance text is
+  defined in `architecture.md`.
 - strengthen the model-visible `load_skill_resource` tool description so the
   tool's intended trigger is clear when active skill instructions or
-  `available_resources` reference needed content. The exact tool description is
-  defined in `architecture.md`.
+  `available_resources` reference needed content, including artifact-backed
+  large resource results. The exact tool description is defined in
+  `architecture.md`.
 
 ### Compatibility
 
@@ -212,7 +216,8 @@ Phase 4 is complete when:
 - the Phase 4 default system prompt uses the phase-neutral `SYSTEM_PROMPT`
   constant and contains the documented generic harness discipline.
 - active skill resource lists and the `load_skill_resource` tool description
-  make resource loading requirements model-visible.
+  make resource loading requirements model-visible, including the follow-up
+  `read_file(artifact_path)` path for artifact-backed large resources.
 - the Phase 4 default `view_image` query uses the exact generic visual
   debugging text defined in `architecture.md`.
 - package deployment smoke is part of canonical Phase 4 verification.

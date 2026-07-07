@@ -114,7 +114,10 @@ def test_runtime_control_tool_definitions_are_strict() -> None:
     assert definitions["load_skill_resource"].risk_level == "read"
     assert definitions["load_skill_resource"].description == (
         "Load one frozen resource file for an active skill. Use this when active skill\n"
-        "instructions or available_resources reference a file whose contents are needed."
+        "instructions or available_resources reference a file whose contents are needed.\n"
+        "Large resources may return an artifact_path instead of inline content; use\n"
+        "read_file with that artifact_path and pagination when the returned content is\n"
+        "needed."
     )
     assert definitions["load_skill_resource"].input_schema == {
         "type": "object",
@@ -348,6 +351,10 @@ def test_load_skill_resource_returns_markers_for_large_text_and_binary(tmp_path)
     assert binary.output["content"] is None
     assert large.output["artifact_id"]
     assert binary.output["artifact_id"]
+    assert large.artifacts == [large.output["artifact_id"]]
+    assert binary.artifacts == [binary.output["artifact_id"]]
+    assert large.output["artifact_path"] == f".sessions/{large.output['relative_path']}"
+    assert binary.output["artifact_path"] == f".sessions/{binary.output['relative_path']}"
     assert large.output["resource_marker"].startswith("[skill resource stored as artifact:")
     assert binary.output["resource_marker"].startswith("[skill resource stored as artifact:")
     runtime["db"].close()

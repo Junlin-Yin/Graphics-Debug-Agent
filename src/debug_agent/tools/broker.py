@@ -163,6 +163,7 @@ class PreparedToolResult:
     error_class: str = "tool_error"
     reason: str | None = None
     artifacts: tuple[Any, ...] = ()
+    artifact_ids: tuple[str, ...] = ()
     metadata: dict[str, Any] | None = None
     redacted_output: Any = None
 
@@ -1132,6 +1133,14 @@ class ToolBroker:
             return PreparedToolResult(
                 status="ok",
                 output=output.output or {},
+                artifact_ids=tuple(
+                    _accepted_inline_artifact_ids(
+                        output.output or {},
+                        artifact_store=self.artifact_store,
+                        session_id=session_id,
+                        run_id=run_id,
+                    )
+                ),
                 metadata=output.metadata or {},
                 redacted_output=(output.metadata or {}).get("redacted_output")
                 if tool_name == "todo" and output.metadata is not None
@@ -1206,12 +1215,18 @@ class ToolBroker:
                 )
             return result
         if prepared.status == "ok":
+            artifact_ids = _dedupe_artifact_ids(
+                [
+                    *(artifact.artifact_id for artifact in prepared.artifacts),
+                    *prepared.artifact_ids,
+                ]
+            )
             if prepared.redacted_output is not None and tool_name == "todo":
                 return ToolResult(
                     status="ok",
                     output=prepared.output,
                     error=None,
-                    artifacts=[artifact.artifact_id for artifact in prepared.artifacts],
+                    artifacts=artifact_ids,
                     metadata={
                         key: value
                         for key, value in metadata.items()
@@ -1229,7 +1244,7 @@ class ToolBroker:
                 status="ok",
                 output=prepared.output,
                 error=None,
-                artifacts=[artifact.artifact_id for artifact in prepared.artifacts],
+                artifacts=artifact_ids,
                 metadata=metadata,
                 redacted_output=prepared.redacted_output,
             )
@@ -1280,9 +1295,10 @@ class ToolBroker:
                 },
                 deadline_check=deadline_check,
             )
+            artifact_reference = _artifact_reference(artifact)
             return PreparedToolResult(
                 status="ok",
-                output=None,
+                output=artifact_reference,
                 artifacts=(artifact,),
                 metadata={"bytes": output_size, **metadata},
                 redacted_output=f"[output stored as artifact: {artifact.artifact_id}]",
@@ -1327,9 +1343,10 @@ class ToolBroker:
                     "metadata": artifact.metadata,
                 },
             )
+            artifact_reference = _artifact_reference(artifact)
             return ToolResult(
                 status="ok",
-                output=None,
+                output=artifact_reference,
                 error=None,
                 artifacts=[artifact.artifact_id],
                 metadata={"bytes": output_size, **metadata},
@@ -2016,6 +2033,29 @@ def _normalize_tool_arguments(
     normalized_arguments = dict(arguments)
     if "path" in normalized_arguments:
         normalized_arguments["path"] = normalized_arguments["path"].strip()
+    artifact_path = None
+    if definition.name == "read_file":
+        artifact_path = _accepted_artifact_path(
+            normalized_arguments["path"],
+            artifact_store=artifact_store,
+            workspace_root=workspace_root,
+            session_id=session_id,
+            run_id=run_id,
+        )
+    if artifact_path is not None:
+        normalized_arguments["path"] = str(artifact_path)
+        scope_signature = scope_signature_for_tool(
+            definition.name,
+            risk_level=definition.risk_level,
+            paths=[artifact_path],
+        )
+        return NormalizedBrokerArguments(
+            arguments=normalized_arguments,
+            paths=(),
+            shell_argv=(),
+            scope_signature=scope_signature,
+            target=str(artifact_path),
+        )
     canonical_path = canonicalize_path(normalized_arguments["path"], workspace_root)
     normalized_arguments["path"] = str(canonical_path)
     planned_parent_directories: list[Path] = []
@@ -2507,14 +2547,86 @@ def _observation_size(output: dict[str, Any]) -> int:
 def _artifact_reference(artifact: Any) -> dict[str, Any]:
     metadata = artifact.metadata if isinstance(artifact.metadata, dict) else {}
     payload_sha256 = metadata.get("payload_sha256")
+    artifact_path = f".sessions/{artifact.relative_path}"
     return {
         "artifact_id": artifact.artifact_id,
+        "artifact_path": artifact_path,
         "relative_path": artifact.relative_path,
         "preview": metadata.get("preview"),
         "truncated": True,
         "bytes": int(metadata.get("bytes", 0)),
         "sha256": payload_sha256 if isinstance(payload_sha256, str) else "",
     }
+
+
+def _accepted_artifact_path(
+    path: str,
+    *,
+    artifact_store: ArtifactStore,
+    workspace_root: Path,
+    session_id: str,
+    run_id: str,
+) -> Path | None:
+    sessions_root = artifact_store.sessions_root.resolve()
+    for artifact in artifact_store.list_for_session(session_id):
+        if artifact.run_id not in {None, run_id}:
+            continue
+        if path != f".sessions/{artifact.relative_path}":
+            continue
+        try:
+            candidate = canonicalize_path(path, workspace_root)
+        except Exception:
+            return None
+        try:
+            candidate.relative_to(sessions_root)
+        except ValueError:
+            return None
+        artifact_path = (sessions_root / artifact.relative_path).resolve()
+        if candidate == artifact_path:
+            return artifact_path
+    return None
+
+
+def _accepted_inline_artifact_ids(
+    value: Any,
+    *,
+    artifact_store: ArtifactStore,
+    session_id: str,
+    run_id: str,
+) -> list[str]:
+    accepted = {
+        artifact.artifact_id
+        for artifact in artifact_store.list_for_session(session_id)
+        if artifact.run_id in {None, run_id}
+    }
+    return [
+        artifact_id
+        for artifact_id in _inline_artifact_ids(value)
+        if artifact_id in accepted
+    ]
+
+
+def _inline_artifact_ids(value: Any) -> list[str]:
+    found: list[str] = []
+
+    def visit(candidate: Any) -> None:
+        if isinstance(candidate, dict):
+            artifact_id = candidate.get("artifact_id")
+            relative_path = candidate.get("relative_path")
+            if isinstance(artifact_id, str) and isinstance(relative_path, str):
+                found.append(artifact_id)
+            for child in candidate.values():
+                visit(child)
+        elif isinstance(candidate, list):
+            for child in candidate:
+                visit(child)
+
+    visit(value)
+    return _dedupe_artifact_ids(found)
+
+
+def _dedupe_artifact_ids(artifact_ids: list[str]) -> list[str]:
+    return list(dict.fromkeys(artifact_ids))
 
 
 def _artifact_text(output: Any) -> str:

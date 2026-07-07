@@ -368,6 +368,7 @@ def _validate_row_artifacts(row: Any, artifacts: list[Any], sessions_root: Path)
         _validate_artifact_reference(
             artifact_id=row.artifact_id,
             expected_relative_path=None,
+            expected_artifact_path=None,
             row=row,
             artifact_by_id=artifact_by_id,
             sessions_root=sessions_root,
@@ -391,6 +392,7 @@ def _validate_row_artifacts(row: Any, artifacts: list[Any], sessions_root: Path)
             _validate_artifact_reference(
                 artifact_id=ref["artifact_id"],
                 expected_relative_path=ref.get("relative_path"),
+                expected_artifact_path=ref.get("artifact_path"),
                 row=row,
                 artifact_by_id=artifact_by_id,
                 sessions_root=sessions_root,
@@ -401,6 +403,7 @@ def _validate_artifact_reference(
     *,
     artifact_id: str,
     expected_relative_path: Any,
+    expected_artifact_path: Any,
     row: Any,
     artifact_by_id: dict[str, Any],
     sessions_root: Path,
@@ -418,6 +421,11 @@ def _validate_artifact_reference(
         _invalid_trace("Artifact run scope does not match conversation row.")
     if expected_relative_path is not None and expected_relative_path != artifact.relative_path:
         _invalid_trace("Artifact relative_path conflicts with ArtifactStore record.")
+    if (
+        expected_artifact_path is not None
+        and expected_artifact_path != f".sessions/{artifact.relative_path}"
+    ):
+        _invalid_trace("Artifact artifact_path conflicts with ArtifactStore record.")
     if not (sessions_root / artifact.relative_path).exists():
         raise StoreError(
             error_class="persistence_error",
@@ -453,6 +461,7 @@ def _inline_artifact_refs(value: Any) -> list[dict[str, Any]]:
             refs.append(
                 {
                     "artifact_id": value["artifact_id"],
+                    "artifact_path": value.get("artifact_path"),
                     "relative_path": value.get("relative_path"),
                 }
             )

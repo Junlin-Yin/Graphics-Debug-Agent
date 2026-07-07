@@ -37,7 +37,7 @@ If implementation discovers a conflict or missing contract, stop and request a c
 - Extend ToolBroker schema validation, normalized argument handling, timeout envelope, field-level artifacting, audit argument persistence, and volatile file metadata cache before exposing changed native tool behavior.
 - Deliver Phase 3.5 native tool contracts for `find_file`, `read_file`, `list_dir`, `search_text`, `edit_file`, `write_file`, and successful `shell_exec` output, with `search_text` implemented as its own milestone.
 - Preserve `view_image` as image-only with Phase 2 ordinary display-path output and query redaction boundaries.
-- Preserve `activate_skill`, `load_skill_resource`, and `todo` tool-specific semantics while routing their Phase 3.5 ToolResult envelope/status/error projection through the shared ToolBroker boundary.
+- Preserve `activate_skill`, `load_skill_resource`, and `todo` tool-specific schemas, target validation, and approval semantics while routing their Phase 3.5 ToolResult envelope/status/error projection and model-visible artifact references through the shared ToolBroker boundary.
 - Replace legacy trace/log outputs with `.sessions/<session_id>/logs/trace.md` conversation transcript and `.sessions/<session_id>/logs/events.jsonl`, keeping both non-authoritative.
 - Keep one-shot, REPL, TUI, status, trace, resume, checkpoint, artifact, approval, policy, and durable conversation paths runnable or fail-closed at every milestone.
 
@@ -50,7 +50,7 @@ If implementation discovers a conflict or missing contract, stop and request a c
 - No `view_image` video, audio, URL, base64, artifact-id, or general multimedia input support.
 - No legacy runtime-truth migration, compatibility reader, row rewrite, old trace/log symlink/copy, or old tool schema alias such as `search_text.query`.
 - No durable file metadata cache, model-visible revision token, `expected_sha256`, deterministic call/audit signature, per-tool schema hash, or per-tool result hash persistence.
-- No changes to `activate_skill`, `load_skill_resource`, or `todo` tool-specific schemas, target validation, approval exceptions, persistence semantics, checkpoint facts, or logical result objects.
+- No changes to `activate_skill`, `load_skill_resource`, or `todo` tool-specific schemas, target validation, approval exceptions, persistence semantics, or checkpoint facts. Model-visible artifact references for these tools still follow the shared ToolResult artifact contract.
 
 ## Modification Boundaries
 
@@ -71,7 +71,7 @@ Forbidden or restricted boundaries:
 - Do not route any model-visible tool around ToolBroker, path policy, shell policy, approval, timeout, artifact handling, normalized result projection, or audit.
 - Do not introduce new runtime truth schema, event kinds, error class/reason symbols, tool result statuses, checkpoint placements, lifecycle statuses, tool risk categories, or state machine semantics without a contract patch.
 - Do not make trace, events JSONL, TUI, streaming observation, run events, context snapshots, natural-language summaries, source drafts, or artifact body previews authoritative recovery inputs.
-- Do not modify runtime-control tool-specific semantics for `activate_skill`, `load_skill_resource`, or `todo` beyond the shared ToolBroker envelope/status/error projection.
+- Do not modify runtime-control tool-specific semantics for `activate_skill`, `load_skill_resource`, or `todo` beyond the shared ToolBroker envelope/status/error projection and model-visible artifact reference contract.
 
 Compatibility that must be preserved:
 
@@ -487,7 +487,7 @@ After Milestone 9 completes, trace/events integration verification passes, and t
 - [x] Preserve `view_image.query` validation: trim provided query, reject non-string, whitespace-only, and over-limit values with `tool_error/tool_schema_invalid`, and use the frozen default query only when omitted.
 - [x] Preserve disabled-`view_image` validation ordering: malformed disabled calls validate first with `tool_error/tool_schema_invalid`, while valid disabled calls return `config_error/tool_unavailable`.
 - [x] Preserve `view_image` query redaction outside accepted assistant-authored trace tool-call arguments.
-- [x] Wrap `activate_skill`, `load_skill_resource`, and `todo` through Phase 3/3.5 ToolBroker status/error projection without changing their logical contracts.
+- [x] Wrap `activate_skill`, `load_skill_resource`, and `todo` through Phase 3/3.5 ToolBroker status/error projection and shared artifact reference contract without changing their schemas, target validation, or approval semantics.
 - [x] Add Phase 3.5 native tools contract marker to terminal recovery tool-availability facts.
 - [x] Include `shell_exec.max_timeout_seconds` and `view_image` dynamic facts in tool availability.
 - [x] Compute and validate tool-availability checksum over facts excluding checksum.

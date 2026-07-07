@@ -56,7 +56,10 @@ def tool_definitions() -> list[ToolDefinition]:
             name="load_skill_resource",
             description=(
                 "Load one frozen resource file for an active skill. Use this when active skill\n"
-                "instructions or available_resources reference a file whose contents are needed."
+                "instructions or available_resources reference a file whose contents are needed.\n"
+                "Large resources may return an artifact_path instead of inline content; use\n"
+                "read_file with that artifact_path and pagination when the returned content is\n"
+                "needed."
             ),
             input_schema={
                 "type": "object",
@@ -177,6 +180,8 @@ def load_skill_resource(context: Any, arguments: dict[str, Any]) -> RuntimeContr
             error_class=target.error_class,
         )
     resource = target.resource
+    artifact_id = resource.payload_artifact_id
+    artifact_reference = _resource_artifact_reference(context, artifact_id)
     output = {
         "skill_name": resource.skill_name,
         "resource_path": resource.resource_path,
@@ -185,7 +190,9 @@ def load_skill_resource(context: Any, arguments: dict[str, Any]) -> RuntimeContr
         "size_bytes": resource.size_bytes,
         "media_kind": resource.media_kind,
         "content": resource.inline_text_payload,
-        "artifact_id": resource.payload_artifact_id,
+        "artifact_id": artifact_id,
+        "artifact_path": artifact_reference.get("artifact_path"),
+        "relative_path": artifact_reference.get("relative_path"),
         "resource_marker": None,
     }
     if resource.inline_text_payload is None:
@@ -293,6 +300,19 @@ def todo(context: Any, arguments: dict[str, Any]) -> RuntimeControlHandlerResult
             "redacted_output": _render_todo_plan(payload["plan_version"], output_items, payload["counts"]),
         },
     )
+
+
+def _resource_artifact_reference(context: Any, artifact_id: str | None) -> dict[str, str]:
+    if artifact_id is None:
+        return {}
+    try:
+        artifact = context.artifact_store.get(artifact_id)
+    except Exception:
+        return {}
+    return {
+        "artifact_path": f".sessions/{artifact.relative_path}",
+        "relative_path": artifact.relative_path,
+    }
 
 
 def _validate_activation(context: Any, arguments: dict[str, Any]) -> RuntimeControlTarget:

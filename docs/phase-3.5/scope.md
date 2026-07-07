@@ -155,11 +155,11 @@ The trace observability portion of Phase 3.5 focuses on:
 - preserve existing `activate_skill`, `load_skill_resource`, and `todo`
   runtime-control tools from earlier phases. Phase 3.5 does not update or
   tighten their schemas, target validation, behavior semantics, approval
-  exceptions, runtime truth, persistence, checkpoint facts, or tool-specific
-  logical result objects. Their `ToolResult` envelope, status, and normalized
-  error projection still follow the Phase 3/3.5 ToolBroker boundary contract,
-  which supersedes older Phase 1/2 example status/error wording for malformed
-  tool input and local semantic validation.
+  exceptions, runtime truth, persistence, or checkpoint facts. Their
+  `ToolResult` envelope, status, normalized error projection, and model-visible
+  artifact references still follow the Phase 3/3.5 ToolBroker boundary
+  contract, which supersedes older Phase 1/2 example status/error wording for
+  malformed tool input and local semantic validation.
 - keep `load_skill_resource.path` as a Phase 1 skill-local resource path. It is
   not converted into a Phase 3.5 native filesystem path or canonicalized against
   `workspace_root`.
@@ -343,7 +343,10 @@ alias.
 Phase 3.5 preserves `activate_skill`, `load_skill_resource`, and `todo` as
 model-visible runtime-control tools. They are not native-tool enhancement
 targets in this phase, but they are not removed, renamed, deprecated, or
-semantically changed.
+semantically changed. Their model-visible artifact references still follow the
+shared ToolResult artifact contract, including `artifact_ids` consistency and
+model-readable `artifact_path` when an accepted artifact is intentionally
+exposed for `read_file` follow-up.
 
 Phase 3.5 adds a volatile ToolBroker file metadata cache. This cache is runtime
 execution state only, not recovery truth.

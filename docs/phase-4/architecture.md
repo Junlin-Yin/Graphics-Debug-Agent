@@ -121,7 +121,9 @@ Tool and execution discipline:
   the plan current as the plan, status, or next action changes.
 - Treat active skill resource lists as indexes, not loaded content. If a task
   requires the content of a listed resource, call `load_skill_resource` for the
-  relevant active skill resource before relying on it.
+  relevant active skill resource before relying on it. If the result provides an
+  `artifact_path` instead of inline content, use `read_file` with that path and
+  pagination to inspect the needed content.
 - When running shell commands, use the runtime's structured shell execution
   interface and pass commands as argument vectors. Treat quoted command examples
   in user prompts as display examples unless the runtime explicitly requests a
@@ -157,7 +159,9 @@ the following exact guidance model-visible in the active skill context block:
 ```text
 Resource paths listed under available_resources are indexes only, not loaded
 content. Call load_skill_resource(skill_name, path) before relying on any listed
-resource's content.
+resource's content. If load_skill_resource returns an artifact_path instead of
+inline content, call read_file(path=artifact_path) with pagination to read the
+needed content.
 ```
 
 This Phase 4 prompt replacement supersedes the legacy Phase 0 default prompt
@@ -220,9 +224,9 @@ phases:
   approval, timeout, artifact, result normalization, and audit.
 - `view_image` inspects local PNG/JPEG files produced by `rdc rt`.
 - `load_skill_resource` remains the brokered path for loading frozen active
-  skill resource content; its model-visible description should make this
-  trigger clear when a task needs content listed under an active skill's
-  `available_resources`.
+  skill resource content or a model-readable artifact reference for large frozen
+  resources; its model-visible description should make this trigger clear when a
+  task needs content listed under an active skill's `available_resources`.
 - both tools preserve their existing result, error, audit, and durable
   conversation contracts.
 
@@ -249,6 +253,9 @@ The exact Phase 4 model-visible description for `load_skill_resource` is:
 ```text
 Load one frozen resource file for an active skill. Use this when active skill
 instructions or available_resources reference a file whose contents are needed.
+Large resources may return an artifact_path instead of inline content; use
+read_file with that artifact_path and pagination when the returned content is
+needed.
 ```
 
 Runtime must not add a RenderDoc command allowlist or a RenderDoc-specific tool

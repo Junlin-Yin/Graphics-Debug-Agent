@@ -3,6 +3,7 @@ from __future__ import annotations
 from debug_agent.persistence.approval_grants import ApprovalGrantStore
 from debug_agent.persistence.artifacts import ArtifactStore
 from debug_agent.persistence.checkpoints import CheckpointStore
+from debug_agent.persistence.conversation import ConversationStore
 from debug_agent.persistence.events import EventWriter
 from debug_agent.persistence.runs import RunStore
 from debug_agent.persistence.sessions import SessionStore
@@ -13,6 +14,7 @@ from debug_agent.adapters.langchain_adapter import LangChainAgentLoopAdapter
 from debug_agent.runtime.contracts import AgentRunResult
 from debug_agent.runtime.policy import build_builtin_policy
 from debug_agent.runtime.prompt_executor import PromptAgentExecutor
+from debug_agent.observability.trace_writer import TraceWriter
 from debug_agent.skills.registry import SkillRegistry
 from debug_agent.tools.broker import FakeApprovalProvider, ToolBroker
 from debug_agent.tools.native import gated_user_facing_tool_definitions
@@ -45,6 +47,7 @@ def _runtime(tmp_path):
     (skill_dir / "references").mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(_skill_md("alpha"), encoding="utf-8")
     (skill_dir / "references" / "guide.txt").write_text("guide", encoding="utf-8")
+    (skill_dir / "references" / "large.txt").write_text("large\n" * 5000, encoding="utf-8")
     snapshots = SkillRegistry(
         workspace_root=workspace,
         home_dir=home,
@@ -295,6 +298,121 @@ def test_tool_loop_context_refresh_preserves_prior_skill_activation_result(tmp_p
     assert "Skill activated: alpha" in third_call_text
     assert "guide" in third_call_text
     assert "[Runtime supplied active skill context]" in third_call_text
+    runtime["db"].close()
+
+
+def test_large_skill_resource_persists_matching_artifact_ids_and_trace_renders(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path)
+
+    class ActivatingThenLoadingLargeModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def bind_tools(self, tools):
+            self.bound_tool_names = [tool.name for tool in tools]
+            return self
+
+        def invoke(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "activate_alpha",
+                                "name": "activate_skill",
+                                "args": {"name": "alpha"},
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            if self.calls == 2:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "load_alpha_large",
+                                "name": "load_skill_resource",
+                                "args": {
+                                    "skill_name": "alpha",
+                                    "path": "references/large.txt",
+                                },
+                            }
+                        ],
+                        "usage": {},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {"content": "done", "tool_calls": [], "usage": {}},
+            )()
+
+    broker = ToolBroker(
+        event_writer=runtime["events"],
+        artifact_store=runtime["artifacts"],
+    )
+    executor = PromptAgentExecutor(
+        event_writer=runtime["events"],
+        checkpoint_store=CheckpointStore(runtime["db"].connection),
+        artifact_store=runtime["artifacts"],
+        conversation_store=ConversationStore(
+            runtime["db"].connection,
+            artifact_store=runtime["artifacts"],
+        ),
+        adapter=LangChainAgentLoopAdapter(
+            model=ActivatingThenLoadingLargeModel(),
+            tool_broker=broker,
+        ),
+        tool_definitions=gated_user_facing_tool_definitions(),
+        system_prompt="system",
+        skill_snapshot_store=runtime["skill_store"],
+        todo_plan_store=TodoPlanStore(runtime["db"].connection),
+        run_store=runtime["runs"],
+    )
+
+    result = executor.run_turn(
+        session=runtime["session"],
+        run=runtime["run"],
+        user_input="activate alpha and read large guide",
+        workspace_root=str(runtime["workspace"]),
+    )
+    assert result.status == "completed", result.error
+    rows = ConversationStore(
+        runtime["db"].connection,
+        artifact_store=runtime["artifacts"],
+    ).list_messages(runtime["run"].run_id)
+    matching_rows = [
+        row
+        for row in rows
+        if row.kind == "tool_result"
+        and isinstance(row.content, dict)
+        and isinstance(row.content.get("content"), dict)
+        and row.content["content"].get("resource_path") == "references/large.txt"
+    ]
+    assert matching_rows, [(row.kind, row.content) for row in rows]
+    large_result = matching_rows[0]
+    content = large_result.content["content"]
+    artifact_id = content["artifact_id"]
+
+    assert content["content"] is None
+    assert content["artifact_path"] == f".sessions/{content['relative_path']}"
+    assert large_result.content["artifact_ids"] == [artifact_id]
+    trace = TraceWriter(
+        runtime["db"].connection,
+        runtime["db"].path.parent,
+    ).refresh_if_stale(runtime["session"].session_id)
+    trace_text = trace.trace_path.read_text(encoding="utf-8")
+    assert content["artifact_path"] in trace_text
     runtime["db"].close()
 
 
